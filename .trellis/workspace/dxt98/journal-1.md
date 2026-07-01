@@ -108,3 +108,36 @@ Deployed CPAMP, CPA Key Policy, and a separate user usage portal; clarified cpa_
 ### Next Steps
 
 - None - task complete
+
+
+## Session 4: CPA usage quota admin
+
+**Date**: 2026-07-02
+**Task**: CPA usage quota admin
+**Branch**: `main`
+
+### Summary
+
+Added the custom CPA usage portal local quota admin, 5H/month windows, soft reset watermarks, server price correction evidence, and deployment validation without modifying CPA/CPAMP/Key Policy source.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `762b9e6` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
