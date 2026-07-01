@@ -127,7 +127,12 @@ http://127.0.0.1:8787/admin/
 ```toml
 [admin]
 max_log_events = 800
+key_policy_state_path = "" # 可选：填 CPA Key Policy state JSON 路径后显示安全的 Key 名称
 ```
+
+Docker 部署时这里必须填容器内部可读到的路径。例如把 CPA plugin state
+只读挂载到容器内，然后设置
+`key_policy_state_path = "/data/plugin-state/cpa-key-policy-state.json"`。
 
 不要把 `/admin/` 直接暴露在公网 API 域名上；生产环境应放在 Cloudflare Access 这类外层访问控制之后。
 

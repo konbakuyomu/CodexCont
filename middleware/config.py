@@ -74,6 +74,7 @@ class LogCfg:
 @dataclass(frozen=True)
 class AdminCfg:
     max_log_events: int = 800
+    key_policy_state_path: str = ""
 
 
 @dataclass(frozen=True)

@@ -7,8 +7,10 @@ No pytest dependency — a tiny runner prints PASS/FAIL per check.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import sys
+import tempfile
 from dataclasses import replace
 from pathlib import Path
 
@@ -38,6 +40,7 @@ from middleware.codex import (
 from middleware.config import load_config
 from middleware.creds import build_upstream_headers, would_inject_authorization
 from middleware.diagnostics import Diagnostics, redact_value
+from middleware.key_identity import KeyIdentityResolver
 from middleware.proxy import fold_stream
 from middleware.sse import DONE, incremental_sse
 from middleware.store import IdStore
@@ -452,8 +455,38 @@ def test_diagnostics_ring_and_redaction():
 
 
 def test_diagnostics_request_summaries():
+    with tempfile.TemporaryDirectory() as d:
+        raw = "cpa_live_key"
+        key_hash = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+        state_path = Path(d) / "key-policy.json"
+        state_path.write_text(json.dumps({
+            "keys": [{
+                "id": "alice-key",
+                "key_hash": f"sha256:{key_hash}",
+                "name": "Alice",
+                "preview": "cpa_...live",
+                "enabled": True,
+            }]
+        }), encoding="utf-8")
+        identity = KeyIdentityResolver(str(state_path)).identify_authorization(f"Bearer {raw}")
+        check("key identity resolves bearer safely",
+              identity.get("known") is True
+              and identity.get("name") == "Alice"
+              and raw not in json.dumps(identity),
+              str(identity))
+        unknown = KeyIdentityResolver(str(state_path)).identify_authorization("Bearer other")
+        check("key identity unknown uses hash preview",
+              unknown.get("known") is False
+              and unknown.get("name") == "未识别 Key"
+              and "other" not in json.dumps(unknown),
+              str(unknown))
+
     clean = Diagnostics(max_events=10, max_requests=5)
-    rid = clean.request_started(path="/v1/responses", model="gpt-5.5")
+    rid = clean.request_started(
+        path="/v1/responses",
+        model="gpt-5.5",
+        key_identity={"known": True, "name": "Alice", "preview": "cpa_...live", "source": "test"},
+    )
     clean.mark_fold_start(rid, model="gpt-5.5", path="/v1/responses",
                           upstream_url="http://cpa:8317/v1/responses")
     clean.round_decision(rid, round_no=1, reasoning_tokens=140, n=None,
@@ -466,6 +499,10 @@ def test_diagnostics_request_summaries():
           summary.get("latest_reasoning_tokens") == 140, str(summary))
     check("request summary clean has no truncation round",
           summary.get("first_truncation_round") is None, str(summary))
+    check("request summary exposes safe key identity",
+          (summary.get("key_identity") or {}).get("name") == "Alice"
+          and "cpa_live_key" not in json.dumps(summary),
+          str(summary))
 
     cont = Diagnostics(max_events=10, max_requests=5)
     rid = cont.request_started(path="/v1/responses", model="gpt-5.5")
@@ -582,6 +619,8 @@ def test_admin_routes_smoke():
         check("admin dashboard Chinese first screen", "最近请求" in html.text)
         check("admin dashboard has trigger round column", "命中轮" in html.text)
         check("admin dashboard has latest reasoning column", "末轮思考量" in html.text)
+        check("admin dashboard has key identity column", "用户/Key" in html.text)
+        check("admin dashboard has no metric crescent", "metric::after" not in html.text)
         check("admin dashboard refresh reconnects stream", "connectStream({ force: true })" in html.text)
         check("admin dashboard revives after background", "visibilitychange" in html.text)
         check("admin dashboard shows refresh animation", "is-loading" in html.text and "stream warn" in html.text)

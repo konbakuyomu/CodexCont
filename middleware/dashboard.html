@@ -107,6 +107,7 @@
       gap: 12px;
       min-width: 0;
     }
+    .brand > div { min-width: 0; }
     .mark {
       width: 34px;
       height: 34px;
@@ -144,7 +145,7 @@
       display: inline-flex;
       align-items: center;
       gap: 7px;
-      min-height: 28px;
+      min-height: 32px;
       padding: 0 10px;
       border-radius: 999px;
       border: 1px solid var(--line);
@@ -152,6 +153,7 @@
       color: var(--muted);
       font-size: 12px;
       font-weight: 720;
+      line-height: 1.2;
       white-space: nowrap;
     }
     .dot {
@@ -199,17 +201,6 @@
       border: 1px solid var(--line);
       border-radius: 8px;
       background: linear-gradient(180deg, rgba(26, 36, 52, .96), rgba(21, 29, 44, .96));
-    }
-    .metric::after {
-      content: "";
-      position: absolute;
-      right: 12px;
-      bottom: 10px;
-      width: 74px;
-      height: 38px;
-      border-bottom: 2px solid rgba(59, 150, 255, .18);
-      border-radius: 50%;
-      transform: rotate(-8deg);
     }
     .metric-label {
       display: flex;
@@ -310,6 +301,7 @@
       text-overflow: clip;
     }
     .col-time { width: 178px; }
+    .col-key { width: 170px; }
     .col-protect { width: 205px; }
     .col-model { width: 145px; }
     .col-round { width: 78px; }
@@ -422,6 +414,7 @@
     @media (max-width: 760px) {
       .shell { width: min(100% - 18px, 1680px); padding-top: 10px; }
       .topbar, .section-head, .log-head { align-items: flex-start; flex-direction: column; }
+      .brand { width: 100%; }
       .toolbar, .filters { justify-content: flex-start; width: 100%; }
       .metrics { grid-template-columns: 1fr; }
       .detail-grid { grid-template-columns: 1fr; }
@@ -429,7 +422,7 @@
       h1 { font-size: 18px; }
       .metric { min-height: 104px; }
       .metric-value { font-size: 26px; }
-      table { min-width: 1020px; }
+      table { min-width: 1180px; }
     }
   </style>
 </head>
@@ -495,7 +488,7 @@
             <option value="incomplete">不完整</option>
             <option value="processing">处理中</option>
           </select>
-          <input id="request-filter" type="search" placeholder="筛选模型 / 请求 ID / 原因">
+          <input id="request-filter" type="search" placeholder="筛选用户 / Key / 模型 / 请求 ID / 原因">
           <span class="chip info"><span class="dot"></span><span id="request-cache">0 条</span></span>
         </div>
       </div>
@@ -504,6 +497,7 @@
           <thead>
             <tr>
               <th class="col-time">时间</th>
+              <th class="col-key">用户/Key</th>
               <th class="col-protect">保护结果</th>
               <th class="col-model">模型</th>
               <th class="col-round">轮次</th>
@@ -514,7 +508,7 @@
               <th class="col-action">详情</th>
             </tr>
           </thead>
-          <tbody id="requests-body"><tr><td colspan="9" class="empty">暂无请求</td></tr></tbody>
+          <tbody id="requests-body"><tr><td colspan="10" class="empty">暂无请求</td></tr></tbody>
         </table>
       </div>
     </section>
@@ -677,6 +671,7 @@
         model: req.model,
         protection: req.protection,
         status: req.status,
+        key: req.key_identity,
         truncation_round: req.first_truncation_round,
         truncation_tokens: req.first_truncation_reasoning_tokens,
         stopped: req.stopped_reason,
@@ -689,6 +684,16 @@
       if (req.stopped_reason) return DECISIONS[req.stopped_reason] || req.stopped_reason;
       if (req.passthrough_reason) return req.passthrough_reason;
       return "-";
+    }
+    function keyIdentityText(req) {
+      const key = req.key_identity || {};
+      return {
+        name: key.name || (key.known ? "已识别 Key" : "未识别 Key"),
+        preview: key.preview || key.id || "-",
+        enabled: key.enabled,
+        known: !!key.known,
+        source: key.source || "-",
+      };
     }
     function requestTrigger(req) {
       if (!req.first_truncation_round) return "-";
@@ -723,7 +728,7 @@
         .slice(0, 100);
       setText("request-cache", `${state.requests.size} 条`);
       if (!requests.length) {
-        tbody.innerHTML = '<tr><td colspan="9" class="empty">暂无匹配请求</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="10" class="empty">暂无匹配请求</td></tr>';
         return;
       }
       tbody.innerHTML = requests.map((req) => {
@@ -732,8 +737,10 @@
         const rounds = Array.isArray(req.rounds) ? req.rounds : [];
         const reason = requestReason(req);
         const result = req.status === "processing" ? "处理中" : req.final_status || req.status || "-";
+        const key = keyIdentityText(req);
         return `<tr class="data-row">
           <td><div>${esc(fmtTime(req.started_at))}</div><div class="muted mono">${esc(id)}</div></td>
+          <td><div>${esc(key.name)}</div><div class="muted mono">${esc(key.preview)}</div></td>
           <td>${chip(req.protection)}<div class="muted">${esc(PROTECTION[req.protection]?.[2] || "")}</div></td>
           <td class="mono">${esc(req.model || "-")}</td>
           <td>${esc(req.latest_round || rounds.length || 0)}</td>
@@ -744,10 +751,12 @@
           <td><button type="button" data-toggle-request="${esc(id)}">${open ? "收起" : "展开"}</button></td>
         </tr>
         <tr class="detail-row" ${open ? "" : "hidden"}>
-          <td colspan="9">
+          <td colspan="10">
             <div class="detail-grid">
               <div class="detail-list">
                 <span>请求 ID</span><strong class="mono">${esc(id)}</strong>
+                <span>用户/Key</span><strong>${esc(key.name)} / ${esc(key.preview)}</strong>
+                <span>身份来源</span><strong>${esc(key.source)}${key.enabled === false ? " / 已停用" : ""}</strong>
                 <span>路径</span><strong>${esc(req.path || "-")}</strong>
                 <span>耗时</span><strong>${esc(fmtMs(req.duration_ms))}</strong>
                 <span>结束时间</span><strong>${esc(fmtTime(req.ended_at))}</strong>

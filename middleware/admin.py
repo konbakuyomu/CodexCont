@@ -33,6 +33,7 @@ def _safe_config(cfg: Config, diagnostics_max_events: int) -> dict[str, Any]:
         "max_continue": cfg.cont.max_continue,
         "truncation_step": cfg.cont.truncation_step,
         "log_retention": diagnostics_max_events,
+        "key_identity_configured": bool(cfg.admin.key_policy_state_path),
     }
 
 

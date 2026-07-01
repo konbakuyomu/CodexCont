@@ -253,10 +253,22 @@ class Diagnostics:
         self._set_request_result_locked(summary)
         return _public_request_summary(summary)
 
-    def request_started(self, *, path: str, model: str | None = None) -> str:
+    def request_started(
+        self,
+        *,
+        path: str,
+        model: str | None = None,
+        key_identity: dict[str, Any] | None = None,
+    ) -> str:
         request_id = uuid.uuid4().hex[:12]
         now = utc_now_iso()
         perf = time.monotonic()
+        safe_identity = redact_value(key_identity or {
+            "known": False,
+            "source": "unset",
+            "name": "未识别 Key",
+            "preview": "",
+        })
         with self._lock:
             self._active_ids.add(request_id)
             self._counters["total_requests"] += 1
@@ -266,12 +278,14 @@ class Diagnostics:
                 "request_id": request_id,
                 "path": path,
                 "model": model,
+                "key_identity": safe_identity,
                 "started_at": now,
             }
             self._request_summaries[request_id] = {
                 "request_id": request_id,
                 "model": model,
                 "path": path,
+                "key_identity": safe_identity,
                 "started_at": now,
                 "updated_at": now,
                 "ended_at": None,
@@ -300,7 +314,7 @@ class Diagnostics:
             summary = self._request_copy_locked(request_id)
         self._publish_request(summary)
         self.record("info", "request_started", "Responses request received",
-                    request_id=request_id, path=path, model=model)
+                    request_id=request_id, path=path, model=model, key_identity=safe_identity)
         return request_id
 
     def request_update(self, request_id: str, **fields: Any) -> None:

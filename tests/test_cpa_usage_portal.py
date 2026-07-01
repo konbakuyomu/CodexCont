@@ -18,6 +18,7 @@ from cpa_usage_portal.budget import suggest_equal_budget
 from cpa_usage_portal.config import PortalConfig
 from cpa_usage_portal.cpamp import range_window
 from cpa_usage_portal.key_policy import KeyPolicyState
+from cpa_usage_portal.pricing import apply_event_pricing
 from cpa_usage_portal.quota_state import QuotaState
 from cpa_usage_portal.redaction import redact, safe_event
 from cpa_usage_portal.retention import enforce_usage_retention
@@ -107,7 +108,10 @@ class FakeCPAMP:
                         "total_tokens": 200,
                         "reasoning_tokens": 80,
                         "latency_ms": 1234,
+                        "ttft_ms": 321,
                         "cost": 0,
+                        "service_tier": "priority",
+                        "reasoning_effort": "high",
                     },
                     {
                         "event_hash": "evt-b",
@@ -292,6 +296,69 @@ def test_redaction_and_safe_event() -> None:
           safe_event({"api_key_hash": other}, expected_hash=expected) is None)
 
 
+def test_pricing_breakdown(tmp: Path) -> None:
+    write_state(tmp / "state.json", "cpa_live", "cpa_disabled")
+    record = KeyPolicyState.load(tmp / "state.json").enabled_keys()[0]
+    events = apply_event_pricing([
+        {
+            "model": "gpt-5.5",
+            "input_tokens": 100,
+            "cached_tokens": 20,
+            "output_tokens": 50,
+            "reasoning_tokens": 30,
+            "total_tokens": 150,
+            "service_tier": "priority",
+            "cost": 0,
+        }
+    ], record.model_prices)
+    event = events[0]
+    breakdown = event.get("cost_breakdown") or {}
+    costs = breakdown.get("costs") or {}
+    parts = sum(float(costs.get(name) or 0) for name in ("input", "cached_input", "cache_read", "cache_creation", "output"))
+    check("pricing breakdown emitted", breakdown.get("price_model") == "gpt-5.5", str(breakdown))
+    check("pricing breakdown total matches cost",
+          abs(float(event.get("cost") or 0) - float(costs.get("total") or 0)) < 1e-12,
+          str(event))
+    check("pricing breakdown parts sum to total",
+          abs(parts - float(costs.get("total") or 0)) < 1e-12,
+          str(costs))
+    check("pricing breakdown keeps reasoning metric",
+          (breakdown.get("tokens") or {}).get("reasoning") == 30
+          and (breakdown.get("tokens") or {}).get("visible_output_estimate") == 20,
+          str(breakdown.get("tokens")))
+    token_breakdown = breakdown.get("tokens") or {}
+    check("pricing treats cpamp cached tokens as cache hits",
+          token_breakdown.get("cpamp_cached_input") == 20
+          and token_breakdown.get("fine_grained_cache_read") == 0
+          and token_breakdown.get("effective_cache_read_for_hit_rate") == 20
+          and token_breakdown.get("cache_semantics") == "cpamp_compatible_cached_tokens",
+          str(token_breakdown))
+    check("pricing charges cached input even when fine-grained read is zero",
+          float(costs.get("cached_input") or 0) > 0 and float(costs.get("cache_read") or 0) == 0,
+          str(costs))
+
+    raw_events = apply_event_pricing([
+        {
+            "model": "gpt-5.5",
+            "input_tokens": 100,
+            "cached_tokens": 80,
+            "cache_tokens": 80,
+            "cache_read_tokens": 30,
+            "cache_creation_tokens": 10,
+            "output_tokens": 0,
+            "cost": 0,
+        }
+    ], record.model_prices)
+    raw_tokens = (raw_events[0].get("cost_breakdown") or {}).get("tokens") or {}
+    check("pricing normalizes raw cache bucket like CPAMP",
+          raw_tokens.get("cpamp_cached_input") == 40
+          and raw_tokens.get("fine_grained_cache_read") == 30
+          and raw_tokens.get("fine_grained_cache_creation") == 10
+          and raw_tokens.get("effective_cache_read_for_hit_rate") == 70
+          and raw_tokens.get("cache_semantics") == "raw_cache_tokens_normalized_to_cpamp",
+          str(raw_tokens))
+
+
 def test_retention(tmp: Path) -> None:
     db = tmp / "usage.sqlite"
     conn = sqlite3.connect(db)
@@ -348,6 +415,16 @@ def test_app_routes(tmp: Path) -> None:
         admin_html = client.get("/admin/", headers={"x-usage-admin": "1"})
         check("portal admin dashboard html ok", admin_html.status_code == 200 and "CPA 用量管理" in admin_html.text)
         check("portal admin supports usage-admin mount", "API_BASE" in admin_html.text and "/usage-admin" in admin_html.text)
+        check("portal admin has one save all action",
+              "保存全部" in admin_html.text and "data-save" not in admin_html.text,
+              admin_html.text[:200])
+        check("portal admin defaults all-key request view",
+              "全部 Key" in admin_html.text and "用户/Key" in admin_html.text,
+              admin_html.text[:200])
+        check("portal admin detail shows useful breakdown",
+              "Token 组成" in admin_html.text and "费用组成" in admin_html.text and "CPAMP 缓存命中" in admin_html.text,
+              admin_html.text[:200])
+        check("portal admin has no metric crescent", "metric::after" not in admin_html.text)
         check("portal dashboard refresh reconnects stream", "startStream({ force: true })" in html.text)
         check("portal dashboard revives after background", "visibilitychange" in html.text)
         check("portal dashboard shows refresh animation", "is-loading" in html.text and "stream warn" in html.text)
@@ -360,6 +437,10 @@ def test_app_routes(tmp: Path) -> None:
         check("portal dashboard supports 5h and month ranges",
               '<option value="5h">5 小时</option>' in html.text
               and '<option value="month">本月</option>' in html.text)
+        check("portal dashboard has no metric crescent", "metric::after" not in html.text)
+        check("portal dashboard explains cache semantics",
+              "CPAMP 缓存命中" in html.text and "细粒度 Cache Read" in html.text,
+              html.text[:200])
 
         admin_keys = client.get("/admin/api/keys", headers={"x-usage-admin": "1"})
         admin_body = admin_keys.json()
@@ -377,6 +458,24 @@ def test_app_routes(tmp: Path) -> None:
               and limits_update.json()["me"]["limits"]["five_hour_usd"] == 1.25
               and limits_update.json()["me"]["limits"]["monthly_usd"] == 20,
               limits_update.text)
+        batch_update = client.put(
+            "/admin/api/keys/limits",
+            headers={"x-usage-admin": "1"},
+            json={"limits": [{"id": "alice-key", "five_hour_usd": "2.5", "monthly_usd": "25"}]},
+        )
+        check("portal admin batch updates local limits",
+              batch_update.status_code == 200
+              and batch_update.json()["keys"][0]["limits"]["five_hour_usd"] == 2.5
+              and batch_update.json()["keys"][0]["limits"]["monthly_usd"] == 25,
+              batch_update.text)
+        batch_bad = client.put(
+            "/admin/api/keys/limits",
+            headers={"x-usage-admin": "1"},
+            json={"limits": [{"id": "alice-key", "five_hour_usd": "not-a-number", "monthly_usd": "25"}]},
+        )
+        check("portal admin batch rejects invalid limits",
+              batch_bad.status_code == 400 and "invalid_limit:alice-key" in batch_bad.text,
+              batch_bad.text)
         reset = client.post(
             "/admin/api/keys/alice-key/reset",
             headers={"x-usage-admin": "1"},
@@ -398,8 +497,8 @@ def test_app_routes(tmp: Path) -> None:
         me = client.get("/api/me")
         check("portal me ok", me.status_code == 200 and me.json()["me"]["name"] == "Alice", me.text)
         check("portal me exposes local limits and reset points",
-              me.json()["me"]["limits"]["five_hour_usd"] == 1.25
-              and me.json()["me"]["limits"]["monthly_usd"] == 20
+              me.json()["me"]["limits"]["five_hour_usd"] == 2.5
+              and me.json()["me"]["limits"]["monthly_usd"] == 25
               and me.json()["me"]["reset_points"]["5h"],
               me.text)
         usage = client.get("/api/usage?range=24h")
@@ -431,6 +530,24 @@ def test_app_routes(tmp: Path) -> None:
               "accounting" in body["events"][0]
               and "24h" in body["events"][0]["accounting"]["included_windows"],
               str(body))
+        check("portal events include pricing breakdown",
+              "cost_breakdown" in body["events"][0]
+              and body["events"][0]["cost_breakdown"]["costs"]["total"] == body["events"][0]["cost"],
+              str(body["events"][0]))
+        check("portal events expose cpamp cache hit semantics",
+              body["events"][0]["cost_breakdown"]["tokens"]["cpamp_cached_input"] == 20
+              and body["events"][0]["cost_breakdown"]["tokens"]["effective_cache_read_for_hit_rate"] == 20,
+              str(body["events"][0]["cost_breakdown"]["tokens"]))
+        admin_events = client.get("/admin/api/events?key_id=all&range=24h&limit=100", headers={"x-usage-admin": "1"})
+        admin_events_body = admin_events.json()
+        check("portal admin all-key events ok",
+              admin_events.status_code == 200
+              and admin_events_body.get("key_id") == "all"
+              and admin_events_body["events"][0]["key"]["name"] == "Alice",
+              str(admin_events_body))
+        check("portal admin all-key event hides full hashes",
+              cpamp_hash not in json.dumps(admin_events_body) and key_hash not in json.dumps(admin_events_body),
+              str(admin_events_body))
         month_usage = client.get("/api/usage?range=month")
         check("portal usage supports month range",
               month_usage.status_code == 200 and month_usage.json()["range"] == "month",
@@ -446,6 +563,8 @@ def main() -> None:
     with tempfile.TemporaryDirectory() as d:
         test_key_policy_and_budget(Path(d))
     test_redaction_and_safe_event()
+    with tempfile.TemporaryDirectory() as d:
+        test_pricing_breakdown(Path(d))
     with tempfile.TemporaryDirectory() as d:
         test_retention(Path(d))
     with tempfile.TemporaryDirectory() as d:

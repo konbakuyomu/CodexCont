@@ -37,6 +37,7 @@ from .codex import (
 from .config import Config
 from .creds import build_upstream_headers, would_inject_authorization
 from .diagnostics import Diagnostics
+from .key_identity import KeyIdentityResolver
 from .proxy import fold_stream, open_passthrough, open_round
 from .store import IdStore
 
@@ -145,7 +146,10 @@ async def handle_responses(request: Request) -> Response:
     cfg: Config = request.app.state.cfg
     client: httpx.AsyncClient = request.app.state.client
     diagnostics: Diagnostics = request.app.state.diagnostics
-    request_id = diagnostics.request_started(path=request.url.path)
+    key_identity = request.app.state.key_identity.identify_authorization(
+        request.headers.get("authorization")
+    )
+    request_id = diagnostics.request_started(path=request.url.path, key_identity=key_identity)
 
     wire_raw = await request.body()
     try:
@@ -299,6 +303,7 @@ def create_app(cfg: Config) -> Starlette:
     async def lifespan(app: Starlette):
         app.state.cfg = cfg
         app.state.diagnostics = Diagnostics(max_events=cfg.admin.max_log_events)
+        app.state.key_identity = KeyIdentityResolver(cfg.admin.key_policy_state_path)
         app.state.client = _make_client()
         app.state.id_store = IdStore()
         try:

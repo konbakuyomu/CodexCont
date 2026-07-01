@@ -87,6 +87,8 @@ The continuation owner must sit at executor level, where it can inspect raw upst
   - `rounds[]`, `latest_round`, `latest_reasoning_tokens`
   - `first_truncation_round`, `first_truncation_reasoning_tokens`, `first_truncation_n`, `first_truncation_decision`, `continuation_count`
   - `truncation_match`, `final_status`, `stopped_reason`, `failure_reason`, `failure_detail`
+  - optional safe `key_identity`: `known`, `name`, `id`, `preview`, `source`,
+    `enabled`
 - Protection values:
   - `protected_clean`, `auto_continued`, `risk_uncontinued`, `passthrough`, `failed`, `incomplete`, `processing`
 
@@ -94,6 +96,10 @@ The continuation owner must sit at executor level, where it can inspect raw upst
 - `Diagnostics` owns the request-summary projection. The frontend may format labels, but it must not re-derive protection status from raw log event names or ad hoc field parsing.
 - Admin data is memory-only. Do not add persistent log files, databases, Redis, or CPA Manager dependencies for dashboard v1/v2 behavior.
 - Request summaries and logs must not include request bodies, Authorization headers, API keys, OAuth tokens, encrypted reasoning content, or internal implementation-only fields such as `_started_perf`.
+- If CodexCont is configured with a Key Policy state path, request summaries
+  may include safe key identity. The resolver must hash a bearer credential
+  only long enough to match Key Policy state, then discard the raw key and
+  expose only safe name/preview/source fields.
 - `event: log` behavior is backward-compatible with the original dashboard stream. Adding request updates must use a separate `event: request` SSE event.
 - The beginner-facing dashboard must distinguish "entered CodexCont protection and no continuation was needed" from "516/518n-2 was detected and a hidden continuation round was opened".
 - When a continued request ends with a clean final round, `latest_reasoning_tokens` may be below 516. The dashboard must label it as latest-round reasoning and separately display the first 516/518n-2 trigger round from the request summary.
@@ -172,15 +178,19 @@ This spreads the event contract into JavaScript and makes the beginner-facing st
   - `GET /api/events/stream`
   - `GET /admin/`
   - `GET /admin/api/keys`
+  - `PUT /admin/api/keys/limits`
   - `PUT /admin/api/keys/{id}/limits`
   - `POST /admin/api/keys/{id}/reset`
-  - `GET /admin/api/events?key_id=...&range=5h|24h|7d|month`
+  - `GET /admin/api/events?key_id=all|...&range=5h|24h|7d|month`
 - Production user route: `https://cpa-usage.konbakuyomu.us/`
 - Production local quota admin route:
   `https://cpa-admin.konbakuyomu.us/usage-admin/`
 - Production admin route for CPAMP: `https://cpa-admin.konbakuyomu.us/`
 - Key Policy state path on SJC:
   `/opt/codex-stacks/cpa/plugin-state/cpa-key-policy-state.json`
+- Containers that read Key Policy state must use a mounted in-container path
+  such as `/data/plugin-state/cpa-key-policy-state.json`; host paths are not
+  valid from inside CodexCont or the usage portal unless explicitly mounted.
 
 ### 3. Contracts
 - CPA stays on the official image. Do not fork CPA to implement per-key usage
@@ -240,10 +250,29 @@ This spreads the event contract into JavaScript and makes the beginner-facing st
   `/api/events` should overlay costs using the current key's Key Policy price
   book. Do not interpret CPAMP zero cost as "free" when Key Policy prices are
   configured.
+- CPAMP Management API is the source of truth for usage token projection. Its
+  public `cached_tokens` field is already the compatibility cached-input bucket
+  used by the main CPA/CPAMP dashboard:
+  `max(max(cached_tokens, cache_tokens) - cache_read_tokens -
+  cache_creation_tokens, 0)`. The portal must treat that field as a real
+  OpenAI/Codex cache hit even when fine-grained `cache_read_tokens` and
+  `cache_creation_tokens` are both zero.
+- Keep CPAMP-compatible cached input separate from fine-grained cache
+  read/create fields in user-facing details. For OpenAI/Codex, a large
+  `cached_tokens` value with `cache_read_tokens = 0` is normal and must not be
+  displayed as "no cache read".
 - `/api/me` must expose safe daily/weekly USD limits and a safe pricing
   summary. It must also expose local 5H/month USD limits and reset points when
   the portal SQLite has them. The user dashboard must show 5H, daily, weekly,
   and monthly limits directly, not only as a selected-range hint.
+- `usage-admin` bulk limit saves must validate every submitted key id and
+  numeric 5H/month value before reporting success. The UI should expose one
+  global save action for local limits and keep per-key soft reset actions
+  separate, because reset changes the local watermark rather than the limit
+  configuration.
+- `usage-admin` all-key event mode (`key_id=all`) must merge enabled Key Policy
+  keys, attach only a safe key summary (`id`, `name`, `preview`, `enabled`),
+  sort newest first, and cap the merged result by the requested limit.
 - The usage portal's selected time range controls both `/api/usage` aggregates
   and the visible `/api/events` recent-request table. The page must also render
   the active range label, because 24h and 7d can legitimately return identical

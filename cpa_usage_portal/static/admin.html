@@ -84,6 +84,7 @@
       background: rgba(17, 24, 39, .9);
     }
     .brand { display: flex; align-items: center; gap: 12px; min-width: 0; }
+    .brand > div { min-width: 0; }
     .mark {
       width: 34px; height: 34px; display: grid; place-items: center;
       border-radius: 8px; background: linear-gradient(135deg, #2d86ef, #15c7d4); font-weight: 850;
@@ -132,8 +133,19 @@
       padding: 13px 10px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line);
       background: #161e2d; vertical-align: middle; overflow: hidden; text-overflow: ellipsis;
     }
-    tbody tr td:first-child { border-left: 1px solid var(--line); border-radius: 8px 0 0 8px; }
-    tbody tr td:last-child { border-right: 1px solid var(--line); border-radius: 0 8px 8px 0; }
+    tbody tr.data-row td:first-child,
+    tbody tr.model-row td:first-child,
+    tbody tr:not(.detail-row) td:first-child { border-left: 1px solid var(--line); border-radius: 8px 0 0 8px; }
+    tbody tr.data-row td:last-child,
+    tbody tr.model-row td:last-child,
+    tbody tr:not(.detail-row) td:last-child { border-right: 1px solid var(--line); border-radius: 0 8px 8px 0; }
+    tbody tr.detail-row td {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #111827;
+      overflow: visible;
+      text-overflow: clip;
+    }
     .mono { font-family: var(--mono); font-size: 12px; }
     .cell-stack { display: grid; gap: 5px; min-width: 0; }
     .quota { display: grid; gap: 4px; }
@@ -141,6 +153,14 @@
     .bar span { display: block; height: 100%; width: 0%; background: linear-gradient(90deg, var(--teal), var(--blue)); }
     .bar.danger span { background: linear-gradient(90deg, var(--amber), var(--red)); }
     .actions { display: flex; gap: 6px; flex-wrap: wrap; }
+    .detail-grid { display: grid; grid-template-columns: repeat(4, minmax(220px, 1fr)); gap: 12px; }
+    .detail-card { border: 1px solid var(--line); border-radius: 8px; background: #0d1422; padding: 12px; }
+    .detail-card h3 { margin: 0 0 10px; font-size: 13px; }
+    .detail-list { display: grid; grid-template-columns: 112px minmax(0, 1fr); gap: 7px 10px; line-height: 1.45; }
+    .detail-list span:nth-child(odd) { color: var(--muted); }
+    .detail-note { margin-top: 10px; color: var(--muted); font-size: 12px; line-height: 1.5; }
+    .failure-box { max-height: 160px; overflow: auto; white-space: pre-wrap; word-break: break-word; }
+    .dirty-row td { border-color: rgba(240, 170, 43, .48); }
     .empty { padding: 28px; color: var(--muted); text-align: center; background: transparent !important; border: 0 !important; }
     @keyframes spin { to { transform: rotate(360deg); } }
     @keyframes statusBlink { 0%, 100% { transform: scale(1); opacity: .72; } 50% { transform: scale(1.35); opacity: 1; } }
@@ -149,9 +169,11 @@
     @media (max-width: 720px) {
       .shell { width: min(100% - 18px, 1560px); padding-top: 10px; }
       .topbar, .section-head { align-items: flex-start; flex-direction: column; }
+      .brand { width: 100%; }
       .toolbar { justify-content: flex-start; width: 100%; }
       .metrics { grid-template-columns: 1fr; }
-      table { min-width: 1040px; }
+      .detail-grid { grid-template-columns: 1fr; }
+      table { min-width: 1180px; }
     }
   </style>
 </head>
@@ -206,6 +228,10 @@
           <h2>Key 限额与窗口用量</h2>
           <p class="muted">日限/周限来自 Key Policy；5H/月限和清零点保存在自有 SQLite。</p>
         </div>
+        <div class="toolbar">
+          <span id="saveChip" class="chip info"><span class="dot"></span><span>无改动</span></span>
+          <button id="saveAllBtn" class="primary" type="button" disabled>保存全部</button>
+        </div>
       </div>
       <div class="table-wrap">
         <table>
@@ -218,7 +244,7 @@
               <th style="width:170px;">周</th>
               <th style="width:170px;">月</th>
               <th style="width:220px;">本地限额</th>
-              <th style="width:230px;">操作</th>
+              <th style="width:180px;">操作</th>
             </tr>
           </thead>
           <tbody id="keyRows"><tr><td colspan="8" class="empty">正在读取...</td></tr></tbody>
@@ -230,7 +256,7 @@
       <div class="section-head">
         <div>
           <h2>最近请求</h2>
-          <p id="eventsHint" class="muted">选择一条 Key 后查看安全摘要。</p>
+          <p id="eventsHint" class="muted">默认显示全部 Key，可按单个用户/Key 排障。</p>
         </div>
         <select id="keySelect"></select>
       </div>
@@ -239,16 +265,17 @@
           <thead>
             <tr>
               <th style="width:170px;">时间</th>
+              <th style="width:170px;">用户/Key</th>
               <th style="width:100px;">状态</th>
               <th style="width:150px;">模型</th>
               <th style="width:110px;">延迟</th>
               <th style="width:130px;">Tokens</th>
               <th style="width:110px;">Reasoning</th>
               <th style="width:100px;">费用</th>
-              <th>计入窗口</th>
+              <th style="width:110px;">详情</th>
             </tr>
           </thead>
-          <tbody id="eventRows"><tr><td colspan="8" class="empty">暂无请求记录</td></tr></tbody>
+          <tbody id="eventRows"><tr><td colspan="9" class="empty">暂无请求记录</td></tr></tbody>
         </table>
       </div>
     </section>
@@ -256,7 +283,7 @@
 
   <script>
     const $ = (id) => document.getElementById(id);
-    const state = { keys: [], selectedKey: "" };
+    const state = { keys: [], selectedKey: "all", savedLimits: new Map(), dirty: false, expanded: new Set() };
     const labels = { "5h": "5 小时", "24h": "24 小时", "7d": "7 天", month: "本月" };
     const API_BASE = location.pathname.startsWith("/usage-admin") ? "/usage-admin" : "/admin";
 
@@ -267,12 +294,27 @@
     }
     function num(value) { return Number(value || 0).toLocaleString("zh-CN"); }
     function money(value) { return "$" + Number(value || 0).toFixed(4); }
+    function pct(value) {
+      if (value === null || value === undefined || value === "") return "-";
+      return (Number(value || 0) * 100).toFixed(1) + "%";
+    }
     function limitText(value) {
       if (value === null || value === undefined || value === "") return "未设置";
       const n = Number(value);
       if (!Number.isFinite(n)) return "未设置";
       if (n === 0) return "不限";
       return money(n);
+    }
+    function normalizeLimit(value) {
+      if (value === null || value === undefined || value === "") return "";
+      const text = String(value).trim();
+      if (!text) return "";
+      const n = Number(value);
+      return Number.isFinite(n) ? String(n) : text;
+    }
+    function limitPayload(value) {
+      const text = String(value ?? "").trim();
+      return text === "" ? null : text;
     }
     function time(ms) {
       if (!ms) return "-";
@@ -287,6 +329,11 @@
     function setStatus(kind, text) {
       $("statusChip").className = `chip stream ${kind}`;
       $("statusChip").innerHTML = `<span class="dot"></span><span>${escapeHtml(text)}</span>`;
+    }
+    function setSaveState(kind, text, dirty = state.dirty) {
+      $("saveChip").className = `chip ${kind}`;
+      $("saveChip").innerHTML = `<span class="dot"></span><span>${escapeHtml(text)}</span>`;
+      $("saveAllBtn").disabled = !dirty || kind === "warn" && text === "保存中";
     }
     async function api(path, options = {}) {
       const method = String(options.method || "GET").toUpperCase();
@@ -319,6 +366,13 @@
     }
     function renderKeys(keys) {
       state.keys = keys || [];
+      state.savedLimits = new Map(state.keys.map(key => [
+        key.id,
+        {
+          five_hour_usd: normalizeLimit(key.limits?.five_hour_usd),
+          monthly_usd: normalizeLimit(key.limits?.monthly_usd),
+        },
+      ]));
       const range = $("rangeSelect").value;
       const enabled = state.keys.filter(k => k.enabled).length;
       const total = state.keys.reduce((sum, key) => sum + Number(key.usage_windows?.[range]?.used_usd || 0), 0);
@@ -330,9 +384,10 @@
       $("riskCount").textContent = num(risk);
       $("riskCount").className = `metric-value ${risk ? "warn" : "ok"}`;
 
-      $("keySelect").innerHTML = state.keys.map(key => `<option value="${escapeHtml(key.id)}">${escapeHtml(key.name || key.id)}</option>`).join("");
-      if (!state.selectedKey && state.keys[0]) state.selectedKey = state.keys[0].id;
-      if (state.selectedKey) $("keySelect").value = state.selectedKey;
+      $("keySelect").innerHTML = `<option value="all">全部 Key</option>` + state.keys.map(key => `<option value="${escapeHtml(key.id)}">${escapeHtml(key.name || key.id)}</option>`).join("");
+      if (!state.selectedKey) state.selectedKey = "all";
+      if (state.selectedKey !== "all" && !state.keys.some(key => key.id === state.selectedKey)) state.selectedKey = "all";
+      $("keySelect").value = state.selectedKey;
 
       $("keyRows").innerHTML = state.keys.map(key => {
         const limits = key.limits || {};
@@ -345,39 +400,157 @@
           <td>${quotaCell(key.usage_windows?.month)}</td>
           <td>
             <div class="cell-stack">
-              <label>5H <input data-limit="5h" data-key="${escapeHtml(key.id)}" value="${limits.five_hour_usd ?? ""}" placeholder="未设置"></label>
-              <label>月 <input data-limit="month" data-key="${escapeHtml(key.id)}" value="${limits.monthly_usd ?? ""}" placeholder="未设置"></label>
+              <label>5H <input data-limit="5h" data-key="${escapeHtml(key.id)}" value="${normalizeLimit(limits.five_hour_usd)}" placeholder="未设置"></label>
+              <label>月 <input data-limit="month" data-key="${escapeHtml(key.id)}" value="${normalizeLimit(limits.monthly_usd)}" placeholder="未设置"></label>
             </div>
           </td>
           <td>
             <div class="actions">
-              <button class="primary" data-save="${escapeHtml(key.id)}">保存</button>
               <button class="danger" data-reset="${escapeHtml(key.id)}" data-window="${escapeHtml(range)}">清零当前</button>
               <button class="danger" data-reset="${escapeHtml(key.id)}" data-window="all">清零全部</button>
             </div>
           </td>
         </tr>`;
       }).join("") || '<tr><td colspan="8" class="empty">暂无 Key</td></tr>';
-      $("keyRows").querySelectorAll("[data-save]").forEach(button => {
-        button.onclick = () => saveLimits(button.getAttribute("data-save"));
+      $("keyRows").querySelectorAll("input[data-key]").forEach(input => {
+        input.oninput = updateDirtyState;
       });
       $("keyRows").querySelectorAll("[data-reset]").forEach(button => {
         button.onclick = () => resetUsage(button.getAttribute("data-reset"), button.getAttribute("data-window"));
       });
+      updateDirtyState();
+    }
+    function collectLimitPayload() {
+      return state.keys.map(key => ({
+        id: key.id,
+        five_hour_usd: limitPayload(document.querySelector(`input[data-key="${CSS.escape(key.id)}"][data-limit="5h"]`)?.value),
+        monthly_usd: limitPayload(document.querySelector(`input[data-key="${CSS.escape(key.id)}"][data-limit="month"]`)?.value),
+      }));
+    }
+    function updateDirtyState() {
+      let dirty = false;
+      state.keys.forEach(key => {
+        const saved = state.savedLimits.get(key.id) || {};
+        const five = normalizeLimit(document.querySelector(`input[data-key="${CSS.escape(key.id)}"][data-limit="5h"]`)?.value);
+        const month = normalizeLimit(document.querySelector(`input[data-key="${CSS.escape(key.id)}"][data-limit="month"]`)?.value);
+        const row = document.querySelector(`input[data-key="${CSS.escape(key.id)}"]`)?.closest("tr");
+        const rowDirty = five !== (saved.five_hour_usd || "") || month !== (saved.monthly_usd || "");
+        if (row) row.classList.toggle("dirty-row", rowDirty);
+        dirty = dirty || rowDirty;
+      });
+      state.dirty = dirty;
+      setSaveState(dirty ? "warn" : "info", dirty ? "有未保存改动" : "无改动", dirty);
+    }
+    function detailList(items) {
+      return `<div class="detail-list">${items.map(([k, v]) => `<span>${escapeHtml(k)}</span><strong>${escapeHtml(v)}</strong>`).join("")}</div>`;
+    }
+    function cacheSemanticsNote(tokens) {
+      const semantics = tokens.cache_semantics || "cpamp_compatible_cached_tokens";
+      if (semantics === "raw_cache_tokens_normalized_to_cpamp") {
+        return "已按 CPAMP 公式把原始缓存桶归一化：兼容缓存 = max(cached_tokens, cache_tokens) - 细粒度读取 - 细粒度创建。";
+      }
+      return "OpenAI/Codex 的缓存命中主要记录在 CPAMP 兼容缓存中；细粒度 Cache Read / Write 为 0 仍可能是正常命中。";
+    }
+    function eventDetail(ev, id) {
+      const accounting = ev.accounting || {};
+      const quota = ev.quota || {};
+      const breakdown = ev.cost_breakdown || {};
+      const tokens = breakdown.tokens || {};
+      const costs = breakdown.costs || {};
+      const prices = breakdown.prices || {};
+      const included = (accounting.included_windows || []).map(x => labels[x] || x).join(" / ") || "-";
+      const failure = ev.failure || ev.failure_brief || "无失败详情";
+      return `<tr class="detail-row" ${state.expanded.has(id) ? "" : "hidden"}>
+        <td colspan="9">
+          <div class="detail-grid">
+            <div class="detail-card">
+              <h3>请求信息</h3>
+              ${detailList([
+                ["请求 ID", ev.request_id || "-"],
+                ["接口", ev.endpoint || "-"],
+                ["状态码", ev.status_code || "-"],
+                ["请求模型", ev.requested_model || "-"],
+                ["实际模型", ev.model || "-"],
+                ["Service Tier", ev.service_tier || "-"],
+                ["Reasoning Effort", ev.reasoning_effort || "-"],
+              ])}
+            </div>
+            <div class="detail-card">
+              <h3>Token 组成</h3>
+              ${detailList([
+                ["输入", num(tokens.input ?? ev.input_tokens)],
+                ["未缓存输入", num(tokens.billable_uncached_input ?? Math.max(Number(ev.input_tokens || 0) - Number(ev.cached_tokens || 0), 0))],
+                ["CPAMP 缓存命中", num(tokens.cpamp_cached_input ?? tokens.cached_input ?? ev.cached_tokens)],
+                ["细粒度 Cache Read", num(tokens.fine_grained_cache_read ?? tokens.cache_read ?? ev.cache_read_tokens)],
+                ["细粒度 Cache Write", num(tokens.fine_grained_cache_creation ?? tokens.cache_creation ?? ev.cache_creation_tokens)],
+                ["命中率估算", pct(tokens.cache_hit_rate)],
+                ["缓存活动合计", num(tokens.total_cache_activity ?? (Number(ev.cached_tokens || 0) + Number(ev.cache_read_tokens || 0) + Number(ev.cache_creation_tokens || 0)))],
+                ["输出", num(tokens.output ?? ev.output_tokens)],
+                ["思考量", num(tokens.reasoning ?? ev.reasoning_tokens)],
+                ["可见输出估算", num(tokens.visible_output_estimate ?? Math.max(Number(ev.output_tokens || 0) - Number(ev.reasoning_tokens || 0), 0))],
+                ["总量", num(tokens.total ?? ev.total_tokens)],
+              ])}
+              <p class="detail-note">${escapeHtml(cacheSemanticsNote(tokens))}</p>
+            </div>
+            <div class="detail-card">
+              <h3>费用组成</h3>
+              ${detailList([
+                ["价格模型", breakdown.price_model || ev.price_model || "-"],
+                ["来源", breakdown.source || ev.cost_source || "-"],
+                ["单位", breakdown.unit || "usd_per_1m_tokens"],
+                ["输入单价", prices.input_per_million == null ? "-" : `$${prices.input_per_million}/M`],
+                ["缓存读单价", prices.cache_read_per_million == null ? "-" : `$${prices.cache_read_per_million}/M`],
+                ["输出单价", prices.output_per_million == null ? "-" : `$${prices.output_per_million}/M`],
+                ["Tier 倍率", breakdown.service_tier_multiplier || 1],
+                ["输入费用", money(costs.input)],
+                ["缓存费用", money(costs.cache_total ?? (Number(costs.cached_input || 0) + Number(costs.cache_read || 0) + Number(costs.cache_creation || 0)))],
+                ["输出费用", money(costs.output)],
+                ["总费用", money(costs.total ?? ev.cost)],
+              ])}
+            </div>
+            <div class="detail-card">
+              <h3>限额与失败</h3>
+              ${detailList([
+                ["计入窗口", included],
+                ["当前窗口", labels[accounting.selected_range] || accounting.selected_range || "-"],
+                ["窗口限额", limitText(accounting.current_window_limit_usd)],
+                ["窗口剩余", limitText(accounting.current_window_remaining_usd)],
+                ["统计起点", time(accounting.reset_at_ms || accounting.window_from_ms)],
+                ["Provider Quota", quota.used_percent == null ? "-" : `${quota.used_percent}%`],
+              ])}
+              <div class="failure-box mono" style="margin-top:10px;">${escapeHtml(failure)}</div>
+            </div>
+          </div>
+        </td>
+      </tr>`;
     }
     function renderEvents(events, meta) {
-      $("eventsHint").textContent = `${labels[meta.range] || meta.range} · ${time(meta.from_ms)} 至 ${time(meta.to_ms)} · 估算剩余 ${limitText(meta.quota?.remaining_usd)}`;
-      $("eventRows").innerHTML = (events || []).map(ev => `
-        <tr>
+      const keyText = state.selectedKey === "all" ? "全部 Key" : ($("keySelect").selectedOptions[0]?.textContent || state.selectedKey);
+      const remaining = meta.quota ? ` · 估算剩余 ${limitText(meta.quota?.remaining_usd)}` : "";
+      $("eventsHint").textContent = `${keyText} · ${labels[meta.range] || meta.range} · ${time(meta.from_ms)} 至 ${time(meta.to_ms)}${remaining}`;
+      $("eventRows").innerHTML = (events || []).map((ev, index) => {
+        const id = ev.event_hash || ev.request_id || String(index);
+        const key = ev.key || {};
+        return `<tr class="data-row">
           <td><div>${escapeHtml(time(ev.timestamp_ms))}</div><div class="muted mono">${escapeHtml(ev.request_id || "")}</div></td>
+          <td><div class="cell-stack"><strong>${escapeHtml(key.name || "未识别 Key")}</strong><span class="muted mono">${escapeHtml(key.preview || key.id || ev.api_key_preview || "-")}</span></div></td>
           <td><span class="chip ${ev.failed ? "bad" : "ok"}"><span class="dot"></span><span>${ev.failed ? "失败" : "成功"}</span></span></td>
           <td><div class="mono">${escapeHtml(ev.model || "-")}</div><div class="muted">${escapeHtml(ev.reasoning_effort || "")}</div></td>
           <td><strong>${escapeHtml(duration(ev.latency_ms))}</strong><div class="muted">TTFT ${escapeHtml(duration(ev.ttft_ms))}</div></td>
           <td><strong>${num(ev.total_tokens)}</strong><div class="muted">I ${num(ev.input_tokens)} / O ${num(ev.output_tokens)}</div></td>
           <td><strong class="info">${num(ev.reasoning_tokens)}</strong></td>
           <td>${money(ev.cost)}</td>
-          <td>${escapeHtml((ev.accounting?.included_windows || []).map(x => labels[x] || x).join(" / ") || "-")}<div class="muted">${ev.accounting?.reset_at_ms ? "清零点 " + time(ev.accounting.reset_at_ms) : "未清零"}</div></td>
-        </tr>`).join("") || '<tr><td colspan="8" class="empty">暂无请求记录</td></tr>';
+          <td><button class="secondary" type="button" data-toggle="${escapeHtml(id)}">${state.expanded.has(id) ? "收起" : "展开"}</button></td>
+        </tr>${eventDetail(ev, id)}`;
+      }).join("") || '<tr><td colspan="9" class="empty">暂无请求记录</td></tr>';
+      $("eventRows").querySelectorAll("[data-toggle]").forEach(button => {
+        button.onclick = () => {
+          const id = button.getAttribute("data-toggle");
+          if (state.expanded.has(id)) state.expanded.delete(id);
+          else state.expanded.add(id);
+          renderEvents(events, meta);
+        };
+      });
     }
     async function refresh() {
       $("refreshBtn").classList.add("is-loading");
@@ -385,16 +558,32 @@
       try {
         const keys = await api(`${API_BASE}/api/keys`);
         renderKeys(keys.keys || []);
-        if (state.selectedKey) {
-          const range = $("rangeSelect").value;
-          const events = await api(`${API_BASE}/api/events?key_id=${encodeURIComponent(state.selectedKey)}&range=${encodeURIComponent(range)}&limit=100`);
-          renderEvents(events.events || [], events);
-        }
+        const range = $("rangeSelect").value;
+        const keyId = state.selectedKey || "all";
+        const events = await api(`${API_BASE}/api/events?key_id=${encodeURIComponent(keyId)}&range=${encodeURIComponent(range)}&limit=100`);
+        renderEvents(events.events || [], events);
         setStatus("ok", "已刷新");
       } catch (err) {
         setStatus("bad", err.message || "刷新失败");
       } finally {
         $("refreshBtn").classList.remove("is-loading");
+      }
+    }
+    async function saveAllLimits() {
+      if (!state.dirty) return;
+      setSaveState("warn", "保存中", true);
+      $("saveAllBtn").classList.add("is-loading");
+      try {
+        await api(`${API_BASE}/api/keys/limits`, {
+          method: "PUT",
+          body: JSON.stringify({ limits: collectLimitPayload() }),
+        });
+        setSaveState("ok", "已保存", false);
+        await refresh();
+      } catch (err) {
+        setSaveState("bad", err.message || "保存失败", true);
+      } finally {
+        $("saveAllBtn").classList.remove("is-loading");
       }
     }
     async function saveLimits(keyId) {
@@ -416,6 +605,7 @@
       await refresh();
     }
     $("refreshBtn").onclick = refresh;
+    $("saveAllBtn").onclick = saveAllLimits;
     $("rangeSelect").onchange = refresh;
     $("keySelect").onchange = () => {
       state.selectedKey = $("keySelect").value;

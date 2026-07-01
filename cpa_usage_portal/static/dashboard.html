@@ -119,6 +119,7 @@
       min-width: 0;
       gap: 12px;
     }
+    .brand > div { min-width: 0; }
     .mark {
       width: 34px;
       height: 34px;
@@ -236,17 +237,6 @@
       border: 1px solid var(--line);
       border-radius: 8px;
       background: linear-gradient(180deg, rgba(26, 36, 52, .96), rgba(21, 29, 44, .96));
-    }
-    .metric::after {
-      content: "";
-      position: absolute;
-      right: 12px;
-      bottom: 10px;
-      width: 74px;
-      height: 38px;
-      border-bottom: 2px solid rgba(59, 150, 255, .18);
-      border-radius: 50%;
-      transform: rotate(-8deg);
     }
     .metric-label {
       display: flex;
@@ -369,9 +359,16 @@
     .accent { color: var(--blue); }
     .detail-grid {
       display: grid;
-      grid-template-columns: minmax(260px, .9fr) minmax(320px, 1.4fr);
-      gap: 16px;
+      grid-template-columns: repeat(4, minmax(220px, 1fr));
+      gap: 12px;
     }
+    .detail-card {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #0d1422;
+      padding: 12px;
+    }
+    .detail-card h3 { margin: 0 0 10px; font-size: 13px; }
     .detail-list {
       display: grid;
       grid-template-columns: 118px minmax(0, 1fr);
@@ -379,6 +376,7 @@
       line-height: 1.45;
     }
     .detail-list span:nth-child(odd) { color: var(--muted); }
+    .detail-note { margin-top: 10px; color: var(--muted); font-size: 12px; line-height: 1.5; }
     .failure-box {
       max-height: 180px;
       overflow: auto;
@@ -426,6 +424,7 @@
     @media (max-width: 760px) {
       .shell { width: min(100% - 18px, 1560px); padding-top: 10px; }
       .topbar, .section-head, .login-head { align-items: flex-start; flex-direction: column; }
+      .brand { width: 100%; }
       .toolbar { justify-content: flex-start; width: 100%; }
       .login { margin-top: 28px; padding: 16px; }
       .login-grid { grid-template-columns: 1fr; }
@@ -656,6 +655,16 @@
       }
       return '<span class="chip bad"><span class="dot"></span><span>失败</span></span>';
     }
+    function detailList(items) {
+      return `<div class="detail-list">${items.map(([k, v]) => `<span>${escapeHtml(k)}</span><strong>${escapeHtml(v)}</strong>`).join("")}</div>`;
+    }
+    function cacheSemanticsNote(tokens) {
+      const semantics = tokens.cache_semantics || "cpamp_compatible_cached_tokens";
+      if (semantics === "raw_cache_tokens_normalized_to_cpamp") {
+        return "已按 CPAMP 公式把原始缓存桶归一化：兼容缓存 = max(cached_tokens, cache_tokens) - 细粒度读取 - 细粒度创建。";
+      }
+      return "OpenAI/Codex 的缓存命中主要记录在 CPAMP 兼容缓存中；细粒度 Cache Read / Write 为 0 仍可能是正常命中。";
+    }
     function renderMe(me) {
       state.me = me;
       const daily = me.limits?.daily_usd;
@@ -692,7 +701,7 @@
         $("limitHint").textContent = unpriced || (s.cost_source === "key_policy" ? "按 Key Policy 单价估算" : "未设置 USD 限额");
       }
       $("tokens").textContent = num(s.total_tokens);
-      $("cachedTokens").textContent = `缓存 ${num(s.cached_tokens || s.cache_read_tokens)}`;
+      $("cachedTokens").textContent = `缓存命中 ${num(Number(s.cached_tokens || 0) + Number(s.cache_read_tokens || 0))}`;
       $("reasoning").textContent = num(s.reasoning_tokens);
       $("outputTokens").textContent = `输出 ${num(s.output_tokens)}`;
 
@@ -708,25 +717,71 @@
     function detailRow(event, id) {
       const quota = event.quota || {};
       const accounting = event.accounting || {};
+      const breakdown = event.cost_breakdown || {};
+      const tokens = breakdown.tokens || {};
+      const costs = breakdown.costs || {};
+      const prices = breakdown.prices || {};
       const included = Array.isArray(accounting.included_windows) ? accounting.included_windows.map(rangeLabel).join(" / ") : "-";
       const failure = event.failure || event.failure_brief || "无失败详情";
       return `<tr class="detail-row" ${state.expanded.has(id) ? "" : "hidden"}>
         <td colspan="8">
           <div class="detail-grid">
-            <div class="detail-list">
-              <span>请求 ID</span><strong class="mono">${escapeHtml(event.request_id || "-")}</strong>
-              <span>接口</span><strong>${escapeHtml(event.endpoint || "-")}</strong>
-              <span>状态码</span><strong>${escapeHtml(event.status_code || "-")}</strong>
-              <span>Service Tier</span><strong>${escapeHtml(event.service_tier || "-")}</strong>
-              <span>Reasoning Effort</span><strong>${escapeHtml(event.reasoning_effort || "-")}</strong>
-              <span>Provider Quota</span><strong>${escapeHtml(quota.used_percent == null ? "-" : quota.used_percent + "%")}</strong>
-              <span>计入窗口</span><strong>${escapeHtml(included)}</strong>
-              <span>当前窗口剩余</span><strong>${escapeHtml(limitMoney(accounting.current_window_remaining_usd))}</strong>
-              <span>统计起点</span><strong>${escapeHtml(time(accounting.reset_at_ms || accounting.window_from_ms))}</strong>
+            <div class="detail-card">
+              <h3>请求信息</h3>
+              ${detailList([
+                ["请求 ID", event.request_id || "-"],
+                ["接口", event.endpoint || "-"],
+                ["状态码", event.status_code || "-"],
+                ["请求模型", event.requested_model || "-"],
+                ["实际模型", event.model || "-"],
+                ["Service Tier", event.service_tier || "-"],
+                ["Reasoning Effort", event.reasoning_effort || "-"],
+              ])}
             </div>
-            <div>
-              <div class="muted" style="margin-bottom:8px;">脱敏失败详情</div>
-              <div class="failure-box mono">${escapeHtml(failure)}</div>
+            <div class="detail-card">
+              <h3>Token 组成</h3>
+              ${detailList([
+                ["输入", num(tokens.input ?? event.input_tokens)],
+                ["未缓存输入", num(tokens.billable_uncached_input ?? Math.max(Number(event.input_tokens || 0) - Number(event.cached_tokens || 0), 0))],
+                ["CPAMP 缓存命中", num(tokens.cpamp_cached_input ?? tokens.cached_input ?? event.cached_tokens)],
+                ["细粒度 Cache Read", num(tokens.fine_grained_cache_read ?? tokens.cache_read ?? event.cache_read_tokens)],
+                ["细粒度 Cache Write", num(tokens.fine_grained_cache_creation ?? tokens.cache_creation ?? event.cache_creation_tokens)],
+                ["命中率估算", pct(tokens.cache_hit_rate)],
+                ["缓存活动合计", num(tokens.total_cache_activity ?? (Number(event.cached_tokens || 0) + Number(event.cache_read_tokens || 0) + Number(event.cache_creation_tokens || 0)))],
+                ["输出", num(tokens.output ?? event.output_tokens)],
+                ["思考量", num(tokens.reasoning ?? event.reasoning_tokens)],
+                ["可见输出估算", num(tokens.visible_output_estimate ?? Math.max(Number(event.output_tokens || 0) - Number(event.reasoning_tokens || 0), 0))],
+                ["总量", num(tokens.total ?? event.total_tokens)],
+              ])}
+              <p class="detail-note">${escapeHtml(cacheSemanticsNote(tokens))}</p>
+            </div>
+            <div class="detail-card">
+              <h3>费用组成</h3>
+              ${detailList([
+                ["价格模型", breakdown.price_model || event.price_model || "-"],
+                ["来源", breakdown.source || event.cost_source || "-"],
+                ["单位", breakdown.unit || "usd_per_1m_tokens"],
+                ["输入单价", prices.input_per_million == null ? "-" : `$${prices.input_per_million}/M`],
+                ["缓存读单价", prices.cache_read_per_million == null ? "-" : `$${prices.cache_read_per_million}/M`],
+                ["输出单价", prices.output_per_million == null ? "-" : `$${prices.output_per_million}/M`],
+                ["Tier 倍率", breakdown.service_tier_multiplier || 1],
+                ["输入费用", money(costs.input)],
+                ["缓存费用", money(costs.cache_total ?? (Number(costs.cached_input || 0) + Number(costs.cache_read || 0) + Number(costs.cache_creation || 0)))],
+                ["输出费用", money(costs.output)],
+                ["总费用", money(costs.total ?? event.cost)],
+              ])}
+            </div>
+            <div class="detail-card">
+              <h3>限额与失败</h3>
+              ${detailList([
+                ["计入窗口", included],
+                ["当前窗口", rangeLabel(accounting.selected_range)],
+                ["窗口限额", limitMoney(accounting.current_window_limit_usd)],
+                ["窗口剩余", limitMoney(accounting.current_window_remaining_usd)],
+                ["统计起点", time(accounting.reset_at_ms || accounting.window_from_ms)],
+                ["Provider Quota", quota.used_percent == null ? "-" : quota.used_percent + "%"],
+              ])}
+              <div class="failure-box mono" style="margin-top:10px;">${escapeHtml(failure)}</div>
             </div>
           </div>
         </td>

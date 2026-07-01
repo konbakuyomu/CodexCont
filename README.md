@@ -120,7 +120,12 @@ It exposes service status, upstream health, in-memory request metrics, recent re
 ```toml
 [admin]
 max_log_events = 800
+key_policy_state_path = "" # optional; set to the CPA Key Policy state JSON to show safe key names
 ```
+
+When running in Docker, this must be a path visible inside the CodexCont
+container. For example, mount the CPA plugin state read-only and set
+`key_policy_state_path = "/data/plugin-state/cpa-key-policy-state.json"`.
 
 Do not expose `/admin/` on a public API hostname unless it is protected by an external access layer such as Cloudflare Access.
 

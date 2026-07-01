@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import math
 from pathlib import Path
 from typing import Any
 
@@ -14,7 +15,7 @@ from starlette.responses import HTMLResponse, JSONResponse, Response, StreamingR
 from starlette.routing import Route
 
 from .config import PortalConfig
-from .cpamp import CPAMPClient, SUPPORTED_RANGES
+from .cpamp import CPAMPClient, SUPPORTED_RANGES, range_window
 from .key_policy import KeyPolicyState, KeyRecord
 from .pricing import apply_event_pricing, apply_key_policy_pricing
 from .quota_state import QuotaState, RESET_WINDOWS
@@ -75,6 +76,16 @@ def _safe_record(record: KeyRecord, quota: QuotaState) -> dict[str, Any]:
     return safe
 
 
+def _safe_key_summary(record: KeyRecord) -> dict[str, Any]:
+    safe = record.safe_dict()
+    return {
+        "id": safe.get("id") or _record_id(record),
+        "name": safe.get("name") or "",
+        "preview": safe.get("preview") or "",
+        "enabled": bool(safe.get("enabled")),
+    }
+
+
 def _find_record(state: KeyPolicyState, key_id: str) -> KeyRecord | None:
     for record in state.keys:
         if _record_id(record) == key_id:
@@ -112,7 +123,7 @@ def _parse_float_limit(value: Any) -> float | None:
         parsed = float(value)
     except (TypeError, ValueError):
         raise ValueError("invalid_limit")
-    if parsed < 0:
+    if parsed < 0 or not math.isfinite(parsed):
         raise ValueError("invalid_limit")
     return parsed
 
@@ -221,6 +232,57 @@ def _attach_event_accounting(
         }
         projected.append(row)
     return projected
+
+
+async def _events_for_record(
+    request: Request,
+    record: KeyRecord,
+    *,
+    range_name: str,
+    limit: int,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    quota_state = _quota(request)
+    window, reset_at = quota_state.effective_window(_record_id(record), range_name)
+    data = await request.app.state.cpamp.analytics(
+        api_key_hash=record.cpamp_hash,
+        window=window,
+        include_events=True,
+        include_model_stats=True,
+        event_limit=limit,
+    )
+    data = apply_key_policy_pricing(data, record.model_prices)
+    quota_summary = _quota_projection(
+        record,
+        quota_state,
+        range_name=range_name,
+        window_from_ms=window.from_ms,
+        window_to_ms=window.to_ms,
+        reset_at_ms=reset_at,
+        used_usd=(data.get("summary") or {}).get("total_cost"),
+    )
+    page = data.get("events") or {}
+    items = apply_event_pricing(
+        safe_events(page.get("items") or [], expected_hash=record.cpamp_hash),
+        record.model_prices,
+    )
+    items = _attach_event_accounting(
+        items,
+        record=record,
+        quota=quota_state,
+        selected_range=range_name,
+        selected_quota=quota_summary,
+        now_ms_value=window.to_ms,
+    )
+    key_summary = _safe_key_summary(record)
+    for item in items:
+        item["key"] = key_summary
+    return items, {
+        "range": range_name,
+        "from_ms": window.from_ms,
+        "to_ms": window.to_ms,
+        "reset_at_ms": reset_at,
+        "quota": quota_summary,
+    }
 
 
 async def dashboard(_request: Request) -> HTMLResponse:
@@ -506,6 +568,46 @@ async def admin_update_limits(request: Request) -> JSONResponse:
     return JSONResponse({"me": _safe_record(record, quota_state)})
 
 
+async def admin_update_limits_batch(request: Request) -> JSONResponse:
+    blocked = _admin_guard(request)
+    if blocked is not None:
+        return blocked
+    try:
+        body = await request.json()
+    except json.JSONDecodeError:
+        return _json_error("invalid_json", 400)
+    items = (body or {}).get("limits")
+    if not isinstance(items, list):
+        return _json_error("invalid_limits", 400)
+
+    state = _load_key_state(request)
+    validated: list[tuple[KeyRecord, float | None, float | None]] = []
+    for index, item in enumerate(items):
+        if not isinstance(item, dict):
+            return _json_error(f"invalid_limit_item:{index}", 400)
+        key_id = str(item.get("id") or "").strip()
+        record = _find_record(state, key_id)
+        if record is None:
+            return _json_error(f"key_not_found:{key_id or index}", 404)
+        try:
+            five_hour = _parse_float_limit(item.get("five_hour_usd"))
+            monthly = _parse_float_limit(item.get("monthly_usd"))
+        except ValueError as exc:
+            return _json_error(f"{str(exc)}:{key_id}", 400)
+        validated.append((record, five_hour, monthly))
+
+    quota_state = _quota(request)
+    actor = _actor(request)
+    for record, five_hour, monthly in validated:
+        quota_state.set_limits(
+            _record_id(record),
+            five_hour_usd=five_hour,
+            monthly_usd=monthly,
+            actor=actor,
+        )
+    return JSONResponse({"ok": True, "keys": [_safe_record(record, quota_state) for record, _, _ in validated]})
+
+
 async def admin_reset_usage(request: Request) -> JSONResponse:
     blocked = _admin_guard(request)
     if blocked is not None:
@@ -531,55 +633,39 @@ async def admin_events(request: Request) -> JSONResponse:
     blocked = _admin_guard(request)
     if blocked is not None:
         return blocked
-    key_id = request.query_params.get("key_id", "")
+    key_id = request.query_params.get("key_id", "all") or "all"
     state = _load_key_state(request)
-    record = _find_record(state, key_id)
-    if record is None:
-        return _json_error("key_not_found", 404)
     limit_raw = request.query_params.get("limit", "100")
     try:
         limit = max(1, min(int(limit_raw), 200))
     except ValueError:
         limit = 100
     range_name = _parse_range(request, default="24h")
-    quota_state = _quota(request)
-    window, reset_at = quota_state.effective_window(_record_id(record), range_name)
-    data = await request.app.state.cpamp.analytics(
-        api_key_hash=record.cpamp_hash,
-        window=window,
-        include_events=True,
-        include_model_stats=True,
-        event_limit=limit,
-    )
-    data = apply_key_policy_pricing(data, record.model_prices)
-    quota_summary = _quota_projection(
-        record,
-        quota_state,
-        range_name=range_name,
-        window_from_ms=window.from_ms,
-        window_to_ms=window.to_ms,
-        reset_at_ms=reset_at,
-        used_usd=(data.get("summary") or {}).get("total_cost"),
-    )
-    page = data.get("events") or {}
-    items = apply_event_pricing(
-        safe_events(page.get("items") or [], expected_hash=record.cpamp_hash),
-        record.model_prices,
-    )
-    items = _attach_event_accounting(
-        items,
-        record=record,
-        quota=quota_state,
-        selected_range=range_name,
-        selected_quota=quota_summary,
-        now_ms_value=window.to_ms,
-    )
+    if key_id == "all":
+        merged: list[dict[str, Any]] = []
+        for record in state.enabled_keys():
+            try:
+                items, _item_meta = await _events_for_record(request, record, range_name=range_name, limit=limit)
+            except Exception:
+                continue
+            merged.extend(items)
+        merged.sort(key=lambda item: int(item.get("timestamp_ms") or 0), reverse=True)
+        window = range_window(range_name)
+        meta = {"range": range_name, "from_ms": window.from_ms, "to_ms": window.to_ms, "reset_at_ms": None}
+        return JSONResponse({
+            **meta,
+            "quota": None,
+            "key_id": "all",
+            "events": merged[:limit],
+        })
+
+    record = _find_record(state, key_id)
+    if record is None:
+        return _json_error("key_not_found", 404)
+    items, meta = await _events_for_record(request, record, range_name=range_name, limit=limit)
     return JSONResponse({
-        "range": range_name,
-        "from_ms": window.from_ms,
-        "to_ms": window.to_ms,
-        "reset_at_ms": reset_at,
-        "quota": quota_summary,
+        **meta,
+        "key_id": _record_id(record),
         "events": items,
     })
 
@@ -613,6 +699,7 @@ def create_app(cfg: PortalConfig) -> Starlette:
         Route("/api/events/stream", events_stream, methods=["GET"]),
         Route("/admin/", admin_dashboard, methods=["GET"]),
         Route("/admin/api/keys", admin_keys, methods=["GET"]),
+        Route("/admin/api/keys/limits", admin_update_limits_batch, methods=["PUT"]),
         Route("/admin/api/keys/{key_id:str}/limits", admin_update_limits, methods=["PUT"]),
         Route("/admin/api/keys/{key_id:str}/reset", admin_reset_usage, methods=["POST"]),
         Route("/admin/api/events", admin_events, methods=["GET"]),
