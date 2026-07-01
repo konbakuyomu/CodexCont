@@ -28,6 +28,7 @@ from .admin import (
     admin_redirect,
     admin_status,
 )
+from .engine import engine_analyze, engine_healthz
 from .codex import (
     build_round_payload,
     declares_continue_tool,
@@ -312,6 +313,8 @@ def create_app(cfg: Config) -> Starlette:
             await app.state.client.aclose()
 
     routes = [
+        Route("/engine/healthz", engine_healthz, methods=["GET"]),
+        Route("/engine/v1/responses/analyze", engine_analyze, methods=["POST"]),
         Route("/admin", admin_redirect, methods=["GET"]),
         Route("/admin/", admin_dashboard, methods=["GET"]),
         Route("/admin/healthz", admin_healthz, methods=["GET"]),

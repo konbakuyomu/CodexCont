@@ -20,3 +20,8 @@ rt.json
 free_rt.json
 
 legacy/
+
+# Local browser/test/build artifacts
+.playwright-cli/
+cpa_governor_plugin/dist/
+cpa_governor_plugin/go/*.sqlite*

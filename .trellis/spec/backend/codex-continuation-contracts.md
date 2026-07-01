@@ -391,3 +391,123 @@ admin -> Key Policy creates cpa_... key -> user uses cpa_... for Codex and usage
 
 The `cpa_...` key is both the request credential and the self-service usage
 credential, while CPAMP remains admin-only.
+
+## Scenario: CPA Governor plugin and CodexCont Engine rollout
+
+### 1. Scope / Trigger
+- Trigger this spec whenever work touches `cpa_governor_plugin/`, Governor
+  plugin deployment, CPA plugin routing, `cpa-usage.konbakuyomu.us` user
+  routing, or CodexCont Engine routes.
+- This is cross-layer work: CPA dynamic plugin loading, Key Policy state
+  import, SQLite usage state, Caddy public/admin routing, and CodexCont Engine
+  health all have to agree.
+- Governor is owned by this repository. CPA, CPAMP, and CPA Key Policy remain
+  official upstream artifacts and must not be forked for this integration.
+
+### 2. Signatures
+- CPA plugin artifact:
+  `/CLIProxyAPI/plugins/linux/amd64/cpa-governor.so`.
+- CPA plugin config:
+  `plugins.configs.cpa-governor` with `enabled`, `priority`,
+  `exclusive_auth`, `state_db_path`, `key_policy_state_path`,
+  `session_secret`, `codexcont_enabled`, `codexcont_route`,
+  `codexcont_url`, and `fail_mode`.
+- Admin resource:
+  `GET /v0/resource/plugins/cpa-governor/admin`.
+- User resource:
+  `GET /v0/resource/plugins/cpa-governor/user`.
+- Admin proxy convenience routes:
+  `https://cpa-admin.konbakuyomu.us/governor/` and
+  `https://cpa-admin.konbakuyomu.us/governor-user/`.
+- User portal route:
+  `https://cpa-usage.konbakuyomu.us/`.
+- CodexCont Engine:
+  `GET /engine/healthz` and `POST /engine/v1/responses/analyze`.
+
+### 3. Contracts
+- Deploy Governor first in passive mode unless a test-key executor cutover has
+  already passed:
+  `codexcont_enabled: true`, `codexcont_route: false`,
+  `exclusive_auth: false`.
+- In passive mode, Governor may provide admin/user UI, key visibility, usage
+  storage, CodexCont health, and safe request projections, but it must not be
+  described as the exclusive quota enforcer or the executor-level 516 owner.
+- Public `cpa.konbakuyomu.us` must block `/v0/resource/plugins/*`,
+  `/v0/management*`, `/admin*`, `/codexcont*`, `/governor*`, and related
+  management paths.
+- `cpa-usage.konbakuyomu.us` may expose only the Governor user page and
+  `.../user/api/*`; it must return 404 for Governor admin resources and other
+  management paths.
+- `cpa-admin.konbakuyomu.us/governor/` is protected by Cloudflare Access and
+  may route through the local admin proxy to CPA's plugin resource endpoint.
+- Do not put CPA management keys, API keys, OAuth tokens, cookies, or
+  encrypted reasoning into Caddy rewrites, browser URLs, Trellis docs, or git.
+- When updating the plugin binary, record the SHA256 and verify CPA logs show
+  the plugin loaded and registered from the platform directory.
+- Dense admin/user tables on mobile must keep a stable minimum table width
+  inside an overflowed panel. Do not let tables shrink until short fields turn
+  vertical.
+- On SJC, rebuild/restart only the necessary self-owned service or plugin.
+  Do not use Docker prune and do not pull official images as a side effect of
+  a Governor-only rollout.
+
+### 4. Validation & Error Matrix
+- CPA plugin file missing or wrong architecture -> CPA logs do not show
+  `plugin loaded plugin_id=cpa-governor`; deployment is not accepted.
+- Governor admin API returns no Key Policy keys -> verify
+  `key_policy_state_path` and plugin-state mount before accepting the UI.
+- `codexcont_route=false` -> production `/v1/responses` must still pass
+  through the existing working route and return a real successful response.
+- Public `cpa.konbakuyomu.us/v0/resource/plugins/cpa-governor/admin` returns
+  200 -> rollback Caddy public block before accepting the rollout.
+- Public `cpa-usage.konbakuyomu.us/v0/resource/plugins/cpa-governor/admin`
+  returns 200 -> rollback user-host route before accepting the rollout.
+- User API without session -> `401`; invalid CPA user key -> `401
+  invalid_api_key`.
+- Mobile Playwright snapshot shows table columns narrower than practical text
+  width or vertical labels -> add panel overflow/min-width and revalidate.
+
+### 5. Good/Base/Bad Cases
+- Good: Governor is loaded by CPA, admin page shows 3 Key Policy keys, user
+  page opens on `cpa-usage`, CodexCont health is green, public API admin paths
+  return 404, and real `/v1/responses` still succeeds.
+- Base: Governor user page opens but no user is logged in. `/user/api/me`
+  returns `401 not_authenticated`, and the page waits for a raw `cpa_...` key.
+- Bad: Caddy sends public `/v1/responses` to Governor before the executor-level
+  continuation path is validated. This can bypass the known-good CodexCont
+  fold path.
+- Bad: A deployment runs `docker compose up` against the CPA stack with
+  `pull_policy: always` during a plugin-only change on the small SJC disk.
+  This may pull new layers and introduce unrelated official-image drift.
+
+### 6. Tests Required
+- Go unit: key hashing, Key Policy import, quota windows, pricing, redaction,
+  store usage events, admin/user handler responses.
+- Python unit: CodexCont Engine summary projection and route smoke.
+- Build verification: linux/amd64 `.so` SHA256 recorded and `file` reports an
+  ELF x86-64 shared object compatible with the Debian/glibc CPA image.
+- Server smoke: `/healthz`, authenticated `/v1/models`, authenticated
+  `/v1/responses`, Governor admin/user pages, user-host 401/404 boundaries,
+  public API 404 boundaries, disk free space.
+- Playwright: desktop and 390px mobile snapshots for Governor admin and user
+  pages; dense tables must be horizontally scrollable instead of vertically
+  compressed.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+```text
+plugin UI added -> route every public path to /v0/resource/plugins/*
+```
+
+This exposes internal management resources and bypasses the public/admin host
+boundary.
+
+#### Correct
+```text
+cpa-admin host -> Governor admin resource
+cpa-usage host -> Governor user resource only
+cpa API host -> official API plus explicit admin/plugin blocks
+```
+
+Each hostname exposes only the surface that matches its trust boundary.

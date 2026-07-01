@@ -40,6 +40,7 @@ from middleware.codex import (
 from middleware.config import load_config
 from middleware.creds import build_upstream_headers, would_inject_authorization
 from middleware.diagnostics import Diagnostics, redact_value
+from middleware.engine import summarize_engine_payload
 from middleware.key_identity import KeyIdentityResolver
 from middleware.proxy import fold_stream
 from middleware.sse import DONE, incremental_sse
@@ -631,6 +632,47 @@ def test_admin_routes_smoke():
         check("admin logs stream ready", "event: ready" in stream.text, stream.text[:80])
         check("admin logs stream request event", "event: request" in stream.text, stream.text[:200])
 
+        engine_health = client.get("/engine/healthz")
+        check("engine healthz 200", engine_health.status_code == 200, str(engine_health.status_code))
+        check("engine healthz mode", engine_health.json().get("mode") == "codexcont-engine",
+              engine_health.text)
+        engine_summary = client.post("/engine/v1/responses/analyze", json={
+            "model": "gpt-5.5",
+            "rounds": [
+                {"round": 1, "reasoning_tokens": 516, "decision": "continue"},
+                {"round": 2, "reasoning_tokens": 181, "decision": "clean"},
+            ],
+        })
+        body = engine_summary.json()
+        check("engine analyze 200", engine_summary.status_code == 200, engine_summary.text)
+        check("engine analyze auto continued", body.get("protection") == "auto_continued", str(body))
+        check("engine analyze first hit", body.get("first_truncation_round") == 1, str(body))
+
+
+def test_engine_summary_projection():
+    clean = summarize_engine_payload({
+        "model": "gpt-5.5",
+        "usage": {"output_tokens_details": {"reasoning_tokens": 140}},
+    })
+    check("engine summary clean", clean.get("protection") == "protected_clean", str(clean))
+    check("engine summary latest tokens", clean.get("latest_reasoning_tokens") == 140, str(clean))
+
+    risk = summarize_engine_payload({
+        "model": "gpt-5.5",
+        "reasoning_tokens": 516,
+        "stopped_reason": "no_encrypted_content",
+    })
+    check("engine summary risk", risk.get("protection") == "risk_uncontinued", str(risk))
+    check("engine summary truncation n", risk.get("first_truncation_n") == 1, str(risk))
+
+    failed = summarize_engine_payload({
+        "model": "gpt-5.5",
+        "failure_reason": "Authorization: Bearer secret-token",
+    })
+    check("engine summary failed", failed.get("protection") == "failed", str(failed))
+    check("engine summary redacts failure",
+          "secret-token" not in json.dumps(failed), str(failed))
+
 
 # --- upstream URL resolution via Responses-API-Base header ------------------
 
@@ -855,6 +897,7 @@ async def _main():
     test_diagnostics_request_summaries()
     await test_diagnostics_subscriber_broadcast()
     test_admin_routes_smoke()
+    test_engine_summary_projection()
     test_upstream_url_resolution()
     test_auth_safety_guard()
     test_auth_injection()
