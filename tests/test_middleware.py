@@ -16,9 +16,15 @@ ROOT = Path(__file__).resolve().parent.parent
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 sys.path.insert(0, str(ROOT))
 
+import zstandard as zstd
 from starlette.datastructures import Headers
 
-from middleware.app import _make_client, _resolve_upstream_url, _url_is_from_header
+from middleware.app import (
+    _decode_request_body,
+    _make_client,
+    _resolve_upstream_url,
+    _url_is_from_header,
+)
 from middleware.codex import (
     continue_call_id,
     is_truncation_pattern,
@@ -391,6 +397,7 @@ def test_header_transparency():
         ("User-Agent", "codex_cli_rs/1.0"),
         ("Host", "drop.me"),
         ("Content-Length", "123"),
+        ("Content-Encoding", "zstd"),
         ("Accept-Encoding", "gzip"),
         ("Responses-API-Base", "https://override/responses"),
         ("X-Custom", "keep"),
@@ -401,8 +408,21 @@ def test_header_transparency():
     check("hdr keeps user-agent", low.get("user-agent") == "codex_cli_rs/1.0")
     check("hdr keeps custom", low.get("x-custom") == "keep")
     check("hdr keeps authorization", low.get("authorization") == "Bearer agent")
-    for dropped in ("host", "content-length", "accept-encoding", "responses-api-base"):
+    for dropped in (
+        "host",
+        "content-length",
+        "content-encoding",
+        "accept-encoding",
+        "responses-api-base",
+    ):
         check(f"hdr drops {dropped}", dropped not in low)
+
+
+def test_zstd_request_body_decode():
+    raw = b'{"model":"gpt-5.5","stream":true}'
+    encoded = zstd.ZstdCompressor().compress(raw)
+    check("zstd body decodes", _decode_request_body(encoded, "zstd") == raw)
+    check("identity body unchanged", _decode_request_body(raw, None) == raw)
 
 
 # --- upstream URL resolution via Responses-API-Base header ------------------
@@ -623,6 +643,7 @@ async def _main():
     await test_tool_pair_continuation_payload()
     await test_forward_marker_emits_downstream()
     test_header_transparency()
+    test_zstd_request_body_decode()
     test_upstream_url_resolution()
     test_auth_safety_guard()
     test_auth_injection()

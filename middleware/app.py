@@ -7,11 +7,13 @@ so it is safe in front of all traffic.
 from __future__ import annotations
 
 import contextlib
+import io
 import json
 import logging
 from typing import Any
 
 import httpx
+import zstandard as zstd
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response, StreamingResponse
@@ -29,6 +31,24 @@ from .proxy import fold_stream, open_passthrough, open_round
 from .store import IdStore
 
 log = logging.getLogger("middleware.app")
+
+
+class BodyDecodeError(ValueError):
+    pass
+
+
+def _decode_request_body(raw: bytes, encoding: str | None) -> bytes:
+    enc = (encoding or "").strip().lower()
+    if not enc or enc == "identity":
+        return raw
+    if enc != "zstd":
+        raise BodyDecodeError(f"unsupported request content-encoding: {enc}")
+
+    try:
+        with zstd.ZstdDecompressor().stream_reader(io.BytesIO(raw)) as reader:
+            return reader.read()
+    except zstd.ZstdError as exc:
+        raise BodyDecodeError("invalid zstd request body") from exc
 
 
 def _header_base(request: Request) -> str | None:
@@ -96,10 +116,28 @@ async def handle_responses(request: Request) -> Response:
     cfg: Config = request.app.state.cfg
     client: httpx.AsyncClient = request.app.state.client
 
-    raw = await request.body()
+    wire_raw = await request.body()
+    try:
+        raw = _decode_request_body(wire_raw, request.headers.get("content-encoding"))
+    except BodyDecodeError as exc:
+        log.warning(
+            "request body decode failed: content-type=%s content-encoding=%s len=%d error=%s",
+            request.headers.get("content-type"),
+            request.headers.get("content-encoding"),
+            len(wire_raw),
+            exc,
+        )
+        return JSONResponse({"error": str(exc)}, status_code=400)
+
     try:
         body: dict[str, Any] = json.loads(raw)
     except (json.JSONDecodeError, UnicodeDecodeError):
+        log.warning(
+            "invalid JSON body: content-type=%s content-encoding=%s len=%d",
+            request.headers.get("content-type"),
+            request.headers.get("content-encoding"),
+            len(raw),
+        )
         return JSONResponse({"error": "invalid JSON body"}, status_code=400)
     if not isinstance(body, dict):
         return JSONResponse({"error": "body must be a JSON object"}, status_code=400)
