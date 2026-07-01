@@ -21,6 +21,6 @@
   "children": [],
   "parent": null,
   "relatedFiles": [],
-  "notes": "Server-side CodexCont and CPA admin proxy are deployed. Cloudflare Tunnel start is blocked on the Dashboard Tunnel token. Isolated candy eval ran 5 tests via CPA and scored 4/5; sidecar caught 518n-2 rounds but does not yet prove complete 516-class elimination.",
+  "notes": "Server-side CodexCont, CPA admin proxy, and Cloudflare Tunnel/Access admin path are deployed. User validated that cpa-admin.konbakuyomu.us/management.html reaches the CPA management panel through the intended chain. Isolated candy eval ran 5 tests via CPA and scored 4/5; sidecar caught 518n-2 rounds but does not yet prove complete 516-class elimination.",
   "meta": {}
 }

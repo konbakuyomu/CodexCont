@@ -135,9 +135,10 @@
 - `/opt/codex-stacks/cpa-admin-tunnel/docker-compose.yaml` prepared with:
   - `cpa-admin-proxy` running now.
   - `cpa-admin-tunnel` using `cloudflare/cloudflared:latest`, host networking, and `.env`.
-- `/opt/codex-stacks/cpa-admin-tunnel/.env` exists as root-only placeholder.
-- `cpa-admin-tunnel` is not started because no Cloudflare Tunnel token has been provided yet.
-- Cloudflare Dashboard public hostname should target `http://127.0.0.1:8327`, not `8317`, because of the CPA local-client behavior above.
+- `/opt/codex-stacks/cpa-admin-tunnel/.env` is root-only and secrets were not recorded in Git, Obsidian, or Trellis artifacts.
+- User provided/configured the Cloudflare Tunnel token out of band and reported the Docker Cloudflare connector is connected.
+- Cloudflare Dashboard public hostname targets `http://127.0.0.1:8327`, not `8317`, because of the CPA local-client behavior above.
+- Final user acceptance: `https://cpa-admin.konbakuyomu.us/management.html` reaches the CPA management panel through Cloudflare Tunnel + Cloudflare Access + CPA management key.
 
 ### Isolated Codex Candy Eval
 

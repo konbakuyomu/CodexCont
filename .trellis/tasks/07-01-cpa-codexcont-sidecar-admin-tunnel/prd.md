@@ -29,15 +29,15 @@ Run CodexCont as a server-side continuation middleware in front of CPA for `/v1/
 
 ## Acceptance Criteria
 
-- [ ] Trellis artifacts record requirements, design, implementation steps, backups, evidence, and residual risks.
-- [ ] CodexCont is running on SJC and can reach CPA through `cpa_net`.
-- [ ] `https://cpa.konbakuyomu.us/healthz` succeeds.
-- [ ] Authenticated `https://cpa.konbakuyomu.us/v1/models` succeeds through CPA.
-- [ ] Authenticated `https://cpa.konbakuyomu.us/v1/responses` succeeds and CodexCont logs show it handled the request.
-- [ ] Public `https://cpa.konbakuyomu.us/management.html` and `/v0/management/config` are blocked.
-- [ ] `https://cpa-admin.konbakuyomu.us/management.html` is reachable only through Cloudflare Access and then CPA management key authentication.
-- [ ] A `codex-candy-eval` run using isolated local test config points at `https://cpa.konbakuyomu.us/v1` without changing `C:\Users\dxt98\.codex`.
-- [ ] Candy-eval result and CodexCont fold logs are recorded, including any residual 516-class failure.
+- [x] Trellis artifacts record requirements, design, implementation steps, backups, evidence, and residual risks.
+- [x] CodexCont is running on SJC and can reach CPA through `cpa_net`.
+- [x] `https://cpa.konbakuyomu.us/healthz` succeeds.
+- [x] Authenticated `https://cpa.konbakuyomu.us/v1/models` succeeds through CPA.
+- [x] Authenticated `https://cpa.konbakuyomu.us/v1/responses` succeeds and CodexCont logs show it handled the request.
+- [x] Public `https://cpa.konbakuyomu.us/management.html` and `/v0/management/config` are blocked.
+- [x] `https://cpa-admin.konbakuyomu.us/management.html` is reachable only through Cloudflare Access and then CPA management key authentication.
+- [x] A `codex-candy-eval` run using isolated local test config points at `https://cpa.konbakuyomu.us/v1` without changing `C:\Users\dxt98\.codex`.
+- [x] Candy-eval result and CodexCont fold logs are recorded, including any residual 516-class failure.
 
 ## Out of Scope
 
