@@ -39,3 +39,38 @@ Recorded the completed SJC sub2api to CPA migration, captured Codex continuation
 ### Next Steps
 
 - None - task complete
+
+
+## Session 2: CodexCont status dashboard
+
+**Date**: 2026-07-01
+**Task**: CodexCont status dashboard
+**Branch**: `main`
+
+### Summary
+
+Built and deployed the CodexCont admin dashboard, then upgraded it to a Chinese request-first protection status page with request summaries, SSE request updates, production validation, and captured the admin diagnostics contract in backend spec.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `82e54b8` | (see git log) |
+| `5b578e1` | (see git log) |
+| `42c1b14` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
