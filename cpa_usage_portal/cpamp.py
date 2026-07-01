@@ -48,6 +48,7 @@ class CPAMPClient:
         api_key_hash: str,
         window: AnalyticsWindow,
         include_events: bool = False,
+        include_model_stats: bool = False,
         event_limit: int = 100,
         before_ms: int | None = None,
         before_id: int | None = None,
@@ -59,6 +60,8 @@ class CPAMPClient:
             "api_key_stats": True,
             "granularity": "hour",
         }
+        if include_model_stats:
+            include["model_stats"] = True
         if include_events:
             page: dict[str, Any] = {"limit": max(1, min(int(event_limit), 200))}
             if before_ms is not None:

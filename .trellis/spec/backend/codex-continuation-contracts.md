@@ -97,6 +97,12 @@ The continuation owner must sit at executor level, where it can inspect raw upst
 - `event: log` behavior is backward-compatible with the original dashboard stream. Adding request updates must use a separate `event: request` SSE event.
 - The beginner-facing dashboard must distinguish "entered CodexCont protection and no continuation was needed" from "516/518n-2 was detected and a hidden continuation round was opened".
 - When a continued request ends with a clean final round, `latest_reasoning_tokens` may be below 516. The dashboard must label it as latest-round reasoning and separately display the first 516/518n-2 trigger round from the request summary.
+- The dashboard frontend must treat the SSE connection as recoverable browser state, not as a durable data source. Manual refresh and foreground resume (`visibilitychange`, `pageshow`, or stale `focus`) must re-fetch the JSON snapshots with no-store/cache-bust semantics and force-create a new `EventSource`. Late responses from older fetches must not overwrite newer snapshots.
+- The refresh action must provide visible busy/completion feedback, and the realtime connection chip must animate in all states (`connected`, `connecting/reconnecting`, and `disconnected`) so an operator can see that the page is alive after returning from an idle tab.
+- When an SSE request update is still `processing`, the dashboard should
+  immediately refresh status counters and follow up with short delayed
+  `/admin/requests` snapshot reloads. Do not rely only on the next long polling
+  interval to clear processing rows.
 - Production admin access must remain behind `cpa-admin.konbakuyomu.us` plus Cloudflare Access. Public `cpa.konbakuyomu.us` must not expose `/admin/*`, `/codexcont/*`, `/management.html`, or CPA management APIs.
 - SJC is a small-disk host. Deployment must prefer uploading changed files plus single-service rebuild/restart; do not use Docker prune or broad filesystem cleanup as part of dashboard rollout.
 
@@ -106,6 +112,10 @@ The continuation owner must sit at executor level, where it can inspect raw upst
 - Active request summary is returned -> internal monotonic timer fields must be stripped before JSON/SSE output.
 - `GET /admin/logs/stream?once=1` -> emits `ready`, recent `request` events, then recent `log` events, then ends.
 - Upstream CPA health probe fails -> dashboard reports upstream unhealthy but admin routes still return safely.
+- Browser tab is idle/backgrounded and returns later -> dashboard reconnects SSE and reloads snapshots without requiring a full page reload.
+- Manual refresh is clicked while a previous fetch is slow -> the latest refresh wins; older fetch results are ignored instead of overwriting the visible table.
+- Request row appears as `processing` -> short follow-up reloads update it to a
+  terminal state without requiring a full page refresh.
 - Public API host exposes any admin path -> deployment validation fails; fix Caddy/admin proxy routing before accepting rollout.
 - SJC free space is tight before rebuild -> verify `df -h /` and avoid pulls/prune; if rebuild needs new image layers and space is insufficient, pause rather than cleaning broad data.
 
@@ -120,6 +130,8 @@ The continuation owner must sit at executor level, where it can inspect raw upst
 - Unit: redaction preserves numeric counters such as `reasoning_tokens` and `total_tokens`, while redacting bearer/API/OAuth/encrypted-content fields.
 - Route smoke: `/admin/requests` returns summaries and `/admin/logs/stream?once=1` includes both `event: request` and `event: log`.
 - Frontend smoke: desktop and mobile dashboard render without horizontal overflow, and simulated protection states are visibly distinct.
+- Frontend smoke: dashboard HTML keeps the manual-refresh reconnect path, foreground-resume handler, and visible refresh/realtime animation hooks.
+- Frontend smoke: dashboard HTML keeps processing-request follow-up reloads.
 - Production smoke: `cpa-admin.konbakuyomu.us/codexcont/` reaches the dashboard through Cloudflare Access, while public `cpa.konbakuyomu.us/admin/*` and `/codexcont/*` return `404`.
 
 ### 7. Wrong vs Correct
@@ -205,8 +217,37 @@ This spreads the event contract into JavaScript and makes the beginner-facing st
 - CPAMP `api_key_stats` must be projected before returning it to the browser.
   Do not pass CPAMP rows through directly because they may include full
   `api_key_hash` values.
+- Key Policy model entries may be structured objects under `models[]`, not only
+  strings. The portal must parse clean aliases from `alias` / `model` /
+  `target_model` fields instead of rendering dicts as strings.
+- Per-key prices are owned by Key Policy. The portal must parse
+  `input_price_per_million`, `output_price_per_million`, and
+  `cache_read_price_per_million` from each model entry, plus legacy
+  top-level `model_prices` forms for compatibility.
+- A model entry whose input, output, cache-read, and cache-creation prices are
+  all zero is treated as unpriced for safety. Missing prices must not silently
+  turn into "free" usage unless a future explicit free-model policy is added.
+- CPAMP can legitimately return `cost: 0` when its own global price book lacks
+  custom Codex aliases. For self-service user accounting, `/api/usage` and
+  `/api/events` should overlay costs using the current key's Key Policy price
+  book. Do not interpret CPAMP zero cost as "free" when Key Policy prices are
+  configured.
+- `/api/me` must expose safe daily/weekly USD limits and a safe pricing
+  summary. The user dashboard must show both daily and weekly limits directly,
+  not only as a selected-range hint.
 - Public `cpa.konbakuyomu.us` must continue to block management, plugin,
   admin, CodexCont dashboard, CPAMP, and usage-portal internals.
+- The usage portal frontend must not rely on an old `/api/events/stream`
+  connection after tab idle. Manual refresh and foreground resume must rebuild
+  the `EventSource`, reload `/api/me`, `/api/usage`, and `/api/events` with
+  no-store/cache-bust semantics, and keep late fetch responses from replacing
+  newer data.
+- The refresh button and realtime chip must expose visible state changes:
+  refresh shows busy/completion animation, while the realtime chip pulses for
+  connected, reconnecting, and disconnected states.
+- A realtime usage event should update the visible recent-request table
+  immediately and then schedule delayed snapshot refreshes, because CPAMP
+  aggregate views may update slightly after the event row appears.
 - SJC is disk-constrained. Portal rollouts should upload changed files and
   rebuild only `cpa-usage-portal`; do not use Docker prune or broad deletion.
 
@@ -221,6 +262,15 @@ This spreads the event contract into JavaScript and makes the beginner-facing st
   use the CPAMP admin key for CPAMP.
 - CPAMP rows whose `api_key_hash` does not match the current key's CPAMP usage
   hash -> drop them server-side.
+- Browser tab is left idle and reopened -> usage portal reconnects SSE and
+  reloads own-key usage/events without a full page reload.
+- Manual refresh happens during a slow previous refresh -> the latest refresh
+  owns the visible state; stale responses are ignored.
+- Key Policy prices exist but CPAMP returns zero cost -> user portal shows
+  nonzero estimated cost from Key Policy prices and marks the source as
+  `key_policy`.
+- Key Policy daily/weekly USD limits exist -> `/api/me` and the dashboard show
+  both values safely.
 - `GET /api/usage` must not include the full raw-key hash or full policy-id
   hash anywhere in the JSON response.
 - DNS for `cpa-usage.konbakuyomu.us` may be absent while the sidecar and Caddy
@@ -249,10 +299,16 @@ This spreads the event contract into JavaScript and makes the beginner-facing st
 - Unit: CPAMP analytics calls use the policy-id hash, not the raw-key hash.
 - Unit: usage/event projections reject another key's hash and do not return
   full hash values.
+- Unit: structured Key Policy `models[]` entries produce clean model aliases,
+  safe daily/weekly limits, and per-model prices.
+- Unit: `/api/usage` and `/api/events` recompute nonzero costs from Key Policy
+  prices when CPAMP cost fields are zero.
 - Unit: redaction covers Authorization, cookies, API keys, tokens, management
   keys, and encrypted reasoning fields while preserving numeric token counters.
 - Unit: retention deletes old CPAMP `usage_events` in batches and does not run
   `VACUUM`.
+- Frontend smoke: user portal HTML keeps the forced stream reconnect,
+  foreground-resume handler, and refresh/realtime animation hooks.
 - Production smoke: allowed Key Policy model succeeds, disallowed model is
   rejected, CPAMP records real usage, the portal login succeeds, and
   `/api/events` returns only own events.

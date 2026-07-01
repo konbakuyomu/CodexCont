@@ -16,6 +16,7 @@ from starlette.routing import Route
 from .config import PortalConfig
 from .cpamp import CPAMPClient, range_window
 from .key_policy import KeyPolicyState
+from .pricing import apply_event_pricing, apply_key_policy_pricing
 from .redaction import safe_api_key_stats, safe_events
 from .security import sha256_hex, sign_session, verify_session
 
@@ -149,7 +150,9 @@ async def usage(request: Request) -> JSONResponse:
         api_key_hash=record.cpamp_hash,
         window=window,
         include_events=False,
+        include_model_stats=True,
     )
+    data = apply_key_policy_pricing(data, record.model_prices)
     return JSONResponse({
         "range": request.query_params.get("range", "24h") if request.query_params.get("range") in {"24h", "7d"} else "24h",
         "from_ms": window.from_ms,
@@ -157,6 +160,7 @@ async def usage(request: Request) -> JSONResponse:
         "summary": data.get("summary") or {},
         "timeline": data.get("timeline") or [],
         "model_share": data.get("model_share") or [],
+        "model_stats": data.get("model_stats") or [],
         "api_key_stats": safe_api_key_stats(data.get("api_key_stats") or [], expected_hash=record.cpamp_hash),
     })
 
@@ -182,7 +186,10 @@ async def events(request: Request) -> JSONResponse:
         before_id=before_id,
     )
     page = data.get("events") or {}
-    items = safe_events(page.get("items") or [], expected_hash=record.cpamp_hash)
+    items = apply_event_pricing(
+        safe_events(page.get("items") or [], expected_hash=record.cpamp_hash),
+        record.model_prices,
+    )
     return JSONResponse({
         "events": items,
         "next_before_ms": page.get("next_before_ms") or 0,
@@ -219,7 +226,10 @@ async def events_stream(request: Request) -> StreamingResponse:
                     event_limit=20,
                 )
                 page = data.get("events") or {}
-                items = safe_events(page.get("items") or [], expected_hash=record.cpamp_hash)
+                items = apply_event_pricing(
+                    safe_events(page.get("items") or [], expected_hash=record.cpamp_hash),
+                    record.model_prices,
+                )
                 for item in reversed(items):
                     event_hash = str(item.get("event_hash") or "")
                     if event_hash and event_hash not in seen:

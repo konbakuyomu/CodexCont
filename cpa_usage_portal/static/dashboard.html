@@ -60,6 +60,7 @@
       cursor: pointer;
       white-space: nowrap;
     }
+    #refreshBtn { min-width: 72px; }
     button.primary {
       border-color: transparent;
       background: linear-gradient(180deg, #43a2ff, #2d86ef);
@@ -67,6 +68,18 @@
       font-weight: 750;
     }
     button.secondary { background: var(--panel-2); }
+    button.is-loading::before {
+      content: "";
+      width: 14px;
+      height: 14px;
+      border: 2px solid rgba(232, 237, 245, .28);
+      border-top-color: currentColor;
+      border-radius: 50%;
+      animation: spin .75s linear infinite;
+    }
+    button.refresh-flash {
+      animation: buttonPulse .8s ease;
+    }
     button:hover, select:hover, input:focus {
       border-color: var(--line-strong);
       outline: none;
@@ -157,7 +170,20 @@
       height: 8px;
       border-radius: 50%;
       background: var(--muted);
+      position: relative;
       flex: 0 0 auto;
+    }
+    .chip.stream .dot {
+      animation: statusBlink 1.45s ease-in-out infinite;
+    }
+    .chip.stream .dot::after {
+      content: "";
+      position: absolute;
+      inset: -5px;
+      border-radius: inherit;
+      border: 1px solid currentColor;
+      opacity: .55;
+      animation: statusPing 1.45s ease-out infinite;
     }
     .chip.ok { border-color: rgba(97, 211, 79, .28); background: var(--green-soft); color: #a8ef9c; }
     .chip.ok .dot { background: var(--green); }
@@ -371,6 +397,29 @@
       background: transparent !important;
       border: 0 !important;
     }
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+    @keyframes buttonPulse {
+      0% { box-shadow: 0 0 0 0 rgba(59, 150, 255, .42); }
+      100% { box-shadow: 0 0 0 10px rgba(59, 150, 255, 0); }
+    }
+    @keyframes statusBlink {
+      0%, 100% { transform: scale(1); opacity: .72; }
+      50% { transform: scale(1.35); opacity: 1; }
+    }
+    @keyframes statusPing {
+      0% { transform: scale(.65); opacity: .58; }
+      100% { transform: scale(1.9); opacity: 0; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      button.is-loading::before,
+      button.refresh-flash,
+      .chip.stream .dot,
+      .chip.stream .dot::after {
+        animation: none;
+      }
+    }
     @media (max-width: 1180px) {
       .metrics { grid-template-columns: repeat(3, minmax(160px, 1fr)); }
     }
@@ -400,7 +449,7 @@
         </div>
       </div>
       <div class="toolbar">
-        <span id="liveChip" class="chip warn"><span class="dot"></span><span>实时未连接</span></span>
+        <span id="liveChip" class="chip stream warn"><span class="dot"></span><span>实时未连接</span></span>
         <select id="rangeSelect" class="hidden" title="统计范围">
           <option value="24h">24 小时</option>
           <option value="7d">7 天</option>
@@ -453,7 +502,7 @@
           <div id="outputTokens" class="metric-hint">输出 0</div>
         </article>
         <article class="metric">
-          <div class="metric-label"><span class="metric-icon bad">!</span>Key 状态</div>
+          <div class="metric-label"><span class="metric-icon bad">限</span>用量限额</div>
           <div id="keyStatus" class="metric-value">-</div>
           <div id="rpmHint" class="metric-hint">-</div>
         </article>
@@ -505,7 +554,16 @@
 
   <script>
     const $ = (id) => document.getElementById(id);
-    const state = { me: null, events: [], expanded: new Set(), stream: null, refreshing: false };
+    const state = {
+      me: null,
+      events: [],
+      expanded: new Set(),
+      stream: null,
+      refreshing: false,
+      refreshSeq: 0,
+      refreshTimer: null,
+      lastRefreshAt: 0,
+    };
 
     function escapeHtml(value) {
       return String(value == null ? "" : value).replace(/[&<>"']/g, ch => ({
@@ -517,6 +575,13 @@
     }
     function money(value) {
       return "$" + Number(value || 0).toFixed(4);
+    }
+    function limitMoney(value) {
+      if (value === null || value === undefined || value === "") return "未设置";
+      const n = Number(value);
+      if (!Number.isFinite(n)) return "未设置";
+      if (n === 0) return "不限";
+      return money(n);
     }
     function pct(value) {
       if (value === null || value === undefined || value === "") return "-";
@@ -534,8 +599,23 @@
     }
     function setLive(kind, text) {
       const chip = $("liveChip");
-      chip.className = `chip ${kind}`;
+      chip.className = `chip stream ${kind}`;
       chip.innerHTML = `<span class="dot"></span><span>${escapeHtml(text)}</span>`;
+    }
+    function setRefreshBusy(busy) {
+      const button = $("refreshBtn");
+      button.classList.toggle("is-loading", busy);
+      button.setAttribute("aria-busy", busy ? "true" : "false");
+      button.textContent = busy ? "刷新中" : "刷新";
+      if (!busy) {
+        button.classList.remove("refresh-flash");
+        void button.offsetWidth;
+        button.classList.add("refresh-flash");
+      }
+    }
+    function cacheBust(path) {
+      const joiner = path.includes("?") ? "&" : "?";
+      return `${path}${joiner}_=${Date.now()}`;
     }
     function showLoggedIn(value) {
       $("loginPanel").classList.toggle("hidden", value);
@@ -545,11 +625,16 @@
       $("rangeSelect").classList.toggle("hidden", !value);
     }
     async function api(path, options = {}) {
-      const resp = await fetch(path, {
+      const method = String(options.method || "GET").toUpperCase();
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), options.timeoutMs || 15000);
+      const resp = await fetch(method === "GET" ? cacheBust(path) : path, {
         credentials: "same-origin",
+        cache: "no-store",
+        signal: controller.signal,
         headers: { "Content-Type": "application/json", ...(options.headers || {}) },
         ...options,
-      });
+      }).finally(() => clearTimeout(timer));
       if (!resp.ok) {
         const body = await resp.json().catch(() => ({}));
         throw new Error(body.error || resp.statusText);
@@ -564,10 +649,13 @@
     }
     function renderMe(me) {
       state.me = me;
-      $("keyStatus").textContent = me.enabled ? "启用中" : "已停用";
+      const daily = me.limits?.daily_usd;
+      const weekly = me.limits?.weekly_usd;
+      const pricingCount = me.pricing?.priced_model_count || 0;
+      $("keyStatus").textContent = `日限 ${limitMoney(daily)}`;
       $("keyStatus").className = `metric-value ${me.enabled ? "success" : "danger"}`;
       $("keyMeta").textContent = `${me.name || "未命名"} / ${me.preview || "-"} `;
-      $("rpmHint").textContent = `RPM ${me.rpm || "不限"} / 模型 ${Array.isArray(me.models) && me.models.length ? me.models.join(", ") : "未限制"}`;
+      $("rpmHint").textContent = `周限 ${limitMoney(weekly)} · ${me.enabled ? "启用中" : "已停用"} · RPM ${me.rpm || "不限"} · 价格 ${pricingCount || 0} 个模型`;
       $("keyLine").textContent = `${me.name || "当前 Key"} · ${me.preview || ""}`;
     }
     function renderUsage(data) {
@@ -579,7 +667,12 @@
       $("successRate").textContent = pct(s.success_rate);
       $("failureCount").textContent = `失败 ${num(s.failure_calls)}`;
       $("totalCost").textContent = money(s.total_cost);
-      $("limitHint").textContent = limit ? `限额 ${money(limit)} / 已用 ${Math.min(100, Number(s.total_cost || 0) / Number(limit) * 100).toFixed(1)}%` : "未设置 USD 限额";
+      if (Number(limit) > 0) {
+        $("limitHint").textContent = `${range === "7d" ? "周限" : "日限"} ${money(limit)} / 已用 ${Math.min(100, Number(s.total_cost || 0) / Number(limit) * 100).toFixed(1)}%`;
+      } else {
+        const unpriced = Array.isArray(s.unpriced_models) && s.unpriced_models.length ? `未定价 ${s.unpriced_models.slice(0, 3).join(", ")}` : "";
+        $("limitHint").textContent = unpriced || (s.cost_source === "key_policy" ? "按 Key Policy 单价估算" : "未设置 USD 限额");
+      }
       $("tokens").textContent = num(s.total_tokens);
       $("cachedTokens").textContent = `缓存 ${num(s.cached_tokens || s.cache_read_tokens)}`;
       $("reasoning").textContent = num(s.reasoning_tokens);
@@ -646,28 +739,91 @@
         };
       });
     }
-    async function refreshDashboard() {
-      if (state.refreshing) return;
+    function mergeEvent(event) {
+      if (!event || typeof event !== "object") return;
+      const key = event.event_hash || event.request_id || `${event.timestamp_ms || Date.now()}`;
+      const next = state.events.filter((item) => (item.event_hash || item.request_id) !== key);
+      next.unshift(event);
+      renderEvents(next.slice(0, 100));
+    }
+    async function refreshDashboard(options = {}) {
+      if (state.refreshing && !options.force) return;
+      const seq = ++state.refreshSeq;
       state.refreshing = true;
+      if (options.feedback) setRefreshBusy(true);
       try {
         const meData = await api("/api/me");
+        if (seq !== state.refreshSeq) return;
         renderMe(meData.me);
         const range = $("rangeSelect").value;
         const usage = await api(`/api/usage?range=${encodeURIComponent(range)}`);
+        if (seq !== state.refreshSeq) return;
         renderUsage(usage);
         const events = await api("/api/events?limit=100");
+        if (seq !== state.refreshSeq) return;
         renderEvents(events.events || []);
         showLoggedIn(true);
+        state.lastRefreshAt = Date.now();
       } finally {
-        state.refreshing = false;
+        if (seq === state.refreshSeq) {
+          state.refreshing = false;
+          if (options.feedback) setRefreshBusy(false);
+        }
       }
     }
-    function startStream() {
-      if (state.stream) return;
+    function scheduleRefresh(delay = 350) {
+      clearTimeout(state.refreshTimer);
+      state.refreshTimer = setTimeout(() => {
+        refreshDashboard().catch(() => {});
+      }, delay);
+    }
+    function scheduleFollowUpRefreshes() {
+      scheduleRefresh(350);
+      setTimeout(() => refreshDashboard({ force: true }).catch(() => {}), 2500);
+      setTimeout(() => refreshDashboard({ force: true }).catch(() => {}), 8000);
+    }
+    function startStream(options = {}) {
+      if (state.stream && !options.force) return;
+      if (state.stream) state.stream.close();
       state.stream = new EventSource("/api/events/stream", { withCredentials: true });
-      state.stream.addEventListener("ready", () => setLive("ok", "实时已连接"));
-      state.stream.addEventListener("event", () => refreshDashboard().catch(() => {}));
-      state.stream.addEventListener("error", () => setLive("warn", "实时重连中"));
+      const source = state.stream;
+      setLive("warn", "实时连接中");
+      source.addEventListener("ready", () => {
+        if (state.stream !== source) return;
+        setLive("ok", "实时已连接");
+      });
+      source.onopen = () => {
+        if (state.stream !== source) return;
+        setLive("warn", "实时连接中");
+      };
+      source.addEventListener("event", (ev) => {
+        if (state.stream !== source) return;
+        try {
+          mergeEvent(JSON.parse(ev.data));
+        } catch (_) {}
+        scheduleFollowUpRefreshes();
+      });
+      source.addEventListener("error", () => {
+        if (state.stream !== source) return;
+        setLive("warn", "实时重连中");
+      });
+    }
+    async function manualRefresh() {
+      try {
+        await refreshDashboard({ force: true, feedback: true });
+        startStream({ force: true });
+      } catch (err) {
+        setRefreshBusy(false);
+        setLive("bad", "刷新失败");
+        if (/not_authenticated|key_not_available/.test(String(err.message || ""))) {
+          showLoggedIn(false);
+        }
+      }
+    }
+    function reviveDashboard() {
+      if ($("dashboard").classList.contains("hidden")) return;
+      startStream({ force: true });
+      refreshDashboard({ force: true }).catch(() => {});
     }
     $("loginForm").addEventListener("submit", async (event) => {
       event.preventDefault();
@@ -675,7 +831,7 @@
       try {
         await api("/api/session", { method: "POST", body: JSON.stringify({ api_key: $("apiKeyInput").value }) });
         $("apiKeyInput").value = "";
-        await refreshDashboard();
+        await refreshDashboard({ force: true });
         startStream();
       } catch (err) {
         $("loginError").textContent = "登录失败：" + err.message;
@@ -690,8 +846,20 @@
       setLive("warn", "实时未连接");
       $("keyLine").textContent = "使用 Key Policy 的 cpa_... Key 登录，只查看自己的用量。";
     };
-    $("refreshBtn").onclick = () => refreshDashboard().catch(() => {});
-    $("rangeSelect").onchange = () => refreshDashboard().catch(() => {});
+    $("refreshBtn").onclick = () => manualRefresh();
+    $("rangeSelect").onchange = () => refreshDashboard({ force: true, feedback: true }).catch(() => {});
+    document.addEventListener("visibilitychange", () => {
+      if (!document.hidden) reviveDashboard();
+    });
+    window.addEventListener("pageshow", reviveDashboard);
+    window.addEventListener("focus", () => {
+      if (Date.now() - state.lastRefreshAt > 60000) reviveDashboard();
+    });
+    setInterval(() => {
+      if (!$("dashboard").classList.contains("hidden") && !document.hidden) {
+        refreshDashboard().catch(() => {});
+      }
+    }, 30000);
     refreshDashboard().then(startStream).catch(() => showLoggedIn(false));
   </script>
 </body>

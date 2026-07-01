@@ -61,6 +61,7 @@
       cursor: pointer;
       white-space: nowrap;
     }
+    #refresh-btn { min-width: 72px; }
     button.active, button:hover, select:hover, input:focus {
       border-color: var(--line-strong);
       outline: none;
@@ -69,6 +70,18 @@
       border-color: transparent;
       background: linear-gradient(180deg, #43a2ff, #2d86ef);
       font-weight: 760;
+    }
+    button.is-loading::before {
+      content: "";
+      width: 14px;
+      height: 14px;
+      border: 2px solid rgba(232, 237, 245, .28);
+      border-top-color: currentColor;
+      border-radius: 50%;
+      animation: spin .75s linear infinite;
+    }
+    button.refresh-flash {
+      animation: buttonPulse .8s ease;
     }
     .shell {
       width: min(1680px, calc(100% - 32px));
@@ -146,7 +159,20 @@
       height: 8px;
       border-radius: 50%;
       background: var(--muted);
+      position: relative;
       flex: 0 0 auto;
+    }
+    .chip.stream .dot {
+      animation: statusBlink 1.45s ease-in-out infinite;
+    }
+    .chip.stream .dot::after {
+      content: "";
+      position: absolute;
+      inset: -5px;
+      border-radius: inherit;
+      border: 1px solid currentColor;
+      opacity: .55;
+      animation: statusPing 1.45s ease-out infinite;
     }
     .chip.ok { border-color: rgba(97, 211, 79, .28); background: var(--green-soft); color: #a8ef9c; }
     .chip.ok .dot { background: var(--green); }
@@ -367,6 +393,29 @@
       background: transparent !important;
       border: 0 !important;
     }
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+    @keyframes buttonPulse {
+      0% { box-shadow: 0 0 0 0 rgba(59, 150, 255, .42); }
+      100% { box-shadow: 0 0 0 10px rgba(59, 150, 255, 0); }
+    }
+    @keyframes statusBlink {
+      0%, 100% { transform: scale(1); opacity: .72; }
+      50% { transform: scale(1.35); opacity: 1; }
+    }
+    @keyframes statusPing {
+      0% { transform: scale(.65); opacity: .58; }
+      100% { transform: scale(1.9); opacity: 0; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      button.is-loading::before,
+      button.refresh-flash,
+      .chip.stream .dot,
+      .chip.stream .dot::after {
+        animation: none;
+      }
+    }
     @media (max-width: 1180px) {
       .metrics { grid-template-columns: repeat(3, minmax(160px, 1fr)); }
     }
@@ -395,7 +444,7 @@
         </div>
       </div>
       <div class="toolbar">
-        <span class="chip warn" id="stream-pill"><span class="dot"></span><span id="stream-label">连接中</span></span>
+        <span class="chip stream warn" id="stream-pill"><span class="dot"></span><span id="stream-label">连接中</span></span>
         <span class="chip info"><span class="dot"></span><span id="active-now">活跃 0</span></span>
         <button id="refresh-btn" class="primary" type="button">刷新</button>
       </div>
@@ -511,7 +560,19 @@
   </main>
 
   <script>
-    const state = { logs: [], requests: new Map(), expanded: new Set(), pausedLogs: false, autoscroll: true, source: null };
+    const state = {
+      logs: [],
+      requests: new Map(),
+      expanded: new Set(),
+      pausedLogs: false,
+      autoscroll: true,
+      source: null,
+      statusSeq: 0,
+      requestsSeq: 0,
+      logsSeq: 0,
+      refreshing: false,
+      lastRefreshAt: 0,
+    };
     const $ = (id) => document.getElementById(id);
     const PROTECTION = {
       protected_clean: ["已保护 / 无需续写", "ok", "经过保护链，未命中 516/518n-2"],
@@ -568,8 +629,36 @@
     }
     function setStream(kind, text) {
       const el = $("stream-pill");
-      el.className = `chip ${kind}`;
+      el.className = `chip stream ${kind}`;
       setText("stream-label", text);
+    }
+    function setRefreshBusy(busy) {
+      const button = $("refresh-btn");
+      button.classList.toggle("is-loading", busy);
+      button.setAttribute("aria-busy", busy ? "true" : "false");
+      button.textContent = busy ? "刷新中" : "刷新";
+      if (!busy) {
+        button.classList.remove("refresh-flash");
+        void button.offsetWidth;
+        button.classList.add("refresh-flash");
+      }
+    }
+    function cacheBust(path) {
+      const joiner = path.includes("?") ? "&" : "?";
+      return `${path}${joiner}_=${Date.now()}`;
+    }
+    async function fetchFresh(path, options = {}) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), options.timeoutMs || 15000);
+      try {
+        return await fetch(cacheBust(path), {
+          cache: "no-store",
+          signal: controller.signal,
+          ...options,
+        });
+      } finally {
+        clearTimeout(timer);
+      }
     }
     function chip(kind) {
       const [label, cls, title] = PROTECTION[kind] || PROTECTION.processing;
@@ -712,10 +801,24 @@
       }).join("");
       if (state.autoscroll) $("log-wrap").scrollTop = $("log-wrap").scrollHeight;
     }
+    function hasProcessingRequest() {
+      return Array.from(state.requests.values()).some((req) => (
+        req.status === "processing" || req.protection === "processing" || !req.ended_at
+      ));
+    }
+    function scheduleRequestFollowUp(req) {
+      refreshStatus().catch(() => {});
+      if (req && (req.status === "processing" || req.protection === "processing" || !req.ended_at)) {
+        setTimeout(() => loadRequests().catch(() => {}), 1500);
+        setTimeout(() => loadRequests().catch(() => {}), 4500);
+      }
+    }
     async function refreshStatus() {
+      const seq = ++state.statusSeq;
       try {
-        const res = await fetch("status", { cache: "no-store" });
+        const res = await fetchFresh("status");
         const data = await res.json();
+        if (seq !== state.statusSeq) return;
         const counters = data.counters || {};
         setText("subtitle", `上游 ${data.upstream?.ok === true ? "正常" : "未知"} / ${data.config?.upstream_host || "-"}`);
         setText("m-total", counters.total_requests || 0);
@@ -727,40 +830,60 @@
         setText("m-last-request", data.last_request_at ? `最近 ${fmtTime(data.last_request_at)}` : `运行 ${fmtDuration(data.uptime_seconds)}`);
         setText("m-last-cont", data.last_continuation_at ? `最近 ${fmtTime(data.last_continuation_at)}` : "-");
         setText("m-last-error", data.last_error_at ? `最近 ${fmtTime(data.last_error_at)}` : "-");
+        state.lastRefreshAt = Date.now();
       } catch (err) {
         setText("subtitle", `状态刷新失败：${err.name || err}`);
       }
     }
     async function loadRequests() {
+      const seq = ++state.requestsSeq;
       try {
-        const res = await fetch("requests?limit=100", { cache: "no-store" });
+        const res = await fetchFresh("requests?limit=100");
         const data = await res.json();
+        if (seq !== state.requestsSeq) return;
         state.requests = new Map((data.requests || []).map((req) => [req.request_id, req]));
         renderRequests();
+        state.lastRefreshAt = Date.now();
+        if (hasProcessingRequest()) {
+          setTimeout(() => loadRequests().catch(() => {}), 2500);
+        }
       } catch (_) {}
     }
     async function loadInitialLogs() {
+      const seq = ++state.logsSeq;
       try {
-        const res = await fetch("logs?limit=200", { cache: "no-store" });
+        const res = await fetchFresh("logs?limit=200");
         const data = await res.json();
+        if (seq !== state.logsSeq) return;
         state.logs = data.events || [];
         renderLogs();
       } catch (_) {}
     }
-    function connectStream() {
+    function connectStream(options = {}) {
+      if (state.source && !options.force) return;
       if (state.source) state.source.close();
       const source = new EventSource("logs/stream");
       state.source = source;
       setStream("warn", "连接中");
-      source.addEventListener("ready", () => setStream("live", "实时已连接"));
+      source.addEventListener("ready", () => {
+        if (state.source !== source) return;
+        setStream("live", "实时已连接");
+      });
+      source.onopen = () => {
+        if (state.source !== source) return;
+        setStream("warn", "实时连接中");
+      };
       source.addEventListener("request", (ev) => {
+        if (state.source !== source) return;
         try {
           const req = JSON.parse(ev.data);
           state.requests.set(req.request_id, req);
           renderRequests();
+          scheduleRequestFollowUp(req);
         } catch (_) {}
       });
       source.addEventListener("log", (ev) => {
+        if (state.source !== source) return;
         if (state.pausedLogs) return;
         try {
           state.logs.push(JSON.parse(ev.data));
@@ -768,9 +891,28 @@
           renderLogs();
         } catch (_) {}
       });
-      source.onerror = () => setStream("bad", "连接中断");
+      source.onerror = () => {
+        if (state.source !== source) return;
+        setStream("bad", "连接中断");
+      };
     }
-    $("refresh-btn").onclick = () => { refreshStatus(); loadRequests(); };
+    async function manualRefresh() {
+      if (state.refreshing) return;
+      state.refreshing = true;
+      setRefreshBusy(true);
+      try {
+        await Promise.all([refreshStatus(), loadRequests(), loadInitialLogs()]);
+        connectStream({ force: true });
+      } finally {
+        state.refreshing = false;
+        setRefreshBusy(false);
+      }
+    }
+    function reviveDashboard() {
+      connectStream({ force: true });
+      Promise.all([refreshStatus(), loadRequests(), loadInitialLogs()]).catch(() => {});
+    }
+    $("refresh-btn").onclick = () => { manualRefresh().catch(() => {}); };
     $("pause-btn").onclick = () => {
       state.pausedLogs = !state.pausedLogs;
       $("pause-btn").textContent = state.pausedLogs ? "继续日志" : "暂停日志";
@@ -789,8 +931,15 @@
     loadInitialLogs();
     refreshStatus();
     connectStream();
+    document.addEventListener("visibilitychange", () => {
+      if (!document.hidden) reviveDashboard();
+    });
+    window.addEventListener("pageshow", reviveDashboard);
+    window.addEventListener("focus", () => {
+      if (Date.now() - state.lastRefreshAt > 60000) reviveDashboard();
+    });
     setInterval(refreshStatus, 5000);
-    setInterval(loadRequests, 15000);
+    setInterval(loadRequests, 5000);
   </script>
 </body>
 </html>

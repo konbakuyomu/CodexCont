@@ -46,6 +46,7 @@ class FakeCPAMP:
         return {"ok": True}
 
     async def analytics(self, *, api_key_hash, window, include_events=False,
+                        include_model_stats=False,
                         event_limit=100, before_ms=None, before_id=None):
         self.seen_hashes.append(api_key_hash)
         data = {
@@ -54,12 +55,33 @@ class FakeCPAMP:
                 "success_calls": 1,
                 "failure_calls": 1,
                 "success_rate": 0.5,
+                "input_tokens": 100,
+                "output_tokens": 50,
+                "cached_tokens": 20,
+                "cache_read_tokens": 0,
+                "cache_creation_tokens": 0,
                 "total_tokens": 300,
                 "reasoning_tokens": 100,
-                "total_cost": 0.0123,
+                "total_cost": 0,
             },
             "timeline": [],
-            "model_share": [{"model": "gpt-5.5", "calls": 2, "tokens": 300, "cost": 0.0123}],
+            "model_share": [{"model": "gpt-5.5", "calls": 2, "tokens": 300, "cost": 0}],
+            "model_stats": [
+                {
+                    "model": "gpt-5.5",
+                    "calls": 2,
+                    "success_calls": 1,
+                    "failure_calls": 1,
+                    "success_rate": 0.5,
+                    "input_tokens": 100,
+                    "output_tokens": 50,
+                    "cached_tokens": 20,
+                    "cache_read_tokens": 0,
+                    "cache_creation_tokens": 0,
+                    "total_tokens": 300,
+                    "cost": 0,
+                }
+            ] if include_model_stats else [],
             "api_key_stats": [
                 {"api_key_hash": api_key_hash, "calls": 2, "total_tokens": 300},
                 {"api_key_hash": self.other_hash, "calls": 99, "total_tokens": 999},
@@ -75,10 +97,13 @@ class FakeCPAMP:
                         "api_key_hash": api_key_hash,
                         "model": "gpt-5.5",
                         "failed": False,
+                        "input_tokens": 100,
+                        "output_tokens": 50,
+                        "cached_tokens": 20,
                         "total_tokens": 200,
                         "reasoning_tokens": 80,
                         "latency_ms": 1234,
-                        "cost": 0.01,
+                        "cost": 0,
                     },
                     {
                         "event_hash": "evt-b",
@@ -110,18 +135,33 @@ def write_state(path: Path, raw_key: str, disabled_key: str) -> tuple[str, str, 
                         "name": "Alice",
                         "enabled": True,
                         "rpm": 12,
-                        "models": ["gpt-5.5"],
+                        "models": [
+                            {
+                                "alias": "gpt-5.5",
+                                "provider": "codex",
+                                "target_model": "gpt-5.5",
+                                "input_price_per_million": 125,
+                                "output_price_per_million": 750,
+                                "cache_read_price_per_million": 12.5,
+                            }
+                        ],
                         "daily_limit_usd": 5,
                         "weekly_limit_usd": 30,
                         "daily_usage_usd": 0.5,
-                        "model_prices": {"gpt-5.5": {"input": 1}},
                     },
                     {
                         "id": "disabled-key",
                         "key_hash": key_policy_hash(disabled_hash),
                         "name": "Disabled",
                         "enabled": False,
-                        "model_prices": {"gpt-5.5": {"input": 1}},
+                        "models": [
+                            {
+                                "alias": "gpt-5.5",
+                                "input_price_per_million": 125,
+                                "output_price_per_million": 750,
+                                "cache_read_price_per_million": 12.5,
+                            }
+                        ],
                     },
                 ]
             },
@@ -156,13 +196,27 @@ def test_key_policy_and_budget(tmp: Path) -> None:
     check("key policy finds cpamp hash", state.get_by_cpamp_hash(cpamp_hash) is record)
     check("key policy safe dict hides full hash",
           record is not None and key_hash not in json.dumps(record.safe_dict()))
+    check("key policy keeps clean model aliases",
+          record is not None and record.models == ["gpt-5.5"],
+          str(record.models if record else None))
+    check("key policy parses per-model prices",
+          record is not None
+          and record.model_prices["gpt-5.5"].input_per_million == 125
+          and record.model_prices["gpt-5.5"].output_per_million == 750
+          and record.model_prices["gpt-5.5"].cache_read_per_million == 12.5,
+          str(record.model_prices if record else None))
+    check("key policy safe dict exposes limits",
+          record is not None
+          and record.safe_dict()["limits"]["daily_usd"] == 5
+          and record.safe_dict()["limits"]["weekly_usd"] == 30,
+          str(record.safe_dict() if record else None))
 
     suggestion = suggest_equal_budget(state.enabled_keys(), total_daily_usd=10, total_weekly_usd=70)
     check("budget enabled count", suggestion.enabled_key_count == 1)
     check("budget daily assigned", suggestion.per_key_daily_usd == 10)
     check("budget patch uses policy hash", suggestion.patches[0]["key_hash"].startswith("sha256:"))
 
-    bad_state = KeyPolicyState([record.__class__(**{**record.__dict__, "raw": {}})])
+    bad_state = KeyPolicyState([record.__class__(**{**record.__dict__, "raw": {}, "model_prices": {}})])
     try:
         suggest_equal_budget(bad_state.enabled_keys(), total_daily_usd=1)
         blocked = False
@@ -266,6 +320,14 @@ def test_app_routes(tmp: Path) -> None:
 
         health = client.get("/healthz")
         check("portal healthz ok", health.status_code == 200 and health.json().get("ok") is True)
+        html = client.get("/")
+        check("portal dashboard html ok", html.status_code == 200 and "CPA 用量自助页" in html.text)
+        check("portal dashboard refresh reconnects stream", "startStream({ force: true })" in html.text)
+        check("portal dashboard revives after background", "visibilitychange" in html.text)
+        check("portal dashboard shows refresh animation", "is-loading" in html.text and "stream warn" in html.text)
+        check("portal dashboard shows key limits", "用量限额" in html.text and "日限" in html.text and "周限" in html.text)
+        check("portal dashboard follows delayed usage updates",
+              "mergeEvent(JSON.parse(ev.data))" in html.text and "scheduleFollowUpRefreshes" in html.text)
 
         bad = client.post("/api/session", json={"api_key": "nope"})
         check("portal rejects unknown key", bad.status_code == 401)
@@ -281,6 +343,14 @@ def test_app_routes(tmp: Path) -> None:
         usage = client.get("/api/usage?range=24h")
         usage_body = usage.json()
         check("portal usage ok", usage.status_code == 200 and usage_body["summary"]["total_calls"] == 2)
+        check("portal usage includes daily and weekly limits",
+              me.json()["me"]["limits"]["daily_usd"] == 5 and me.json()["me"]["limits"]["weekly_usd"] == 30,
+              me.text)
+        check("portal usage recomputes cost from key policy prices",
+              usage_body["summary"]["total_cost"] > 0
+              and usage_body["model_share"][0]["cost"] > 0
+              and usage_body["summary"]["cost_source"] == "key_policy",
+              str(usage_body))
         check("portal usage stat hides cpamp hash", cpamp_hash not in json.dumps(usage_body), str(usage_body))
         check("portal usage stats reject other hash",
               len(usage_body["api_key_stats"]) == 1 and usage_body["api_key_stats"][0]["calls"] == 2,
@@ -288,6 +358,9 @@ def test_app_routes(tmp: Path) -> None:
         events = client.get("/api/events?limit=100")
         body = events.json()
         check("portal filters events to own key", len(body["events"]) == 1, str(body))
+        check("portal events recompute cost from key policy prices",
+              body["events"][0]["cost"] > 0 and body["events"][0]["cost_source"] == "key_policy",
+              str(body))
         check("portal never returns full raw api hash", key_hash not in json.dumps(body), str(body))
         check("portal does not use disabled raw hash", other_raw_hash not in json.dumps(body), str(body))
         check("portal cpamp filter used policy-id hash",

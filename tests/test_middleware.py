@@ -582,6 +582,11 @@ def test_admin_routes_smoke():
         check("admin dashboard Chinese first screen", "最近请求" in html.text)
         check("admin dashboard has trigger round column", "命中轮" in html.text)
         check("admin dashboard has latest reasoning column", "末轮思考量" in html.text)
+        check("admin dashboard refresh reconnects stream", "connectStream({ force: true })" in html.text)
+        check("admin dashboard revives after background", "visibilitychange" in html.text)
+        check("admin dashboard shows refresh animation", "is-loading" in html.text and "stream warn" in html.text)
+        check("admin dashboard follows processing requests",
+              "scheduleRequestFollowUp" in html.text and "setInterval(loadRequests, 5000)" in html.text)
 
         stream = client.get("/admin/logs/stream?once=1")
         check("admin logs stream ready", "event: ready" in stream.text, stream.text[:80])
