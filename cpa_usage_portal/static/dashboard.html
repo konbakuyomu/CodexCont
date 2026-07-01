@@ -6,248 +6,465 @@
   <title>CPA 用量自助页</title>
   <style>
     :root {
-      color-scheme: light;
-      --bg: #f6f7f4;
-      --panel: #ffffff;
-      --ink: #20231f;
-      --muted: #666d62;
-      --line: #dfe4dc;
-      --brand: #0f7b63;
-      --brand-weak: #e6f3ef;
-      --warn: #a26712;
-      --danger: #b3261e;
-      --ok: #176b45;
-      --soft: #eef1eb;
-      font-family: Inter, "Segoe UI", "Microsoft YaHei", sans-serif;
+      color-scheme: dark;
+      --bg: #0b1220;
+      --shell: #111827;
+      --panel: #151d2c;
+      --panel-2: #1a2434;
+      --line: #283448;
+      --line-strong: #33445e;
+      --text: #e8edf5;
+      --muted: #9aa7b8;
+      --faint: #68768a;
+      --blue: #3b96ff;
+      --blue-soft: rgba(59, 150, 255, .14);
+      --green: #61d34f;
+      --green-soft: rgba(97, 211, 79, .13);
+      --red: #ff646d;
+      --red-soft: rgba(255, 100, 109, .13);
+      --amber: #f0aa2b;
+      --amber-soft: rgba(240, 170, 43, .14);
+      --teal: #15c7d4;
+      --teal-soft: rgba(21, 199, 212, .12);
+      --violet: #8d7cff;
+      --violet-soft: rgba(141, 124, 255, .13);
+      --shadow: 0 18px 48px rgba(0, 0, 0, .26);
+      --mono: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+      --sans: Inter, "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+      font-family: var(--sans);
     }
     * { box-sizing: border-box; }
     body {
       margin: 0;
-      background: var(--bg);
-      color: var(--ink);
+      min-height: 100vh;
+      background:
+        radial-gradient(circle at 60% -10%, rgba(59, 150, 255, .16), transparent 30%),
+        linear-gradient(180deg, #101827 0%, var(--bg) 38%, #080e19 100%);
+      color: var(--text);
       letter-spacing: 0;
     }
     button, input, select { font: inherit; }
+    button, select, input {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #111827;
+      color: var(--text);
+    }
+    button, select { min-height: 38px; }
+    button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      padding: 0 13px;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    button.primary {
+      border-color: transparent;
+      background: linear-gradient(180deg, #43a2ff, #2d86ef);
+      color: #fff;
+      font-weight: 750;
+    }
+    button.secondary { background: var(--panel-2); }
+    button:hover, select:hover, input:focus {
+      border-color: var(--line-strong);
+      outline: none;
+    }
+    input {
+      min-height: 42px;
+      width: 100%;
+      min-width: 0;
+      padding: 0 13px;
+      background: #0e1524;
+    }
+    select {
+      padding: 0 34px 0 12px;
+      background: #111827;
+    }
     .shell {
-      max-width: 1180px;
+      width: min(1560px, calc(100% - 32px));
       margin: 0 auto;
-      padding: 24px;
+      padding: 22px 0 34px;
     }
     .topbar {
+      min-height: 58px;
       display: flex;
       align-items: center;
       justify-content: space-between;
       gap: 16px;
-      margin-bottom: 18px;
-    }
-    h1, h2, p { margin: 0; }
-    h1 { font-size: 26px; font-weight: 720; }
-    h2 { font-size: 16px; font-weight: 700; }
-    .muted { color: var(--muted); }
-    .login {
-      display: grid;
-      grid-template-columns: minmax(0, 1fr) auto;
-      gap: 10px;
-      background: var(--panel);
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      padding: 16px;
-      margin-bottom: 18px;
-    }
-    .login input {
-      width: 100%;
-      min-width: 0;
-      border: 1px solid var(--line);
-      border-radius: 6px;
-      padding: 11px 12px;
-      background: #fff;
-      color: var(--ink);
-    }
-    .btn {
-      border: 0;
-      border-radius: 6px;
-      padding: 10px 14px;
-      background: var(--brand);
-      color: white;
-      cursor: pointer;
-      min-height: 40px;
-      white-space: nowrap;
-    }
-    .btn.secondary {
-      background: var(--soft);
-      color: var(--ink);
-      border: 1px solid var(--line);
-    }
-    .btn:disabled { opacity: .55; cursor: not-allowed; }
-    .grid {
-      display: grid;
-      grid-template-columns: repeat(4, minmax(0, 1fr));
-      gap: 12px;
+      padding: 0 16px;
       margin-bottom: 16px;
-    }
-    .card {
-      background: var(--panel);
       border: 1px solid var(--line);
       border-radius: 8px;
-      padding: 14px;
-      min-width: 0;
+      background: rgba(17, 24, 39, .9);
+      box-shadow: var(--shadow);
     }
-    .label {
-      color: var(--muted);
-      font-size: 12px;
-      margin-bottom: 8px;
-    }
-    .value {
-      font-size: 24px;
-      font-weight: 720;
-      overflow-wrap: anywhere;
-    }
-    .section {
-      background: var(--panel);
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      margin-bottom: 16px;
-      overflow: hidden;
-    }
-    .section-head {
+    .brand {
       display: flex;
       align-items: center;
-      justify-content: space-between;
+      min-width: 0;
       gap: 12px;
-      padding: 14px 16px;
-      border-bottom: 1px solid var(--line);
+    }
+    .mark {
+      width: 34px;
+      height: 34px;
+      display: grid;
+      place-items: center;
+      border-radius: 8px;
+      background: linear-gradient(135deg, #2d86ef, #15c7d4);
+      color: #fff;
+      font-weight: 850;
+    }
+    h1, h2, p { margin: 0; }
+    h1 {
+      font-size: 20px;
+      line-height: 1.2;
+      font-weight: 780;
+    }
+    h2 { font-size: 15px; font-weight: 760; }
+    .subtitle {
+      margin-top: 2px;
+      color: var(--muted);
+      font-size: 12px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
     .toolbar {
       display: flex;
       align-items: center;
+      justify-content: flex-end;
       gap: 8px;
       flex-wrap: wrap;
     }
     .chip {
       display: inline-flex;
       align-items: center;
-      height: 24px;
+      gap: 7px;
+      min-height: 28px;
+      padding: 0 10px;
       border-radius: 999px;
-      padding: 0 9px;
-      font-size: 12px;
-      background: var(--soft);
+      border: 1px solid var(--line);
+      background: var(--panel-2);
       color: var(--muted);
+      font-size: 12px;
+      font-weight: 720;
       white-space: nowrap;
     }
-    .chip.ok { color: var(--ok); background: #e8f5ed; }
-    .chip.bad { color: var(--danger); background: #fbe9e7; }
-    .chip.warn { color: var(--warn); background: #fff2dc; }
-    .table-wrap { overflow-x: auto; }
+    .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--muted);
+      flex: 0 0 auto;
+    }
+    .chip.ok { border-color: rgba(97, 211, 79, .28); background: var(--green-soft); color: #a8ef9c; }
+    .chip.ok .dot { background: var(--green); }
+    .chip.warn { border-color: rgba(240, 170, 43, .34); background: var(--amber-soft); color: #ffd083; }
+    .chip.warn .dot { background: var(--amber); }
+    .chip.bad { border-color: rgba(255, 100, 109, .34); background: var(--red-soft); color: #ffb5ba; }
+    .chip.bad .dot { background: var(--red); }
+    .chip.info { border-color: rgba(59, 150, 255, .34); background: var(--blue-soft); color: #acd4ff; }
+    .chip.info .dot { background: var(--blue); }
+    .login {
+      max-width: 920px;
+      margin: 92px auto 0;
+      padding: 22px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: rgba(21, 29, 44, .95);
+      box-shadow: var(--shadow);
+    }
+    .login-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 16px;
+    }
+    .login-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 10px;
+    }
+    .error {
+      display: none;
+      margin-top: 10px;
+      color: #ffb5ba;
+      font-size: 13px;
+    }
+    .error.show { display: block; }
+    .hidden { display: none !important; }
+    .metrics {
+      display: grid;
+      grid-template-columns: repeat(6, minmax(150px, 1fr));
+      gap: 12px;
+      margin-bottom: 14px;
+    }
+    .metric {
+      min-height: 126px;
+      position: relative;
+      overflow: hidden;
+      padding: 15px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: linear-gradient(180deg, rgba(26, 36, 52, .96), rgba(21, 29, 44, .96));
+    }
+    .metric::after {
+      content: "";
+      position: absolute;
+      right: 12px;
+      bottom: 10px;
+      width: 74px;
+      height: 38px;
+      border-bottom: 2px solid rgba(59, 150, 255, .18);
+      border-radius: 50%;
+      transform: rotate(-8deg);
+    }
+    .metric-label {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 760;
+    }
+    .metric-icon {
+      width: 28px;
+      height: 28px;
+      display: inline-grid;
+      place-items: center;
+      border-radius: 8px;
+      background: var(--blue-soft);
+      color: var(--blue);
+      font-weight: 850;
+    }
+    .metric-icon.ok { background: var(--green-soft); color: var(--green); }
+    .metric-icon.bad { background: var(--red-soft); color: var(--red); }
+    .metric-icon.warn { background: var(--amber-soft); color: var(--amber); }
+    .metric-icon.teal { background: var(--teal-soft); color: var(--teal); }
+    .metric-icon.violet { background: var(--violet-soft); color: var(--violet); }
+    .metric-value {
+      position: relative;
+      z-index: 1;
+      margin-top: 18px;
+      font-size: 30px;
+      line-height: 1;
+      font-weight: 800;
+      overflow-wrap: anywhere;
+    }
+    .metric-hint {
+      position: relative;
+      z-index: 1;
+      margin-top: 9px;
+      color: var(--muted);
+      font-size: 12px;
+      min-height: 18px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .section {
+      margin-bottom: 14px;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: rgba(21, 29, 44, .96);
+      box-shadow: 0 14px 34px rgba(0, 0, 0, .18);
+    }
+    .section-head {
+      min-height: 60px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--line);
+      background: rgba(26, 36, 52, .8);
+    }
+    .section-title { display: grid; gap: 3px; }
+    .muted { color: var(--muted); }
+    .table-wrap {
+      overflow-x: auto;
+      background: #121a29;
+    }
     table {
       width: 100%;
-      border-collapse: collapse;
-      min-width: 840px;
-    }
-    th, td {
-      text-align: left;
-      border-bottom: 1px solid var(--line);
-      padding: 10px 12px;
-      font-size: 13px;
-      vertical-align: top;
+      min-width: 980px;
+      border-collapse: separate;
+      border-spacing: 0 8px;
+      table-layout: fixed;
+      padding: 8px 10px 12px;
     }
     th {
+      padding: 0 10px 4px;
       color: var(--muted);
-      background: #fafbf8;
-      font-weight: 650;
+      text-align: left;
+      font-size: 12px;
+      font-weight: 760;
+      white-space: nowrap;
     }
-    td { overflow-wrap: anywhere; }
+    td {
+      padding: 13px 10px;
+      border-top: 1px solid var(--line);
+      border-bottom: 1px solid var(--line);
+      background: #161e2d;
+      vertical-align: middle;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    tbody tr.data-row td:first-child,
+    tbody tr.model-row td:first-child { border-left: 1px solid var(--line); border-radius: 8px 0 0 8px; }
+    tbody tr.data-row td:last-child,
+    tbody tr.model-row td:last-child { border-right: 1px solid var(--line); border-radius: 0 8px 8px 0; }
+    tbody tr.detail-row td {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #111827;
+      overflow: visible;
+      text-overflow: clip;
+    }
+    .col-time { width: 170px; }
+    .col-status { width: 105px; }
+    .col-model { width: 150px; }
+    .col-latency { width: 120px; }
+    .col-tokens { width: 120px; }
+    .col-reasoning { width: 120px; }
+    .col-cost { width: 100px; }
+    .col-action { width: 92px; }
+    .mono {
+      font-family: var(--mono);
+      font-size: 12px;
+    }
+    .strong { font-weight: 800; }
+    .success { color: var(--green); }
+    .danger { color: var(--red); }
+    .accent { color: var(--blue); }
+    .detail-grid {
+      display: grid;
+      grid-template-columns: minmax(260px, .9fr) minmax(320px, 1.4fr);
+      gap: 16px;
+    }
+    .detail-list {
+      display: grid;
+      grid-template-columns: 118px minmax(0, 1fr);
+      gap: 8px 12px;
+      line-height: 1.45;
+    }
+    .detail-list span:nth-child(odd) { color: var(--muted); }
+    .failure-box {
+      max-height: 180px;
+      overflow: auto;
+      padding: 10px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #0d1422;
+      color: #ccd6e4;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
     .empty {
-      padding: 24px;
+      padding: 28px;
       color: var(--muted);
       text-align: center;
+      background: transparent !important;
+      border: 0 !important;
     }
-    .progress {
-      height: 8px;
-      background: var(--soft);
-      border-radius: 999px;
-      overflow: hidden;
-      margin-top: 8px;
+    @media (max-width: 1180px) {
+      .metrics { grid-template-columns: repeat(3, minmax(160px, 1fr)); }
     }
-    .bar {
-      height: 100%;
-      width: 0;
-      background: var(--brand);
-    }
-    .hidden { display: none !important; }
-    .error {
-      color: var(--danger);
-      font-size: 13px;
-      padding-top: 8px;
-    }
-    @media (max-width: 820px) {
-      .shell { padding: 16px; }
-      .topbar { align-items: flex-start; flex-direction: column; }
-      .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-      .login { grid-template-columns: 1fr; }
-      h1 { font-size: 22px; }
-      .value { font-size: 20px; }
-    }
-    @media (max-width: 460px) {
-      .grid { grid-template-columns: 1fr; }
-      .section-head { align-items: flex-start; flex-direction: column; }
+    @media (max-width: 760px) {
+      .shell { width: min(100% - 18px, 1560px); padding-top: 10px; }
+      .topbar, .section-head, .login-head { align-items: flex-start; flex-direction: column; }
+      .toolbar { justify-content: flex-start; width: 100%; }
+      .login { margin-top: 28px; padding: 16px; }
+      .login-grid { grid-template-columns: 1fr; }
+      .metrics { grid-template-columns: 1fr; }
+      .detail-grid { grid-template-columns: 1fr; }
+      h1 { font-size: 18px; }
+      .metric { min-height: 104px; }
+      .metric-value { font-size: 26px; }
+      table { min-width: 880px; }
     }
   </style>
 </head>
 <body>
   <main class="shell">
-    <div class="topbar">
-      <div>
-        <h1>CPA 用量自助页</h1>
-        <p class="muted">用自己的 API Key 登录，只查看自己的限额、用量和最近请求。</p>
+    <header class="topbar">
+      <div class="brand">
+        <div class="mark">C</div>
+        <div>
+          <h1>CPA 用量自助页</h1>
+          <div class="subtitle" id="keyLine">使用 Key Policy 的 cpa_... Key 登录，只查看自己的用量。</div>
+        </div>
       </div>
       <div class="toolbar">
-        <span id="liveChip" class="chip warn">实时未连接</span>
-        <button id="logoutBtn" class="btn secondary hidden" type="button">退出</button>
+        <span id="liveChip" class="chip warn"><span class="dot"></span><span>实时未连接</span></span>
+        <select id="rangeSelect" class="hidden" title="统计范围">
+          <option value="24h">24 小时</option>
+          <option value="7d">7 天</option>
+        </select>
+        <button id="refreshBtn" class="secondary hidden" type="button">刷新</button>
+        <button id="logoutBtn" class="secondary hidden" type="button">退出</button>
       </div>
-    </div>
+    </header>
 
-    <form id="loginForm" class="login">
-      <div>
-        <input id="apiKeyInput" type="password" autocomplete="off" placeholder="粘贴你的 cpa_... API Key">
-        <div id="loginError" class="error hidden"></div>
+    <section id="loginPanel" class="login">
+      <div class="login-head">
+        <div>
+          <h2>登录用量面板</h2>
+          <p class="muted">请输入 Key Policy 生成的 `cpa_...` Key。旧 `sk...` 原生 key 不参与自助用量体系。</p>
+        </div>
+        <span class="chip info"><span class="dot"></span><span>用户自查</span></span>
       </div>
-      <button class="btn" type="submit">登录查看</button>
-    </form>
+      <form id="loginForm" class="login-grid">
+        <input id="apiKeyInput" type="password" autocomplete="off" placeholder="粘贴你的 cpa_... API Key">
+        <button class="primary" type="submit">登录查看</button>
+      </form>
+      <div id="loginError" class="error"></div>
+    </section>
 
     <section id="dashboard" class="hidden">
-      <div class="grid">
-        <div class="card">
-          <div class="label">Key 状态</div>
-          <div id="keyStatus" class="value">-</div>
-          <div id="keyMeta" class="muted"></div>
-        </div>
-        <div class="card">
-          <div class="label">今日用量</div>
-          <div id="dailyUsage" class="value">$0.0000</div>
-          <div class="progress"><div id="dailyBar" class="bar"></div></div>
-        </div>
-        <div class="card">
-          <div class="label">最近 24 小时请求</div>
-          <div id="calls" class="value">0</div>
-          <div id="successRate" class="muted">成功率 -</div>
-        </div>
-        <div class="card">
-          <div class="label">Tokens</div>
-          <div id="tokens" class="value">0</div>
-          <div id="reasoning" class="muted">Reasoning 0</div>
-        </div>
-      </div>
+      <section class="metrics">
+        <article class="metric">
+          <div class="metric-label"><span class="metric-icon">#</span>总调用</div>
+          <div id="calls" class="metric-value">0</div>
+          <div id="keyMeta" class="metric-hint">-</div>
+        </article>
+        <article class="metric">
+          <div class="metric-label"><span class="metric-icon ok">%</span>成功率</div>
+          <div id="successRate" class="metric-value success">-</div>
+          <div id="failureCount" class="metric-hint">失败 0</div>
+        </article>
+        <article class="metric">
+          <div class="metric-label"><span class="metric-icon warn">$</span>估算费用</div>
+          <div id="totalCost" class="metric-value">$0.0000</div>
+          <div id="limitHint" class="metric-hint">-</div>
+        </article>
+        <article class="metric">
+          <div class="metric-label"><span class="metric-icon violet">T</span>总 Tokens</div>
+          <div id="tokens" class="metric-value">0</div>
+          <div id="cachedTokens" class="metric-hint">缓存 0</div>
+        </article>
+        <article class="metric">
+          <div class="metric-label"><span class="metric-icon teal">R</span>Reasoning</div>
+          <div id="reasoning" class="metric-value">0</div>
+          <div id="outputTokens" class="metric-hint">输出 0</div>
+        </article>
+        <article class="metric">
+          <div class="metric-label"><span class="metric-icon bad">!</span>Key 状态</div>
+          <div id="keyStatus" class="metric-value">-</div>
+          <div id="rpmHint" class="metric-hint">-</div>
+        </article>
+      </section>
 
       <section class="section">
         <div class="section-head">
-          <div>
+          <div class="section-title">
             <h2>模型分布</h2>
-            <p class="muted">按当前 Key 的最近 24 小时统计。</p>
+            <p class="muted">按当前 Key 和所选时间范围统计。</p>
           </div>
-          <select id="rangeSelect">
-            <option value="24h">24 小时</option>
-            <option value="7d">7 天</option>
-          </select>
         </div>
         <div class="table-wrap">
           <table>
@@ -259,45 +476,73 @@
 
       <section class="section">
         <div class="section-head">
-          <div>
+          <div class="section-title">
             <h2>最近请求</h2>
-            <p class="muted">只显示这个 Key 的请求；失败原因已脱敏。</p>
+            <p class="muted">主表只显示摘要；展开后查看脱敏详情。</p>
           </div>
-          <button id="refreshBtn" class="btn secondary" type="button">刷新</button>
+          <span id="eventCountChip" class="chip info"><span class="dot"></span><span>0 条</span></span>
         </div>
         <div class="table-wrap">
           <table>
             <thead>
               <tr>
-                <th>时间</th><th>状态</th><th>模型</th><th>延迟</th><th>Tokens</th><th>Reasoning</th><th>费用</th><th>摘要</th>
+                <th class="col-time">时间</th>
+                <th class="col-status">状态</th>
+                <th class="col-model">模型</th>
+                <th class="col-latency">延迟</th>
+                <th class="col-tokens">Tokens</th>
+                <th class="col-reasoning">Reasoning</th>
+                <th class="col-cost">费用</th>
+                <th class="col-action">详情</th>
               </tr>
             </thead>
-            <tbody id="eventRows"></tbody>
+            <tbody id="eventRows"><tr><td colspan="8" class="empty">暂无请求记录</td></tr></tbody>
           </table>
         </div>
-        <div id="emptyEvents" class="empty hidden">还没有请求记录。</div>
       </section>
     </section>
   </main>
 
   <script>
     const $ = (id) => document.getElementById(id);
-    let stream = null;
+    const state = { me: null, events: [], expanded: new Set(), stream: null, refreshing: false };
 
-    function money(v) {
-      const n = Number(v || 0);
-      return "$" + n.toFixed(4);
+    function escapeHtml(value) {
+      return String(value == null ? "" : value).replace(/[&<>"']/g, ch => ({
+        "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+      }[ch]));
     }
-    function num(v) {
-      return Number(v || 0).toLocaleString("zh-CN");
+    function num(value) {
+      return Number(value || 0).toLocaleString("zh-CN");
     }
-    function pct(v) {
-      if (v === null || v === undefined) return "-";
-      return (Number(v) * 100).toFixed(1) + "%";
+    function money(value) {
+      return "$" + Number(value || 0).toFixed(4);
+    }
+    function pct(value) {
+      if (value === null || value === undefined || value === "") return "-";
+      return (Number(value) * 100).toFixed(1) + "%";
     }
     function time(ms) {
       if (!ms) return "-";
       return new Date(Number(ms)).toLocaleString("zh-CN", { hour12: false });
+    }
+    function duration(ms) {
+      if (ms === null || ms === undefined || ms === "") return "-";
+      const n = Number(ms);
+      if (n < 1000) return `${Math.round(n)} ms`;
+      return `${(n / 1000).toFixed(2)} s`;
+    }
+    function setLive(kind, text) {
+      const chip = $("liveChip");
+      chip.className = `chip ${kind}`;
+      chip.innerHTML = `<span class="dot"></span><span>${escapeHtml(text)}</span>`;
+    }
+    function showLoggedIn(value) {
+      $("loginPanel").classList.toggle("hidden", value);
+      $("dashboard").classList.toggle("hidden", !value);
+      $("logoutBtn").classList.toggle("hidden", !value);
+      $("refreshBtn").classList.toggle("hidden", !value);
+      $("rangeSelect").classList.toggle("hidden", !value);
     }
     async function api(path, options = {}) {
       const resp = await fetch(path, {
@@ -311,101 +556,143 @@
       }
       return resp.json();
     }
-    function setLoggedIn(on) {
-      $("loginForm").classList.toggle("hidden", on);
-      $("dashboard").classList.toggle("hidden", !on);
-      $("logoutBtn").classList.toggle("hidden", !on);
+    function statusChip(event) {
+      if (event.status === "success") {
+        return '<span class="chip ok"><span class="dot"></span><span>成功</span></span>';
+      }
+      return '<span class="chip bad"><span class="dot"></span><span>失败</span></span>';
     }
     function renderMe(me) {
+      state.me = me;
       $("keyStatus").textContent = me.enabled ? "启用中" : "已停用";
-      $("keyMeta").textContent = `${me.name || "未命名"} · ${me.preview || ""} · RPM ${me.rpm || "不限"}`;
+      $("keyStatus").className = `metric-value ${me.enabled ? "success" : "danger"}`;
+      $("keyMeta").textContent = `${me.name || "未命名"} / ${me.preview || "-"} `;
+      $("rpmHint").textContent = `RPM ${me.rpm || "不限"} / 模型 ${Array.isArray(me.models) && me.models.length ? me.models.join(", ") : "未限制"}`;
+      $("keyLine").textContent = `${me.name || "当前 Key"} · ${me.preview || ""}`;
     }
-    function renderUsage(data, me) {
+    function renderUsage(data) {
       const s = data.summary || {};
-      $("dailyUsage").textContent = money(s.total_cost);
-      const limit = $("rangeSelect").value === "7d" ? me.limits?.weekly_usd : me.limits?.daily_usd;
-      const rate = limit ? Math.min(100, Number(s.total_cost || 0) / Number(limit) * 100) : 0;
-      $("dailyBar").style.width = rate + "%";
+      const me = state.me || {};
+      const range = $("rangeSelect").value;
+      const limit = range === "7d" ? me.limits?.weekly_usd : me.limits?.daily_usd;
       $("calls").textContent = num(s.total_calls);
-      $("successRate").textContent = "成功率 " + pct(s.success_rate);
+      $("successRate").textContent = pct(s.success_rate);
+      $("failureCount").textContent = `失败 ${num(s.failure_calls)}`;
+      $("totalCost").textContent = money(s.total_cost);
+      $("limitHint").textContent = limit ? `限额 ${money(limit)} / 已用 ${Math.min(100, Number(s.total_cost || 0) / Number(limit) * 100).toFixed(1)}%` : "未设置 USD 限额";
       $("tokens").textContent = num(s.total_tokens);
-      $("reasoning").textContent = "Reasoning " + num(s.reasoning_tokens);
+      $("cachedTokens").textContent = `缓存 ${num(s.cached_tokens || s.cache_read_tokens)}`;
+      $("reasoning").textContent = num(s.reasoning_tokens);
+      $("outputTokens").textContent = `输出 ${num(s.output_tokens)}`;
 
       const rows = (data.model_share || []).map(row => `
-        <tr>
-          <td>${escapeHtml(row.model || "-")}</td>
+        <tr class="model-row">
+          <td class="mono">${escapeHtml(row.model || "-")}</td>
           <td>${num(row.calls)}</td>
           <td>${num(row.tokens)}</td>
           <td>${money(row.cost)}</td>
         </tr>`).join("");
-      $("modelRows").innerHTML = rows || `<tr><td colspan="4" class="muted">暂无数据</td></tr>`;
+      $("modelRows").innerHTML = rows || '<tr><td colspan="4" class="empty">暂无模型统计</td></tr>';
     }
-    function renderEvents(events) {
-      $("emptyEvents").classList.toggle("hidden", events.length > 0);
-      $("eventRows").innerHTML = events.map(eventRow).join("");
-    }
-    function eventRow(ev) {
-      const ok = ev.status === "success";
-      const chip = ok ? `<span class="chip ok">成功</span>` : `<span class="chip bad">失败</span>`;
-      return `<tr>
-        <td>${time(ev.timestamp_ms)}</td>
-        <td>${chip}</td>
-        <td>${escapeHtml(ev.model || "-")}</td>
-        <td>${ev.latency_ms == null ? "-" : num(ev.latency_ms) + " ms"}</td>
-        <td>${num(ev.total_tokens)}</td>
-        <td>${num(ev.reasoning_tokens)}</td>
-        <td>${money(ev.cost)}</td>
-        <td>${escapeHtml(ev.failure || ev.endpoint || "-")}</td>
+    function detailRow(event, id) {
+      const quota = event.quota || {};
+      const failure = event.failure || event.failure_brief || "无失败详情";
+      return `<tr class="detail-row" ${state.expanded.has(id) ? "" : "hidden"}>
+        <td colspan="8">
+          <div class="detail-grid">
+            <div class="detail-list">
+              <span>请求 ID</span><strong class="mono">${escapeHtml(event.request_id || "-")}</strong>
+              <span>接口</span><strong>${escapeHtml(event.endpoint || "-")}</strong>
+              <span>状态码</span><strong>${escapeHtml(event.status_code || "-")}</strong>
+              <span>Service Tier</span><strong>${escapeHtml(event.service_tier || "-")}</strong>
+              <span>Reasoning Effort</span><strong>${escapeHtml(event.reasoning_effort || "-")}</strong>
+              <span>Quota</span><strong>${escapeHtml(quota.used_percent == null ? "-" : quota.used_percent + "%")}</strong>
+            </div>
+            <div>
+              <div class="muted" style="margin-bottom:8px;">脱敏失败详情</div>
+              <div class="failure-box mono">${escapeHtml(failure)}</div>
+            </div>
+          </div>
+        </td>
       </tr>`;
     }
-    function escapeHtml(v) {
-      return String(v).replace(/[&<>"']/g, ch => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]));
+    function renderEvents(events) {
+      state.events = events || [];
+      $("eventCountChip").innerHTML = `<span class="dot"></span><span>${num(state.events.length)} 条</span>`;
+      if (!state.events.length) {
+        $("eventRows").innerHTML = '<tr><td colspan="8" class="empty">暂无请求记录</td></tr>';
+        return;
+      }
+      $("eventRows").innerHTML = state.events.map((ev, index) => {
+        const id = ev.event_hash || ev.request_id || String(index);
+        const brief = ev.failure_brief || "";
+        return `<tr class="data-row">
+          <td><div>${escapeHtml(time(ev.timestamp_ms))}</div><div class="muted mono">${escapeHtml(ev.request_id || "")}</div></td>
+          <td>${statusChip(ev)}${brief ? `<div class="muted">${escapeHtml(brief)}</div>` : ""}</td>
+          <td><div class="mono">${escapeHtml(ev.model || "-")}</div><div class="muted">${escapeHtml(ev.requested_model || "")}</div></td>
+          <td><span class="strong ${ev.failed ? "danger" : "success"}">${escapeHtml(duration(ev.latency_ms))}</span><div class="muted">TTFT ${escapeHtml(duration(ev.ttft_ms))}</div></td>
+          <td><span class="strong">${num(ev.total_tokens)}</span><div class="muted">I ${num(ev.input_tokens)} / O ${num(ev.output_tokens)}</div></td>
+          <td><span class="strong accent">${num(ev.reasoning_tokens)}</span></td>
+          <td>${money(ev.cost)}</td>
+          <td><button class="secondary" type="button" data-toggle="${escapeHtml(id)}">${state.expanded.has(id) ? "收起" : "展开"}</button></td>
+        </tr>${detailRow(ev, id)}`;
+      }).join("");
+      $("eventRows").querySelectorAll("[data-toggle]").forEach(button => {
+        button.onclick = () => {
+          const id = button.getAttribute("data-toggle");
+          if (state.expanded.has(id)) state.expanded.delete(id);
+          else state.expanded.add(id);
+          renderEvents(state.events);
+        };
+      });
     }
-    async function refresh() {
-      const meData = await api("/api/me");
-      renderMe(meData.me);
-      const range = $("rangeSelect").value;
-      renderUsage(await api(`/api/usage?range=${encodeURIComponent(range)}`), meData.me);
-      const ev = await api("/api/events?limit=100");
-      renderEvents(ev.events || []);
-      setLoggedIn(true);
-      startStream();
+    async function refreshDashboard() {
+      if (state.refreshing) return;
+      state.refreshing = true;
+      try {
+        const meData = await api("/api/me");
+        renderMe(meData.me);
+        const range = $("rangeSelect").value;
+        const usage = await api(`/api/usage?range=${encodeURIComponent(range)}`);
+        renderUsage(usage);
+        const events = await api("/api/events?limit=100");
+        renderEvents(events.events || []);
+        showLoggedIn(true);
+      } finally {
+        state.refreshing = false;
+      }
     }
     function startStream() {
-      if (stream) stream.close();
-      stream = new EventSource("/api/events/stream", { withCredentials: true });
-      stream.addEventListener("ready", () => {
-        $("liveChip").textContent = "实时已连接";
-        $("liveChip").className = "chip ok";
-      });
-      stream.addEventListener("event", () => refresh().catch(() => {}));
-      stream.addEventListener("error", () => {
-        $("liveChip").textContent = "实时重连中";
-        $("liveChip").className = "chip warn";
-      });
+      if (state.stream) return;
+      state.stream = new EventSource("/api/events/stream", { withCredentials: true });
+      state.stream.addEventListener("ready", () => setLive("ok", "实时已连接"));
+      state.stream.addEventListener("event", () => refreshDashboard().catch(() => {}));
+      state.stream.addEventListener("error", () => setLive("warn", "实时重连中"));
     }
-    $("loginForm").addEventListener("submit", async (e) => {
-      e.preventDefault();
-      $("loginError").classList.add("hidden");
+    $("loginForm").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      $("loginError").classList.remove("show");
       try {
         await api("/api/session", { method: "POST", body: JSON.stringify({ api_key: $("apiKeyInput").value }) });
         $("apiKeyInput").value = "";
-        await refresh();
+        await refreshDashboard();
+        startStream();
       } catch (err) {
         $("loginError").textContent = "登录失败：" + err.message;
-        $("loginError").classList.remove("hidden");
+        $("loginError").classList.add("show");
       }
     });
-    $("logoutBtn").addEventListener("click", async () => {
-      if (stream) stream.close();
+    $("logoutBtn").onclick = async () => {
+      if (state.stream) state.stream.close();
+      state.stream = null;
       await api("/api/session", { method: "DELETE" }).catch(() => {});
-      setLoggedIn(false);
-      $("liveChip").textContent = "实时未连接";
-      $("liveChip").className = "chip warn";
-    });
-    $("refreshBtn").addEventListener("click", () => refresh().catch(() => {}));
-    $("rangeSelect").addEventListener("change", () => refresh().catch(() => {}));
-    refresh().catch(() => setLoggedIn(false));
+      showLoggedIn(false);
+      setLive("warn", "实时未连接");
+      $("keyLine").textContent = "使用 Key Policy 的 cpa_... Key 登录，只查看自己的用量。";
+    };
+    $("refreshBtn").onclick = () => refreshDashboard().catch(() => {});
+    $("rangeSelect").onchange = () => refreshDashboard().catch(() => {});
+    refreshDashboard().then(startStream).catch(() => showLoggedIn(false));
   </script>
 </body>
 </html>

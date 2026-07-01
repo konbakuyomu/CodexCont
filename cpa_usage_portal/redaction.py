@@ -1,6 +1,7 @@
 """Safe projections for user-facing usage data."""
 from __future__ import annotations
 
+import json
 import re
 from typing import Any
 
@@ -27,6 +28,18 @@ _KEY_RE = re.compile(
     r"(?i)\b(api[_-]?key|access[_-]?token|refresh[_-]?token|authorization|cookie|secret)"
     r"\s*[:=]\s*['\"]?[^'\"\s,;]+"
 )
+_SPACE_RE = re.compile(r"\s+")
+_HEADER_BLOB_MARKERS = (
+    "cf-cache-status",
+    "set-cookie",
+    "strict-transport-security",
+    "cross-origin-opener-policy",
+    "x-codex-",
+    "x-openai-",
+    "report-to",
+)
+MAX_FAILURE_BRIEF = 120
+MAX_FAILURE_DETAIL = 600
 
 
 def redact(value: Any, *, key: str = "") -> Any:
@@ -45,6 +58,54 @@ def redact(value: Any, *, key: str = "") -> Any:
     return str(value)
 
 
+def _as_text(value: Any) -> str:
+    if value is None or value == "":
+        return ""
+    redacted = redact(value)
+    if isinstance(redacted, str):
+        return redacted
+    try:
+        return json.dumps(redacted, ensure_ascii=False, sort_keys=True)
+    except TypeError:
+        return str(redacted)
+
+
+def _compact(value: str) -> str:
+    return _SPACE_RE.sub(" ", value).strip()
+
+
+def _truncate(value: str, limit: int) -> str:
+    text = _compact(value)
+    if len(text) <= limit:
+        return text
+    if limit <= 3:
+        return "." * max(0, limit)
+    return text[: max(0, limit - 3)].rstrip() + "..."
+
+
+def _looks_like_response_headers(value: str) -> bool:
+    lower = value.lower()
+    return sum(1 for marker in _HEADER_BLOB_MARKERS if marker in lower) >= 2
+
+
+def _failure_projection(raw: Any, *, failed: bool, status_code: Any) -> tuple[str, str]:
+    text = _as_text(raw)
+    if not text:
+        if failed and status_code:
+            return f"HTTP {status_code}", f"HTTP {status_code}"
+        return "", ""
+    if _looks_like_response_headers(text):
+        if not failed:
+            return "", ""
+        text = "Upstream response headers omitted; inspect status code and quota fields."
+    detail = _truncate(text, MAX_FAILURE_DETAIL)
+    brief_source = detail.split("|", 1)[0].split("\n", 1)[0]
+    brief = _truncate(brief_source, MAX_FAILURE_BRIEF)
+    if not brief and failed and status_code:
+        brief = f"HTTP {status_code}"
+    return brief, detail
+
+
 def safe_event(event: dict[str, Any], *, expected_hash: str) -> dict[str, Any] | None:
     api_key_hash = str(event.get("api_key_hash") or "").strip()
     try:
@@ -55,8 +116,13 @@ def safe_event(event: dict[str, Any], *, expected_hash: str) -> dict[str, Any] |
     if normalized != expected:
         return None
 
-    failed = bool(event.get("failed"))
     status_code = event.get("fail_status_code")
+    failed = bool(event.get("failed"))
+    failure_brief, failure_detail = _failure_projection(
+        event.get("fail_summary") or "",
+        failed=failed,
+        status_code=status_code,
+    )
     return {
         "request_id": event.get("request_id") or "",
         "event_hash": event.get("event_hash") or "",
@@ -80,7 +146,8 @@ def safe_event(event: dict[str, Any], *, expected_hash: str) -> dict[str, Any] |
         "service_tier": event.get("service_tier") or "",
         "reasoning_effort": event.get("reasoning_effort") or "",
         "api_key_preview": hash_preview(expected),
-        "failure": redact(event.get("fail_summary") or ""),
+        "failure_brief": failure_brief,
+        "failure": failure_detail,
         "quota": {
             "used_percent": event.get("header_quota_used_percent"),
             "recover_at_ms": event.get("header_quota_recover_at_ms"),

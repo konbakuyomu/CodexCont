@@ -7,175 +7,336 @@
   <title>CodexCont 保护状态面板</title>
   <style>
     :root {
-      color-scheme: light;
-      --bg: #f5f7fa;
-      --panel: #ffffff;
-      --panel-soft: #f0f5f7;
-      --text: #19232d;
-      --muted: #607080;
-      --line: #d9e2e8;
-      --line-strong: #c5d2dc;
-      --blue: #1769aa;
-      --green: #0b7d62;
-      --teal: #087f8c;
-      --amber: #a45f00;
-      --red: #b42318;
-      --violet: #6a4bc3;
-      --shadow: 0 10px 28px rgba(25, 35, 45, .08);
+      color-scheme: dark;
+      --bg: #0b1220;
+      --panel: #151d2c;
+      --panel-2: #1a2434;
+      --line: #283448;
+      --line-strong: #33445e;
+      --text: #e8edf5;
+      --muted: #9aa7b8;
+      --blue: #3b96ff;
+      --blue-soft: rgba(59, 150, 255, .14);
+      --green: #61d34f;
+      --green-soft: rgba(97, 211, 79, .13);
+      --red: #ff646d;
+      --red-soft: rgba(255, 100, 109, .13);
+      --amber: #f0aa2b;
+      --amber-soft: rgba(240, 170, 43, .14);
+      --teal: #15c7d4;
+      --teal-soft: rgba(21, 199, 212, .12);
+      --violet: #8d7cff;
+      --violet-soft: rgba(141, 124, 255, .13);
+      --shadow: 0 18px 48px rgba(0, 0, 0, .26);
       --mono: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
-      --sans: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
+      --sans: Inter, "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+      font-family: var(--sans);
     }
     * { box-sizing: border-box; }
     body {
       margin: 0;
-      background: var(--bg);
+      min-height: 100vh;
+      background:
+        radial-gradient(circle at 60% -10%, rgba(59, 150, 255, .16), transparent 30%),
+        linear-gradient(180deg, #101827 0%, var(--bg) 38%, #080e19 100%);
       color: var(--text);
       font: 14px/1.48 var(--sans);
       letter-spacing: 0;
     }
     button, select, input {
-      min-height: 34px;
-      border: 1px solid var(--line);
-      border-radius: 6px;
-      background: var(--panel);
-      color: var(--text);
-      padding: 0 10px;
-      font: inherit;
-    }
-    button { cursor: pointer; }
-    button.active { border-color: #90b8dd; background: #e7f2ff; color: #0f518d; }
-    .shell { max-width: 1480px; margin: 0 auto; padding: 18px; }
-    header {
-      display: flex;
-      align-items: flex-start;
-      justify-content: space-between;
-      gap: 14px;
-      margin-bottom: 14px;
-    }
-    h1 { margin: 0; font-size: 24px; line-height: 1.2; font-weight: 760; }
-    h2 { margin: 0; font-size: 15px; line-height: 1.3; font-weight: 720; }
-    .subtle { margin-top: 5px; color: var(--muted); font-size: 13px; }
-    .toolbar, .filters { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
-    .panel {
-      background: var(--panel);
+      min-height: 38px;
       border: 1px solid var(--line);
       border-radius: 8px;
+      background: #111827;
+      color: var(--text);
+      padding: 0 12px;
+      font: inherit;
+    }
+    input { min-width: 260px; }
+    button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    button.active, button:hover, select:hover, input:focus {
+      border-color: var(--line-strong);
+      outline: none;
+    }
+    button.primary {
+      border-color: transparent;
+      background: linear-gradient(180deg, #43a2ff, #2d86ef);
+      font-weight: 760;
+    }
+    .shell {
+      width: min(1680px, calc(100% - 32px));
+      margin: 0 auto;
+      padding: 22px 0 34px;
+    }
+    .topbar {
+      min-height: 58px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 0 16px;
+      margin-bottom: 16px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: rgba(17, 24, 39, .9);
       box-shadow: var(--shadow);
     }
-    .status-row {
-      display: grid;
-      grid-template-columns: 1.05fr 1fr 1fr 1fr;
+    .brand {
+      display: flex;
+      align-items: center;
       gap: 12px;
-      margin-bottom: 12px;
+      min-width: 0;
     }
-    .status { min-height: 112px; padding: 14px; }
-    .kv { display: grid; grid-template-columns: 104px minmax(0, 1fr); gap: 7px 10px; margin-top: 11px; }
-    .kv span:nth-child(odd) { color: var(--muted); }
-    .kv strong { overflow-wrap: anywhere; }
-    .metrics {
+    .mark {
+      width: 34px;
+      height: 34px;
       display: grid;
-      grid-template-columns: repeat(5, minmax(150px, 1fr));
-      gap: 12px;
-      margin-bottom: 12px;
+      place-items: center;
+      border-radius: 8px;
+      background: linear-gradient(135deg, #2d86ef, #15c7d4);
+      color: #fff;
+      font-weight: 850;
     }
-    .metric { min-height: 94px; padding: 14px; }
-    .metric .label { color: var(--muted); font-size: 12px; }
-    .metric .value { margin-top: 8px; font-size: 27px; line-height: 1.18; font-weight: 760; }
-    .metric .hint { margin-top: 5px; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
-    .pill, .chip {
+    h1, h2, h3, p { margin: 0; }
+    h1 {
+      font-size: 20px;
+      line-height: 1.2;
+      font-weight: 780;
+    }
+    h2 { font-size: 15px; font-weight: 760; }
+    h3 { font-size: 13px; font-weight: 760; }
+    .subtitle {
+      margin-top: 2px;
+      color: var(--muted);
+      font-size: 12px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .toolbar, .filters {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .chip {
       display: inline-flex;
       align-items: center;
       gap: 7px;
-      min-height: 24px;
-      padding: 2px 9px;
+      min-height: 28px;
+      padding: 0 10px;
       border-radius: 999px;
-      background: var(--panel-soft);
-      border: 1px solid transparent;
+      border: 1px solid var(--line);
+      background: var(--panel-2);
+      color: var(--muted);
       font-size: 12px;
-      font-weight: 680;
+      font-weight: 720;
       white-space: nowrap;
     }
-    .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: 0 0 auto; }
-    .ok .dot, .chip-ok .dot { background: var(--green); }
-    .live .dot, .chip-live .dot { background: var(--teal); }
-    .warn .dot, .chip-warn .dot { background: var(--amber); }
-    .bad .dot, .chip-bad .dot { background: var(--red); }
-    .info .dot, .chip-info .dot { background: var(--blue); }
-    .chip-ok { background: #e8f6f1; color: #075f4a; border-color: #b9e1d3; }
-    .chip-live { background: #e6f7f9; color: #096873; border-color: #b9e3e8; }
-    .chip-warn { background: #fff4df; color: #805000; border-color: #f0d29b; }
-    .chip-bad { background: #fdebea; color: #942117; border-color: #f1b8b4; }
-    .chip-info { background: #e8f2fc; color: #145894; border-color: #b7d4ef; }
-    .chip-neutral { background: #eef2f5; color: #4f5d68; border-color: #d5dee5; }
-    .requests { overflow: hidden; margin-bottom: 12px; }
-    .section-head {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 12px;
-      padding: 12px 14px;
-      border-bottom: 1px solid var(--line);
-      background: #fbfcfd;
+    .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--muted);
+      flex: 0 0 auto;
     }
-    .request-wrap, .log-wrap {
-      overflow: auto;
-      background: var(--panel);
-    }
-    table { width: 100%; border-collapse: collapse; table-layout: fixed; }
-    th, td { padding: 9px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
-    th {
-      position: sticky;
-      top: 0;
-      z-index: 2;
-      background: #edf3f7;
-      color: #536575;
-      text-align: left;
-      font-size: 12px;
-      font-weight: 700;
-    }
-    td { overflow-wrap: anywhere; }
-    .col-time { width: 168px; }
-    .col-protect { width: 176px; }
-    .col-model { width: 126px; }
-    .col-round { width: 72px; }
-    .col-hit { width: 118px; }
-    .col-token { width: 112px; }
-    .col-count { width: 72px; }
-    .col-result { width: 132px; }
-    .col-action { width: 76px; }
-    .mono { font-family: var(--mono); font-size: 12px; }
-    .muted { color: var(--muted); }
-    .empty { padding: 34px; color: var(--muted); text-align: center; }
-    .detail-row td { background: #f8fafb; }
-    .detail {
+    .chip.ok { border-color: rgba(97, 211, 79, .28); background: var(--green-soft); color: #a8ef9c; }
+    .chip.ok .dot { background: var(--green); }
+    .chip.live { border-color: rgba(21, 199, 212, .28); background: var(--teal-soft); color: #a1eef3; }
+    .chip.live .dot { background: var(--teal); }
+    .chip.warn { border-color: rgba(240, 170, 43, .34); background: var(--amber-soft); color: #ffd083; }
+    .chip.warn .dot { background: var(--amber); }
+    .chip.bad { border-color: rgba(255, 100, 109, .34); background: var(--red-soft); color: #ffb5ba; }
+    .chip.bad .dot { background: var(--red); }
+    .chip.info { border-color: rgba(59, 150, 255, .34); background: var(--blue-soft); color: #acd4ff; }
+    .chip.info .dot { background: var(--blue); }
+    .chip.neutral { border-color: var(--line); background: #202b3d; color: #c4cfdd; }
+    .metrics {
       display: grid;
-      grid-template-columns: minmax(260px, 1fr) minmax(300px, 1.6fr);
+      grid-template-columns: repeat(5, minmax(160px, 1fr));
       gap: 12px;
-      color: #2c3a45;
+      margin-bottom: 14px;
     }
-    .detail h3 { margin: 0 0 8px; font-size: 13px; }
-    .detail-list { display: grid; grid-template-columns: 118px minmax(0, 1fr); gap: 6px 10px; }
-    .detail-list span:nth-child(odd) { color: var(--muted); }
-    .rounds { display: flex; flex-wrap: wrap; gap: 8px; }
-    .round {
-      min-width: 174px;
+    .metric {
+      min-height: 126px;
+      position: relative;
+      overflow: hidden;
+      padding: 15px;
       border: 1px solid var(--line);
       border-radius: 8px;
-      background: #fff;
-      padding: 8px;
+      background: linear-gradient(180deg, rgba(26, 36, 52, .96), rgba(21, 29, 44, .96));
     }
-    .round.hit { border-color: #f0d29b; background: #fffaf0; }
-    .round strong { display: block; margin-bottom: 5px; }
-    .log-panel { overflow: hidden; }
-    .log-panel > summary {
+    .metric::after {
+      content: "";
+      position: absolute;
+      right: 12px;
+      bottom: 10px;
+      width: 74px;
+      height: 38px;
+      border-bottom: 2px solid rgba(59, 150, 255, .18);
+      border-radius: 50%;
+      transform: rotate(-8deg);
+    }
+    .metric-label {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 760;
+    }
+    .metric-icon {
+      width: 28px;
+      height: 28px;
+      display: inline-grid;
+      place-items: center;
+      border-radius: 8px;
+      background: var(--blue-soft);
+      color: var(--blue);
+      font-weight: 850;
+    }
+    .metric-icon.ok { background: var(--green-soft); color: var(--green); }
+    .metric-icon.bad { background: var(--red-soft); color: var(--red); }
+    .metric-icon.warn { background: var(--amber-soft); color: var(--amber); }
+    .metric-icon.teal { background: var(--teal-soft); color: var(--teal); }
+    .metric-value {
+      position: relative;
+      z-index: 1;
+      margin-top: 18px;
+      font-size: 30px;
+      line-height: 1;
+      font-weight: 800;
+    }
+    .metric-hint {
+      position: relative;
+      z-index: 1;
+      margin-top: 9px;
+      color: var(--muted);
+      font-size: 12px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .section {
+      margin-bottom: 14px;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: rgba(21, 29, 44, .96);
+      box-shadow: 0 14px 34px rgba(0, 0, 0, .18);
+    }
+    .section-head {
+      min-height: 60px;
       display: flex;
       align-items: center;
       justify-content: space-between;
       gap: 12px;
-      padding: 12px 14px;
-      cursor: pointer;
-      font-weight: 720;
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--line);
+      background: rgba(26, 36, 52, .8);
+    }
+    .section-title { display: grid; gap: 3px; }
+    .muted { color: var(--muted); }
+    .table-wrap {
+      overflow-x: auto;
+      background: #121a29;
+    }
+    table {
+      width: 100%;
+      min-width: 1120px;
+      border-collapse: separate;
+      border-spacing: 0 8px;
+      table-layout: fixed;
+      padding: 8px 10px 12px;
+    }
+    th {
+      padding: 0 10px 4px;
+      color: var(--muted);
+      text-align: left;
+      font-size: 12px;
+      font-weight: 760;
+      white-space: nowrap;
+    }
+    td {
+      padding: 13px 10px;
+      border-top: 1px solid var(--line);
+      border-bottom: 1px solid var(--line);
+      background: #161e2d;
+      vertical-align: middle;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    tbody tr.data-row td:first-child { border-left: 1px solid var(--line); border-radius: 8px 0 0 8px; }
+    tbody tr.data-row td:last-child { border-right: 1px solid var(--line); border-radius: 0 8px 8px 0; }
+    tbody tr.detail-row td {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #111827;
+      overflow: visible;
+      text-overflow: clip;
+    }
+    .col-time { width: 178px; }
+    .col-protect { width: 205px; }
+    .col-model { width: 145px; }
+    .col-round { width: 78px; }
+    .col-hit { width: 145px; }
+    .col-token { width: 128px; }
+    .col-count { width: 84px; }
+    .col-result { width: 160px; }
+    .col-action { width: 92px; }
+    .mono {
+      font-family: var(--mono);
+      font-size: 12px;
+    }
+    .success { color: var(--green); }
+    .danger { color: var(--red); }
+    .accent { color: var(--blue); }
+    .detail-grid {
+      display: grid;
+      grid-template-columns: minmax(300px, .9fr) minmax(360px, 1.45fr);
+      gap: 16px;
+    }
+    .detail-list {
+      display: grid;
+      grid-template-columns: 128px minmax(0, 1fr);
+      gap: 8px 12px;
+      line-height: 1.45;
+    }
+    .detail-list span:nth-child(odd) { color: var(--muted); }
+    .rounds {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+    .round {
+      min-width: 186px;
+      padding: 10px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #0d1422;
+    }
+    .round.hit {
+      border-color: rgba(240, 170, 43, .45);
+      background: rgba(240, 170, 43, .08);
+    }
+    .log-panel > summary {
+      min-height: 58px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 0 16px;
       list-style: none;
+      cursor: pointer;
+      background: rgba(26, 36, 52, .8);
     }
     .log-panel > summary::-webkit-details-marker { display: none; }
     .log-body { border-top: 1px solid var(--line); }
@@ -184,92 +345,96 @@
       align-items: center;
       justify-content: space-between;
       gap: 12px;
-      padding: 10px 14px;
-      background: #fbfcfd;
+      padding: 12px 16px;
       border-bottom: 1px solid var(--line);
+      background: #121a29;
     }
-    .log-wrap { height: min(42vh, 520px); min-height: 280px; background: #101821; }
-    .log-table { color: #e8eef5; }
-    .log-table th { background: #172435; color: #b6c4d4; border-bottom-color: rgba(255,255,255,.08); }
-    .log-table td { border-bottom-color: rgba(255,255,255,.08); font-family: var(--mono); font-size: 12px; }
+    .log-wrap {
+      height: min(42vh, 520px);
+      min-height: 280px;
+      overflow: auto;
+      background: #0d1422;
+    }
+    .log-table { min-width: 1080px; }
+    .log-table td { background: #101827; font-family: var(--mono); font-size: 12px; }
     .level-info { color: #8bd8ff; }
     .level-warning { color: #ffd27a; }
     .level-error { color: #ff9b92; }
-    @media (max-width: 1100px) {
-      .status-row { grid-template-columns: 1fr 1fr; }
-      .metrics { grid-template-columns: repeat(3, minmax(150px, 1fr)); }
+    .empty {
+      padding: 28px;
+      color: var(--muted);
+      text-align: center;
+      background: transparent !important;
+      border: 0 !important;
     }
-    @media (max-width: 720px) {
-      .shell { padding: 12px; }
-      header, .section-head, .log-head { flex-direction: column; align-items: stretch; }
-      .toolbar, .filters { justify-content: flex-start; }
-      .status-row, .metrics, .detail { grid-template-columns: 1fr; }
-      h1 { font-size: 21px; }
-      .metric { min-height: 82px; }
-      .metric .value { font-size: 23px; }
-      .request-wrap table, .log-wrap table { min-width: 1000px; }
+    @media (max-width: 1180px) {
+      .metrics { grid-template-columns: repeat(3, minmax(160px, 1fr)); }
+    }
+    @media (max-width: 760px) {
+      .shell { width: min(100% - 18px, 1680px); padding-top: 10px; }
+      .topbar, .section-head, .log-head { align-items: flex-start; flex-direction: column; }
+      .toolbar, .filters { justify-content: flex-start; width: 100%; }
+      .metrics { grid-template-columns: 1fr; }
+      .detail-grid { grid-template-columns: 1fr; }
+      input { min-width: 0; width: 100%; }
+      h1 { font-size: 18px; }
+      .metric { min-height: 104px; }
+      .metric-value { font-size: 26px; }
+      table { min-width: 1020px; }
     }
   </style>
 </head>
 <body>
   <main class="shell">
-    <header>
-      <div>
-        <h1>CodexCont 保护状态面板</h1>
-        <div class="subtle" id="subtitle">正在读取运行状态...</div>
+    <header class="topbar">
+      <div class="brand">
+        <div class="mark">C</div>
+        <div>
+          <h1>CodexCont 保护状态面板</h1>
+          <div class="subtitle" id="subtitle">正在读取运行状态</div>
+        </div>
       </div>
       <div class="toolbar">
-        <span class="pill warn" id="stream-pill"><span class="dot"></span><span id="stream-label">连接中</span></span>
-        <button id="refresh-btn" title="立即刷新状态">刷新</button>
+        <span class="chip warn" id="stream-pill"><span class="dot"></span><span id="stream-label">连接中</span></span>
+        <span class="chip info"><span class="dot"></span><span id="active-now">活跃 0</span></span>
+        <button id="refresh-btn" class="primary" type="button">刷新</button>
       </div>
     </header>
 
-    <section class="status-row">
-      <article class="panel status">
-        <h2>服务状态</h2>
-        <div class="kv">
-          <span>CodexCont</span><strong id="svc-ok">未知</strong>
-          <span>运行时间</span><strong id="uptime">-</strong>
-          <span>启动时间</span><strong id="started">-</strong>
-        </div>
-      </article>
-      <article class="panel status">
-        <h2>CPA 上游</h2>
-        <div class="kv">
-          <span>健康</span><strong id="upstream-ok">未知</strong>
-          <span>状态码</span><strong id="upstream-status">-</strong>
-          <span>地址</span><strong id="upstream-host">-</strong>
-        </div>
-      </article>
-      <article class="panel status">
-        <h2>保护配置</h2>
-        <div class="kv">
-          <span>模式</span><strong id="upstream-mode">-</strong>
-          <span>续写</span><strong id="cont-mode">-</strong>
-          <span>日志保留</span><strong id="retention">-</strong>
-        </div>
-      </article>
-      <article class="panel status">
-        <h2>实时流</h2>
-        <div class="kv">
-          <span>连接</span><strong id="stream-state">连接中</strong>
-          <span>活跃请求</span><strong id="active-now">0</strong>
-          <span>请求记录</span><strong id="request-cache">0</strong>
-        </div>
-      </article>
-    </section>
-
     <section class="metrics">
-      <article class="panel metric"><div class="label">总请求</div><div class="value" id="m-total">0</div><div class="hint" id="m-last-request">-</div></article>
-      <article class="panel metric"><div class="label">进入保护链</div><div class="value" id="m-folded">0</div><div class="hint">由 CodexCont 折叠处理</div></article>
-      <article class="panel metric"><div class="label">自动续写</div><div class="value" id="m-cont">0</div><div class="hint" id="m-last-cont">-</div></article>
-      <article class="panel metric"><div class="label">疑似截断</div><div class="value" id="m-trunc">0</div><div class="hint">516 / 518n-2 指纹</div></article>
-      <article class="panel metric"><div class="label">失败</div><div class="value" id="m-fail">0</div><div class="hint" id="m-last-error">-</div></article>
+      <article class="metric">
+        <div class="metric-label"><span class="metric-icon">#</span>总请求</div>
+        <div class="metric-value" id="m-total">0</div>
+        <div class="metric-hint" id="m-last-request">-</div>
+      </article>
+      <article class="metric">
+        <div class="metric-label"><span class="metric-icon ok">P</span>进入保护链</div>
+        <div class="metric-value success" id="m-folded">0</div>
+        <div class="metric-hint">由 CodexCont 折叠处理</div>
+      </article>
+      <article class="metric">
+        <div class="metric-label"><span class="metric-icon teal">C</span>自动续写</div>
+        <div class="metric-value accent" id="m-cont">0</div>
+        <div class="metric-hint" id="m-last-cont">-</div>
+      </article>
+      <article class="metric">
+        <div class="metric-label"><span class="metric-icon warn">516</span>疑似截断</div>
+        <div class="metric-value" id="m-trunc">0</div>
+        <div class="metric-hint">516 / 518n-2 指纹</div>
+      </article>
+      <article class="metric">
+        <div class="metric-label"><span class="metric-icon bad">!</span>失败</div>
+        <div class="metric-value danger" id="m-fail">0</div>
+        <div class="metric-hint" id="m-last-error">-</div>
+      </article>
     </section>
 
-    <section class="panel requests">
+    <section class="section">
       <div class="section-head">
-        <h2>最近请求</h2>
+        <div class="section-title">
+          <h2>最近请求</h2>
+          <p class="muted">保护结果、命中轮和末轮 reasoning 是主视图。</p>
+        </div>
         <div class="filters">
           <select id="protect-filter" title="按保护结果筛选">
             <option value="">全部保护结果</option>
@@ -281,10 +446,11 @@
             <option value="incomplete">不完整</option>
             <option value="processing">处理中</option>
           </select>
-          <input id="request-filter" type="search" placeholder="筛选模型 / 请求 ID / 原因" aria-label="筛选最近请求">
+          <input id="request-filter" type="search" placeholder="筛选模型 / 请求 ID / 原因">
+          <span class="chip info"><span class="dot"></span><span id="request-cache">0 条</span></span>
         </div>
       </div>
-      <div class="request-wrap">
+      <div class="table-wrap">
         <table>
           <thead>
             <tr>
@@ -304,10 +470,10 @@
       </div>
     </section>
 
-    <details class="panel log-panel">
+    <details class="section log-panel">
       <summary>
         <span>高级日志</span>
-        <span class="muted">用于排查原始事件</span>
+        <span class="muted">原始脱敏事件</span>
       </summary>
       <div class="log-body">
         <div class="log-head">
@@ -318,12 +484,12 @@
               <option value="warning">警告</option>
               <option value="error">错误</option>
             </select>
-            <input id="text-filter" type="search" placeholder="筛选日志文本" aria-label="筛选日志文本">
+            <input id="text-filter" type="search" placeholder="筛选日志文本">
           </div>
           <div class="toolbar">
-            <button id="pause-btn" title="暂停日志追加">暂停日志</button>
-            <button id="autoscroll-btn" class="active" title="自动滚到最新日志">自动滚动</button>
-            <button id="clear-btn" title="只清空当前浏览器里的日志表">清空本地</button>
+            <button id="pause-btn" type="button">暂停日志</button>
+            <button id="autoscroll-btn" class="active" type="button">自动滚动</button>
+            <button id="clear-btn" type="button">清空本地</button>
           </div>
         </div>
         <div class="log-wrap" id="log-wrap">
@@ -334,7 +500,7 @@
                 <th class="col-count">级别</th>
                 <th class="col-protect">事件</th>
                 <th class="col-model">请求</th>
-                <th>消息 / 字段</th>
+                <th>字段</th>
               </tr>
             </thead>
             <tbody id="logs-body"><tr><td colspan="5" class="empty">暂无日志</td></tr></tbody>
@@ -345,23 +511,16 @@
   </main>
 
   <script>
-    const state = {
-      logs: [],
-      requests: new Map(),
-      expanded: new Set(),
-      pausedLogs: false,
-      autoscroll: true,
-      source: null,
-    };
+    const state = { logs: [], requests: new Map(), expanded: new Set(), pausedLogs: false, autoscroll: true, source: null };
     const $ = (id) => document.getElementById(id);
     const PROTECTION = {
-      protected_clean: ["已保护 / 无需续写", "chip-ok", "经过保护链，未命中 516/518n-2"],
-      auto_continued: ["已自动续写", "chip-live", "检测到 516/518n-2，已打开隐藏续写轮"],
-      risk_uncontinued: ["疑似截断 / 未续写", "chip-warn", "检测到截断指纹，但保护条件未满足"],
-      passthrough: ["透传", "chip-neutral", "未进入折叠保护链"],
-      failed: ["失败", "chip-bad", "请求或上游处理失败"],
-      incomplete: ["不完整", "chip-warn", "上游未完整结束"],
-      processing: ["处理中", "chip-info", "请求仍在处理中"],
+      protected_clean: ["已保护 / 无需续写", "ok", "经过保护链，未命中 516/518n-2"],
+      auto_continued: ["已自动续写", "live", "检测到 516/518n-2，已打开隐藏续写轮"],
+      risk_uncontinued: ["疑似截断 / 未续写", "warn", "检测到截断指纹，但保护条件未满足"],
+      passthrough: ["透传", "neutral", "未进入折叠保护链"],
+      failed: ["失败", "bad", "请求或上游处理失败"],
+      incomplete: ["不完整", "warn", "上游未完整结束"],
+      processing: ["处理中", "info", "请求仍在处理中"],
     };
     const DECISIONS = {
       continue: "自动续写",
@@ -382,14 +541,10 @@
       request_failed: "请求失败",
       manual_event: "手动事件",
     };
-
     function esc(value) {
-      return String(value == null ? "" : value)
-        .replaceAll("&", "&amp;")
-        .replaceAll("<", "&lt;")
-        .replaceAll(">", "&gt;")
-        .replaceAll('"', "&quot;")
-        .replaceAll("'", "&#39;");
+      return String(value == null ? "" : value).replace(/[&<>"']/g, ch => ({
+        "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+      }[ch]));
     }
     function fmtTime(value) {
       if (!value) return "-";
@@ -411,16 +566,14 @@
     function setText(id, value) {
       $(id).textContent = value == null || value === "" ? "-" : String(value);
     }
-    function setStream(status, text) {
+    function setStream(kind, text) {
       const el = $("stream-pill");
-      el.classList.remove("ok", "warn", "bad", "info", "live");
-      el.classList.add(status);
+      el.className = `chip ${kind}`;
       setText("stream-label", text);
-      setText("stream-state", text);
     }
     function chip(kind) {
       const [label, cls, title] = PROTECTION[kind] || PROTECTION.processing;
-      return `<span class="chip ${cls}" title="${esc(title)}"><span class="dot"></span>${esc(label)}</span>`;
+      return `<span class="chip ${cls}" title="${esc(title)}"><span class="dot"></span><span>${esc(label)}</span></span>`;
     }
     function summarizeFields(fields) {
       if (!fields || typeof fields !== "object") return "";
@@ -456,18 +609,17 @@
     function requestTriggerHint(req) {
       if (!req.first_truncation_round) return "未命中 516/518n-2";
       const decision = DECISIONS[req.first_truncation_decision] || req.first_truncation_decision || "-";
-      return `命中后决策：${decision}`;
+      return `决策：${decision}`;
     }
     function renderRounds(rounds) {
       if (!Array.isArray(rounds) || !rounds.length) return '<span class="muted">暂无轮次数据</span>';
       return rounds.map((round) => {
-        const hit = round.truncation_match ? "命中" : "未命中";
         const decision = DECISIONS[round.decision] || round.decision || "-";
         const cls = round.truncation_match ? "round hit" : "round";
         return `<div class="${cls}">
-          <strong>第 ${esc(round.round)} 轮</strong>
-          <div>本轮 reasoning: <span class="mono">${esc(round.reasoning_tokens ?? "-")}</span></div>
-          <div>516 指纹: ${esc(hit)}</div>
+          <h3>第 ${esc(round.round)} 轮</h3>
+          <div>Reasoning: <span class="mono">${esc(round.reasoning_tokens ?? "-")}</span></div>
+          <div>516 指纹: ${esc(round.truncation_match ? "命中" : "未命中")}</div>
           <div>决策: ${esc(decision)}</div>
         </div>`;
       }).join("");
@@ -480,7 +632,7 @@
         .sort((a, b) => Date.parse(b.started_at || 0) - Date.parse(a.started_at || 0))
         .filter((req) => (!protect || req.protection === protect) && (!text || requestSearchText(req).includes(text)))
         .slice(0, 100);
-      setText("request-cache", state.requests.size);
+      setText("request-cache", `${state.requests.size} 条`);
       if (!requests.length) {
         tbody.innerHTML = '<tr><td colspan="9" class="empty">暂无匹配请求</td></tr>';
         return;
@@ -491,35 +643,32 @@
         const rounds = Array.isArray(req.rounds) ? req.rounds : [];
         const reason = requestReason(req);
         const result = req.status === "processing" ? "处理中" : req.final_status || req.status || "-";
-        return `<tr>
+        return `<tr class="data-row">
           <td><div>${esc(fmtTime(req.started_at))}</div><div class="muted mono">${esc(id)}</div></td>
           <td>${chip(req.protection)}<div class="muted">${esc(PROTECTION[req.protection]?.[2] || "")}</div></td>
           <td class="mono">${esc(req.model || "-")}</td>
           <td>${esc(req.latest_round || rounds.length || 0)}</td>
           <td><span class="mono">${esc(requestTrigger(req))}</span><div class="muted">${esc(requestTriggerHint(req))}</div></td>
-          <td class="mono">${esc(req.latest_reasoning_tokens ?? "-")}</td>
+          <td><span class="mono accent">${esc(req.latest_reasoning_tokens ?? "-")}</span></td>
           <td>${esc(req.continuation_count || 0)}</td>
           <td>${esc(result)}<div class="muted">${esc(reason)}</div></td>
-          <td><button data-toggle-request="${esc(id)}">${open ? "收起" : "展开"}</button></td>
+          <td><button type="button" data-toggle-request="${esc(id)}">${open ? "收起" : "展开"}</button></td>
         </tr>
         <tr class="detail-row" ${open ? "" : "hidden"}>
           <td colspan="9">
-            <div class="detail">
-              <div>
-                <h3>请求摘要</h3>
-                <div class="detail-list">
-                  <span>请求 ID</span><strong class="mono">${esc(id)}</strong>
-                  <span>路径</span><strong>${esc(req.path || "-")}</strong>
-                  <span>耗时</span><strong>${esc(fmtMs(req.duration_ms))}</strong>
-                  <span>结束时间</span><strong>${esc(fmtTime(req.ended_at))}</strong>
-                  <span>516 命中轮</span><strong>${esc(requestTrigger(req))}</strong>
-                  <span>命中后决策</span><strong>${esc(requestTriggerHint(req))}</strong>
-                  <span>透传原因</span><strong>${esc(req.passthrough_reason || "-")}</strong>
-                  <span>失败原因</span><strong>${esc(req.failure_reason || "-")}</strong>
-                </div>
+            <div class="detail-grid">
+              <div class="detail-list">
+                <span>请求 ID</span><strong class="mono">${esc(id)}</strong>
+                <span>路径</span><strong>${esc(req.path || "-")}</strong>
+                <span>耗时</span><strong>${esc(fmtMs(req.duration_ms))}</strong>
+                <span>结束时间</span><strong>${esc(fmtTime(req.ended_at))}</strong>
+                <span>516 命中轮</span><strong>${esc(requestTrigger(req))}</strong>
+                <span>命中后决策</span><strong>${esc(requestTriggerHint(req))}</strong>
+                <span>透传原因</span><strong>${esc(req.passthrough_reason || "-")}</strong>
+                <span>失败原因</span><strong>${esc(req.failure_reason || "-")}</strong>
               </div>
               <div>
-                <h3>思维链保护判断</h3>
+                <h3 style="margin-bottom:8px;">思维链保护判断</h3>
                 <div class="rounds">${renderRounds(rounds)}</div>
               </div>
             </div>
@@ -568,25 +717,14 @@
         const res = await fetch("status", { cache: "no-store" });
         const data = await res.json();
         const counters = data.counters || {};
-        const cfg = data.config || {};
-        const upstream = data.upstream || {};
-        setText("subtitle", `最后刷新 ${new Date().toLocaleTimeString("zh-CN", { hour12: false })}`);
-        setText("svc-ok", data.ok ? "正常" : "异常");
-        setText("uptime", fmtDuration(data.uptime_seconds));
-        setText("started", fmtTime(data.started_at));
-        setText("upstream-ok", upstream.ok === true ? "正常" : upstream.ok === false ? "异常" : "未知");
-        setText("upstream-status", upstream.status_code || upstream.status || upstream.error);
-        setText("upstream-host", cfg.upstream_host);
-        setText("upstream-mode", cfg.upstream_mode);
-        setText("cont-mode", `${cfg.continuation_enabled ? "开启" : "关闭"} / ${cfg.continuation_method || "-"}`);
-        setText("retention", cfg.log_retention ? `${cfg.log_retention} 条事件` : "-");
+        setText("subtitle", `上游 ${data.upstream?.ok === true ? "正常" : "未知"} / ${data.config?.upstream_host || "-"}`);
         setText("m-total", counters.total_requests || 0);
         setText("m-folded", counters.folded_requests || 0);
         setText("m-cont", counters.continuations || 0);
         setText("m-trunc", counters.truncation_hits || 0);
         setText("m-fail", counters.failures || 0);
-        setText("active-now", counters.active_requests || 0);
-        setText("m-last-request", data.last_request_at ? `最近 ${fmtTime(data.last_request_at)}` : "-");
+        setText("active-now", `活跃 ${counters.active_requests || 0}`);
+        setText("m-last-request", data.last_request_at ? `最近 ${fmtTime(data.last_request_at)}` : `运行 ${fmtDuration(data.uptime_seconds)}`);
         setText("m-last-cont", data.last_continuation_at ? `最近 ${fmtTime(data.last_continuation_at)}` : "-");
         setText("m-last-error", data.last_error_at ? `最近 ${fmtTime(data.last_error_at)}` : "-");
       } catch (err) {

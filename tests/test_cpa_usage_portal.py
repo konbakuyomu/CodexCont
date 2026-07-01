@@ -187,6 +187,49 @@ def test_redaction_and_safe_event() -> None:
     )
     check("safe event accepts own hash", safe is not None)
     check("safe event redacts failure", safe is not None and "secret" not in safe.get("failure", ""))
+    check("safe event has short failure brief",
+          safe is not None and safe.get("failure_brief") == "access_token=[REDACTED]",
+          str(safe))
+    header_blob = json.dumps({
+        "Cf-Cache-Status": "DYNAMIC",
+        "Set-Cookie": "secret-cookie",
+        "Strict-Transport-Security": "max-age=31536000",
+        "X-Codex-Plan-Type": "pro",
+    })
+    clean = safe_event(
+        {
+            "api_key_hash": expected,
+            "failed": False,
+            "fail_summary": header_blob,
+        },
+        expected_hash=expected,
+    )
+    check("safe event drops success header blob",
+          clean is not None and clean.get("failure") == "" and clean.get("failure_brief") == "",
+          str(clean))
+    failed = safe_event(
+        {
+            "api_key_hash": expected,
+            "failed": True,
+            "fail_status_code": 502,
+            "fail_summary": header_blob,
+        },
+        expected_hash=expected,
+    )
+    check("safe event summarizes failed header blob",
+          failed is not None and failed.get("failure_brief") == "Upstream response headers omitted; inspect status code and quota fields.",
+          str(failed))
+    long_failure = safe_event(
+        {
+            "api_key_hash": expected,
+            "failed": True,
+            "fail_summary": "x" * 1000,
+        },
+        expected_hash=expected,
+    )
+    check("safe event bounds failure detail",
+          long_failure is not None and len(long_failure.get("failure", "")) <= 600,
+          str(long_failure))
     check("safe event rejects other hash",
           safe_event({"api_key_hash": other}, expected_hash=expected) is None)
 
