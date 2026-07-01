@@ -1,0 +1,353 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CodexCont Dashboard</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f6f8fa;
+      --panel: #ffffff;
+      --panel-2: #eef3f6;
+      --text: #1d252c;
+      --muted: #65717c;
+      --line: #d9e1e7;
+      --ok: #0f8f68;
+      --warn: #a86612;
+      --bad: #b42318;
+      --accent: #1565c0;
+      --shadow: 0 12px 30px rgba(29, 37, 44, .08);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font: 14px/1.45 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      letter-spacing: 0;
+    }
+    .shell { max-width: 1440px; margin: 0 auto; padding: 20px; }
+    header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 16px;
+    }
+    h1 { margin: 0; font-size: 22px; line-height: 1.2; font-weight: 720; }
+    .subtle { color: var(--muted); font-size: 13px; margin-top: 4px; }
+    .toolbar { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
+    button, select, input {
+      min-height: 34px;
+      border: 1px solid var(--line);
+      background: var(--panel);
+      color: var(--text);
+      border-radius: 6px;
+      padding: 0 10px;
+      font: inherit;
+    }
+    button { cursor: pointer; }
+    button.active { background: #dfefff; border-color: #98bee8; color: #0f4e93; }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(160px, 1fr));
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+    }
+    .metric { padding: 14px; min-height: 92px; }
+    .metric .label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0; }
+    .metric .value { font-size: 26px; line-height: 1.25; font-weight: 740; margin-top: 8px; overflow-wrap: anywhere; }
+    .metric .hint { color: var(--muted); font-size: 12px; margin-top: 4px; overflow-wrap: anywhere; }
+    .status-row { display: grid; grid-template-columns: 1.1fr 1fr 1fr; gap: 12px; margin-bottom: 12px; }
+    .status { padding: 14px; min-height: 112px; }
+    .status h2 { margin: 0 0 10px; font-size: 15px; }
+    .kv { display: grid; grid-template-columns: 132px 1fr; gap: 6px 10px; font-size: 13px; }
+    .kv span:nth-child(odd) { color: var(--muted); }
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      min-height: 24px;
+      padding: 2px 8px;
+      border-radius: 999px;
+      background: var(--panel-2);
+      font-size: 12px;
+      font-weight: 650;
+    }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+    .ok .dot { background: var(--ok); }
+    .warn .dot { background: var(--warn); }
+    .bad .dot { background: var(--bad); }
+    .log-panel { overflow: hidden; }
+    .log-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--line);
+      background: #fbfcfd;
+    }
+    .log-head h2 { margin: 0; font-size: 15px; }
+    .filters { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
+    .table-wrap {
+      height: min(58vh, 640px);
+      min-height: 340px;
+      overflow: auto;
+      background: #0e1621;
+    }
+    table { width: 100%; border-collapse: collapse; table-layout: fixed; color: #e7eef6; }
+    th, td { padding: 8px 10px; border-bottom: 1px solid rgba(255,255,255,.08); vertical-align: top; }
+    th {
+      position: sticky;
+      top: 0;
+      z-index: 2;
+      background: #142233;
+      color: #aebccd;
+      text-align: left;
+      font-size: 12px;
+      font-weight: 680;
+    }
+    td { font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace; font-size: 12px; overflow-wrap: anywhere; }
+    .col-time { width: 178px; }
+    .col-level { width: 82px; }
+    .col-event { width: 180px; }
+    .col-id { width: 118px; }
+    .level-info { color: #8bd8ff; }
+    .level-warning { color: #ffd27a; }
+    .level-error { color: #ff9b92; }
+    .empty { padding: 36px; color: #9aa8b8; text-align: center; }
+    @media (max-width: 900px) {
+      .shell { padding: 12px; }
+      header, .log-head { align-items: stretch; flex-direction: column; }
+      .toolbar, .filters { justify-content: flex-start; }
+      .grid, .status-row { grid-template-columns: 1fr 1fr; }
+      .kv { grid-template-columns: 108px 1fr; }
+      .col-time { width: 150px; }
+      .col-event { width: 150px; }
+    }
+    @media (max-width: 560px) {
+      .grid, .status-row { grid-template-columns: 1fr; }
+      .metric { min-height: 80px; }
+      .metric .value { font-size: 22px; }
+      .table-wrap { min-height: 420px; }
+      th, td { padding: 7px 8px; }
+      .col-id { width: 96px; }
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <header>
+      <div>
+        <h1>CodexCont Dashboard</h1>
+        <div class="subtle" id="subtitle">Waiting for live diagnostics...</div>
+      </div>
+      <div class="toolbar">
+        <span class="pill warn" id="stream-pill"><span class="dot"></span><span id="stream-label">Connecting</span></span>
+        <button id="pause-btn" title="Pause live log updates">Pause</button>
+        <button id="autoscroll-btn" class="active" title="Keep latest logs in view">Autoscroll</button>
+        <button id="clear-btn" title="Clear only the local table">Clear</button>
+      </div>
+    </header>
+
+    <section class="status-row">
+      <article class="panel status">
+        <h2>Service</h2>
+        <div class="kv">
+          <span>CodexCont</span><strong id="svc-ok">unknown</strong>
+          <span>Uptime</span><strong id="uptime">-</strong>
+          <span>Started</span><strong id="started">-</strong>
+        </div>
+      </article>
+      <article class="panel status">
+        <h2>CPA Upstream</h2>
+        <div class="kv">
+          <span>Health</span><strong id="upstream-ok">unknown</strong>
+          <span>Status</span><strong id="upstream-status">-</strong>
+          <span>Host</span><strong id="upstream-host">-</strong>
+        </div>
+      </article>
+      <article class="panel status">
+        <h2>Config</h2>
+        <div class="kv">
+          <span>Mode</span><strong id="upstream-mode">-</strong>
+          <span>Continuation</span><strong id="cont-mode">-</strong>
+          <span>Retention</span><strong id="retention">-</strong>
+        </div>
+      </article>
+    </section>
+
+    <section class="grid">
+      <article class="panel metric"><div class="label">Total Requests</div><div class="value" id="m-total">0</div><div class="hint" id="m-last-request">-</div></article>
+      <article class="panel metric"><div class="label">Active</div><div class="value" id="m-active">0</div><div class="hint">in-flight streams</div></article>
+      <article class="panel metric"><div class="label">Continuations</div><div class="value" id="m-cont">0</div><div class="hint" id="m-last-cont">-</div></article>
+      <article class="panel metric"><div class="label">516 / 518n-2 Hits</div><div class="value" id="m-trunc">0</div><div class="hint" id="m-fail">0 failures</div></article>
+    </section>
+
+    <section class="panel log-panel">
+      <div class="log-head">
+        <h2>Live Logs</h2>
+        <div class="filters">
+          <select id="level-filter" title="Filter by level">
+            <option value="">All levels</option>
+            <option value="info">Info</option>
+            <option value="warning">Warning</option>
+            <option value="error">Error</option>
+          </select>
+          <input id="text-filter" type="search" placeholder="Filter text" aria-label="Filter log text">
+        </div>
+      </div>
+      <div class="table-wrap" id="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th class="col-time">Time</th>
+              <th class="col-level">Level</th>
+              <th class="col-event">Event</th>
+              <th class="col-id">Request</th>
+              <th>Message / Fields</th>
+            </tr>
+          </thead>
+          <tbody id="logs-body"><tr><td colspan="5" class="empty">No log events yet</td></tr></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const state = { events: [], paused: false, autoscroll: true, source: null };
+    const $ = (id) => document.getElementById(id);
+
+    function fmtTime(value) {
+      if (!value) return "-";
+      const d = new Date(value);
+      return Number.isNaN(d.getTime()) ? value : d.toLocaleString();
+    }
+    function fmtDuration(seconds) {
+      seconds = Number(seconds || 0);
+      const h = Math.floor(seconds / 3600);
+      const m = Math.floor((seconds % 3600) / 60);
+      const s = Math.floor(seconds % 60);
+      return h ? `${h}h ${m}m ${s}s` : m ? `${m}m ${s}s` : `${s}s`;
+    }
+    function setText(id, value) { $(id).textContent = value == null || value === "" ? "-" : String(value); }
+    function pill(status, text) {
+      const el = $("stream-pill");
+      el.classList.remove("ok", "warn", "bad");
+      el.classList.add(status);
+      setText("stream-label", text);
+    }
+    function summarizeFields(fields) {
+      if (!fields || typeof fields !== "object") return "";
+      return Object.entries(fields)
+        .filter(([, v]) => v !== null && v !== undefined && v !== "")
+        .map(([k, v]) => `${k}=${typeof v === "object" ? JSON.stringify(v) : v}`)
+        .join(" ");
+    }
+    function renderLogs() {
+      const tbody = $("logs-body");
+      const level = $("level-filter").value;
+      const text = $("text-filter").value.trim().toLowerCase();
+      const filtered = state.events.filter((ev) => {
+        if (level && ev.level !== level) return false;
+        if (!text) return true;
+        return JSON.stringify(ev).toLowerCase().includes(text);
+      }).slice(-600);
+      if (!filtered.length) {
+        tbody.innerHTML = '<tr><td colspan="5" class="empty">No matching log events</td></tr>';
+        return;
+      }
+      tbody.innerHTML = filtered.map((ev) => {
+        const fields = ev.fields || {};
+        const requestId = fields.request_id || "";
+        const details = [ev.message, summarizeFields(fields)].filter(Boolean).join(" | ");
+        const levelClass = `level-${ev.level || "info"}`;
+        return `<tr>
+          <td>${fmtTime(ev.ts)}</td>
+          <td class="${levelClass}">${ev.level || ""}</td>
+          <td>${ev.event || ""}</td>
+          <td>${requestId}</td>
+          <td>${details}</td>
+        </tr>`;
+      }).join("");
+      if (state.autoscroll) $("table-wrap").scrollTop = $("table-wrap").scrollHeight;
+    }
+    async function refreshStatus() {
+      try {
+        const res = await fetch("status", { cache: "no-store" });
+        const data = await res.json();
+        const counters = data.counters || {};
+        const cfg = data.config || {};
+        const upstream = data.upstream || {};
+        setText("subtitle", `Last refresh ${new Date().toLocaleTimeString()}`);
+        setText("svc-ok", data.ok ? "ok" : "bad");
+        setText("uptime", fmtDuration(data.uptime_seconds));
+        setText("started", fmtTime(data.started_at));
+        setText("upstream-ok", upstream.ok === true ? "ok" : upstream.ok === false ? "bad" : "unknown");
+        setText("upstream-status", upstream.status_code || upstream.status || upstream.error);
+        setText("upstream-host", cfg.upstream_host);
+        setText("upstream-mode", cfg.upstream_mode);
+        setText("cont-mode", `${cfg.continuation_enabled ? "enabled" : "disabled"} / ${cfg.continuation_method || "-"}`);
+        setText("retention", cfg.log_retention ? `${cfg.log_retention} events` : "-");
+        setText("m-total", counters.total_requests || 0);
+        setText("m-active", counters.active_requests || 0);
+        setText("m-cont", counters.continuations || 0);
+        setText("m-trunc", counters.truncation_hits || 0);
+        setText("m-fail", `${counters.failures || 0} failures`);
+        setText("m-last-request", data.last_request_at ? `last ${fmtTime(data.last_request_at)}` : "-");
+        setText("m-last-cont", data.last_continuation_at ? `last ${fmtTime(data.last_continuation_at)}` : "-");
+      } catch (err) {
+        setText("subtitle", `Status refresh failed: ${err.name || err}`);
+      }
+    }
+    async function loadInitialLogs() {
+      try {
+        const res = await fetch("logs?limit=200", { cache: "no-store" });
+        const data = await res.json();
+        state.events = data.events || [];
+        renderLogs();
+      } catch (_) {}
+    }
+    function connectStream() {
+      if (state.source) state.source.close();
+      const source = new EventSource("logs/stream");
+      state.source = source;
+      pill("warn", "Connecting");
+      source.addEventListener("ready", () => pill("ok", "Live"));
+      source.addEventListener("log", (ev) => {
+        if (state.paused) return;
+        try {
+          state.events.push(JSON.parse(ev.data));
+          if (state.events.length > 800) state.events.splice(0, state.events.length - 800);
+          renderLogs();
+        } catch (_) {}
+      });
+      source.onerror = () => pill("bad", "Disconnected");
+    }
+    $("pause-btn").onclick = () => {
+      state.paused = !state.paused;
+      $("pause-btn").textContent = state.paused ? "Resume" : "Pause";
+      $("pause-btn").classList.toggle("active", state.paused);
+    };
+    $("autoscroll-btn").onclick = () => {
+      state.autoscroll = !state.autoscroll;
+      $("autoscroll-btn").classList.toggle("active", state.autoscroll);
+    };
+    $("clear-btn").onclick = () => { state.events = []; renderLogs(); };
+    $("level-filter").onchange = renderLogs;
+    $("text-filter").oninput = renderLogs;
+    loadInitialLogs();
+    refreshStatus();
+    connectStream();
+    setInterval(refreshStatus, 5000);
+  </script>
+</body>
+</html>

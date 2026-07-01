@@ -107,6 +107,23 @@ Security guard: if a request supplies `Responses-API-Base`, the middleware will 
 
 Do not commit secrets. `rt.json` and `free_rt.json` are ignored by `.gitignore`, and tokens in `config.toml` should be handled carefully.
 
+## Dashboard
+
+CodexCont serves a lightweight read-only dashboard at:
+
+```text
+http://127.0.0.1:8787/admin/
+```
+
+It exposes service status, upstream health, in-memory request metrics, and live redacted logs through SSE. Log history is memory-only and bounded by:
+
+```toml
+[admin]
+max_log_events = 800
+```
+
+Do not expose `/admin/` on a public API hostname unless it is protected by an external access layer such as Cloudflare Access.
+
 ## When continuation is applied
 
 The middleware folds only when all of the following are true:
@@ -163,16 +180,20 @@ Current offline coverage includes:
 - header transparency
 - upstream URL resolution
 - auth safety guard
+- dashboard diagnostics and admin route smoke
 - EOF/upstream-error behavior
 
 ## Project layout
 
 ```text
 middleware/
+  admin.py     # read-only dashboard/admin routes
   app.py       # Starlette app and route handler
   codex.py     # truncation math and continuation payload builders
   config.py    # config.toml loader and dataclasses
   creds.py     # upstream header/auth construction
+  dashboard.html # static dashboard page
+  diagnostics.py # in-memory metrics, ring buffer, and SSE subscribers
   proxy.py     # fold_stream state machine
   sse.py       # incremental SSE parser/serializer
   store.py     # in-memory ID store for optional stateful repair

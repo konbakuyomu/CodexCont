@@ -105,6 +105,23 @@ chatgpt_account_id = ""            # 非空时作为 chatgpt-account-id 发送
 
 不要提交密钥。`.gitignore` 已忽略 `rt.json` 和 `free_rt.json`；如果把 token 写入 `config.toml`，也请谨慎管理。
 
+## 状态面板
+
+CodexCont 内置一个只读状态面板：
+
+```text
+http://127.0.0.1:8787/admin/
+```
+
+它可以查看服务状态、上游健康、内存中的请求指标，以及通过 SSE 实时推送的脱敏日志。日志只保存在进程内存中，默认上限为：
+
+```toml
+[admin]
+max_log_events = 800
+```
+
+不要把 `/admin/` 直接暴露在公网 API 域名上；生产环境应放在 Cloudflare Access 这类外层访问控制之后。
+
 ## 什么时候会执行续写折叠
 
 只有同时满足以下条件时，中间件才会执行折叠逻辑：
@@ -161,16 +178,20 @@ uv run python tests/test_middleware.py
 - header 透明转发
 - 上游 URL 解析
 - 鉴权安全保护
+- dashboard diagnostics 和 admin route smoke
 - EOF / 上游错误处理
 
 ## 项目结构
 
 ```text
 middleware/
+  admin.py     # 只读状态面板 / admin 路由
   app.py       # Starlette 应用和路由处理
   codex.py     # 截断数学和续写 payload 构造
   config.py    # config.toml 加载和 dataclass 配置
   creds.py     # 上游 header / auth 构造
+  dashboard.html # 静态状态面板页面
+  diagnostics.py # 内存指标、环形日志和 SSE 订阅
   proxy.py     # fold_stream 状态机
   sse.py       # 增量 SSE 解析和序列化
   store.py     # 可选 stateful repair 使用的内存 ID 存储

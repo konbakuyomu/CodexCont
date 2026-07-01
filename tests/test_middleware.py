@@ -18,8 +18,10 @@ sys.path.insert(0, str(ROOT))
 
 import zstandard as zstd
 from starlette.datastructures import Headers
+from starlette.testclient import TestClient
 
 from middleware.app import (
+    create_app,
     _decode_request_body,
     _make_client,
     _resolve_upstream_url,
@@ -35,6 +37,7 @@ from middleware.codex import (
 )
 from middleware.config import load_config
 from middleware.creds import build_upstream_headers, would_inject_authorization
+from middleware.diagnostics import Diagnostics, redact_value
 from middleware.proxy import fold_stream
 from middleware.sse import DONE, incremental_sse
 from middleware.store import IdStore
@@ -425,6 +428,74 @@ def test_zstd_request_body_decode():
     check("identity body unchanged", _decode_request_body(raw, None) == raw)
 
 
+# --- dashboard diagnostics --------------------------------------------------
+
+
+def test_diagnostics_ring_and_redaction():
+    diag = Diagnostics(max_events=2)
+    diag.record("info", "first", "Authorization: Bearer abc123",
+                authorization="Bearer abc123", nested={"api_key": "secret"})
+    diag.record("info", "second", "ok")
+    diag.record("warning", "third", "access_token=abc")
+    recent = diag.recent()
+    check("diagnostics ring keeps max events", [e["event"] for e in recent] == ["second", "third"],
+          str([e["event"] for e in recent]))
+    bearer_redacted = redact_value("Authorization: Bearer abc123")
+    check("redact bearer text",
+          "abc123" not in bearer_redacted and "[REDACTED]" in bearer_redacted,
+          bearer_redacted)
+    redacted = redact_value({"api_key": "secret", "safe": "value"})
+    check("redact sensitive dict key", redacted.get("api_key") == "[REDACTED]")
+    check("keep safe dict key", redacted.get("safe") == "value")
+    token_counts = redact_value({"reasoning_tokens": 516, "total_tokens": 1024})
+    check("keep token counters", token_counts.get("reasoning_tokens") == 516)
+
+
+async def test_diagnostics_subscriber_broadcast():
+    diag = Diagnostics(max_events=5)
+    queue = diag.subscribe()
+    diag.record("info", "broadcast", "hello", request_id="req1")
+    item = await asyncio.wait_for(queue.get(), timeout=1.0)
+    diag.unsubscribe(queue)
+    check("diagnostics subscriber receives event", item.get("event") == "broadcast", str(item))
+    check("diagnostics subscriber receives fields",
+          (item.get("fields") or {}).get("request_id") == "req1", str(item))
+
+
+def test_admin_routes_smoke():
+    base = load_config(ROOT / "config.toml")
+    cfg = replace(
+        base,
+        upstream=replace(base.upstream, url="http://127.0.0.1:9/v1/responses"),
+    )
+    with TestClient(create_app(cfg)) as client:
+        health = client.get("/admin/healthz")
+        check("admin healthz 200", health.status_code == 200, str(health.status_code))
+        check("admin healthz ok", health.json().get("ok") is True, str(health.text))
+
+        client.app.state.diagnostics.record("info", "manual_event", "hello")
+        logs = client.get("/admin/logs?limit=1")
+        body = logs.json()
+        check("admin logs 200", logs.status_code == 200, str(logs.status_code))
+        check("admin logs returns recent event",
+              (body.get("events") or [{}])[-1].get("event") == "manual_event", str(body))
+
+        status = client.get("/admin/status")
+        status_body = status.json()
+        check("admin status 200", status.status_code == 200, str(status.status_code))
+        check("admin status has counters", "counters" in status_body, str(status_body))
+        check("admin status redacted config host",
+              (status_body.get("config") or {}).get("upstream_host") == "127.0.0.1:9",
+              str(status_body.get("config")))
+
+        html = client.get("/admin/")
+        check("admin dashboard html 200", html.status_code == 200, str(html.status_code))
+        check("admin dashboard contains EventSource", "new EventSource" in html.text)
+
+        stream = client.get("/admin/logs/stream?once=1")
+        check("admin logs stream ready", "event: ready" in stream.text, stream.text[:80])
+
+
 # --- upstream URL resolution via Responses-API-Base header ------------------
 
 
@@ -644,6 +715,9 @@ async def _main():
     await test_forward_marker_emits_downstream()
     test_header_transparency()
     test_zstd_request_body_decode()
+    test_diagnostics_ring_and_redaction()
+    await test_diagnostics_subscriber_broadcast()
+    test_admin_routes_smoke()
     test_upstream_url_resolution()
     test_auth_safety_guard()
     test_auth_injection()
