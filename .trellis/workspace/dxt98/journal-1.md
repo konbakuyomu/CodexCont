@@ -74,3 +74,37 @@ Built and deployed the CodexCont admin dashboard, then upgraded it to a Chinese 
 ### Next Steps
 
 - None - task complete
+
+
+## Session 3: CPA key management and usage portal
+
+**Date**: 2026-07-01
+**Task**: CPA key management and usage portal
+**Branch**: `main`
+
+### Summary
+
+Deployed CPAMP, CPA Key Policy, and a separate user usage portal; clarified cpa_ versus sk key model, official component maintenance boundaries, hash contracts, and archived the completed task.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `b20a983` | (see git log) |
+| `61911b0` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
