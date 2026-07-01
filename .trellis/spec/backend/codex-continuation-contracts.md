@@ -84,7 +84,8 @@ The continuation owner must sit at executor level, where it can inspect raw upst
 - Request summary projection fields:
   - `request_id`, `model`, `path`, `started_at`, `updated_at`, `ended_at`, `duration_ms`
   - `status`, `protection`, `folded`, `passthrough`, `passthrough_reason`
-  - `rounds[]`, `latest_round`, `latest_reasoning_tokens`, `continuation_count`
+  - `rounds[]`, `latest_round`, `latest_reasoning_tokens`
+  - `first_truncation_round`, `first_truncation_reasoning_tokens`, `first_truncation_n`, `first_truncation_decision`, `continuation_count`
   - `truncation_match`, `final_status`, `stopped_reason`, `failure_reason`, `failure_detail`
 - Protection values:
   - `protected_clean`, `auto_continued`, `risk_uncontinued`, `passthrough`, `failed`, `incomplete`, `processing`
@@ -95,6 +96,7 @@ The continuation owner must sit at executor level, where it can inspect raw upst
 - Request summaries and logs must not include request bodies, Authorization headers, API keys, OAuth tokens, encrypted reasoning content, or internal implementation-only fields such as `_started_perf`.
 - `event: log` behavior is backward-compatible with the original dashboard stream. Adding request updates must use a separate `event: request` SSE event.
 - The beginner-facing dashboard must distinguish "entered CodexCont protection and no continuation was needed" from "516/518n-2 was detected and a hidden continuation round was opened".
+- When a continued request ends with a clean final round, `latest_reasoning_tokens` may be below 516. The dashboard must label it as latest-round reasoning and separately display the first 516/518n-2 trigger round from the request summary.
 - Production admin access must remain behind `cpa-admin.konbakuyomu.us` plus Cloudflare Access. Public `cpa.konbakuyomu.us` must not expose `/admin/*`, `/codexcont/*`, `/management.html`, or CPA management APIs.
 - SJC is a small-disk host. Deployment must prefer uploading changed files plus single-service rebuild/restart; do not use Docker prune or broad filesystem cleanup as part of dashboard rollout.
 

@@ -137,7 +137,10 @@
     .col-time { width: 168px; }
     .col-protect { width: 176px; }
     .col-model { width: 126px; }
-    .col-small { width: 86px; }
+    .col-round { width: 72px; }
+    .col-hit { width: 118px; }
+    .col-token { width: 112px; }
+    .col-count { width: 72px; }
     .col-result { width: 132px; }
     .col-action { width: 76px; }
     .mono { font-family: var(--mono); font-size: 12px; }
@@ -161,6 +164,7 @@
       background: #fff;
       padding: 8px;
     }
+    .round.hit { border-color: #f0d29b; background: #fffaf0; }
     .round strong { display: block; margin-bottom: 5px; }
     .log-panel { overflow: hidden; }
     .log-panel > summary {
@@ -203,7 +207,7 @@
       h1 { font-size: 21px; }
       .metric { min-height: 82px; }
       .metric .value { font-size: 23px; }
-      .request-wrap table, .log-wrap table { min-width: 920px; }
+      .request-wrap table, .log-wrap table { min-width: 1000px; }
     }
   </style>
 </head>
@@ -287,14 +291,15 @@
               <th class="col-time">时间</th>
               <th class="col-protect">保护结果</th>
               <th class="col-model">模型</th>
-              <th class="col-small">轮次</th>
-              <th class="col-small">思考量</th>
-              <th class="col-small">续写</th>
+              <th class="col-round">轮次</th>
+              <th class="col-hit">命中轮</th>
+              <th class="col-token">末轮思考量</th>
+              <th class="col-count">续写</th>
               <th class="col-result">最终结果</th>
               <th class="col-action">详情</th>
             </tr>
           </thead>
-          <tbody id="requests-body"><tr><td colspan="8" class="empty">暂无请求</td></tr></tbody>
+          <tbody id="requests-body"><tr><td colspan="9" class="empty">暂无请求</td></tr></tbody>
         </table>
       </div>
     </section>
@@ -326,7 +331,7 @@
             <thead>
               <tr>
                 <th class="col-time">时间</th>
-                <th class="col-small">级别</th>
+                <th class="col-count">级别</th>
                 <th class="col-protect">事件</th>
                 <th class="col-model">请求</th>
                 <th>消息 / 字段</th>
@@ -430,6 +435,8 @@
         model: req.model,
         protection: req.protection,
         status: req.status,
+        truncation_round: req.first_truncation_round,
+        truncation_tokens: req.first_truncation_reasoning_tokens,
         stopped: req.stopped_reason,
         fail: req.failure_reason,
         passthrough: req.passthrough_reason,
@@ -441,14 +448,25 @@
       if (req.passthrough_reason) return req.passthrough_reason;
       return "-";
     }
+    function requestTrigger(req) {
+      if (!req.first_truncation_round) return "-";
+      const tokens = req.first_truncation_reasoning_tokens ?? "-";
+      return `第 ${req.first_truncation_round} 轮 / ${tokens}`;
+    }
+    function requestTriggerHint(req) {
+      if (!req.first_truncation_round) return "未命中 516/518n-2";
+      const decision = DECISIONS[req.first_truncation_decision] || req.first_truncation_decision || "-";
+      return `命中后决策：${decision}`;
+    }
     function renderRounds(rounds) {
       if (!Array.isArray(rounds) || !rounds.length) return '<span class="muted">暂无轮次数据</span>';
       return rounds.map((round) => {
         const hit = round.truncation_match ? "命中" : "未命中";
         const decision = DECISIONS[round.decision] || round.decision || "-";
-        return `<div class="round">
+        const cls = round.truncation_match ? "round hit" : "round";
+        return `<div class="${cls}">
           <strong>第 ${esc(round.round)} 轮</strong>
-          <div>reasoning: <span class="mono">${esc(round.reasoning_tokens ?? "-")}</span></div>
+          <div>本轮 reasoning: <span class="mono">${esc(round.reasoning_tokens ?? "-")}</span></div>
           <div>516 指纹: ${esc(hit)}</div>
           <div>决策: ${esc(decision)}</div>
         </div>`;
@@ -464,7 +482,7 @@
         .slice(0, 100);
       setText("request-cache", state.requests.size);
       if (!requests.length) {
-        tbody.innerHTML = '<tr><td colspan="8" class="empty">暂无匹配请求</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="9" class="empty">暂无匹配请求</td></tr>';
         return;
       }
       tbody.innerHTML = requests.map((req) => {
@@ -478,13 +496,14 @@
           <td>${chip(req.protection)}<div class="muted">${esc(PROTECTION[req.protection]?.[2] || "")}</div></td>
           <td class="mono">${esc(req.model || "-")}</td>
           <td>${esc(req.latest_round || rounds.length || 0)}</td>
+          <td><span class="mono">${esc(requestTrigger(req))}</span><div class="muted">${esc(requestTriggerHint(req))}</div></td>
           <td class="mono">${esc(req.latest_reasoning_tokens ?? "-")}</td>
           <td>${esc(req.continuation_count || 0)}</td>
           <td>${esc(result)}<div class="muted">${esc(reason)}</div></td>
           <td><button data-toggle-request="${esc(id)}">${open ? "收起" : "展开"}</button></td>
         </tr>
         <tr class="detail-row" ${open ? "" : "hidden"}>
-          <td colspan="8">
+          <td colspan="9">
             <div class="detail">
               <div>
                 <h3>请求摘要</h3>
@@ -493,6 +512,8 @@
                   <span>路径</span><strong>${esc(req.path || "-")}</strong>
                   <span>耗时</span><strong>${esc(fmtMs(req.duration_ms))}</strong>
                   <span>结束时间</span><strong>${esc(fmtTime(req.ended_at))}</strong>
+                  <span>516 命中轮</span><strong>${esc(requestTrigger(req))}</strong>
+                  <span>命中后决策</span><strong>${esc(requestTriggerHint(req))}</strong>
                   <span>透传原因</span><strong>${esc(req.passthrough_reason || "-")}</strong>
                   <span>失败原因</span><strong>${esc(req.failure_reason || "-")}</strong>
                 </div>

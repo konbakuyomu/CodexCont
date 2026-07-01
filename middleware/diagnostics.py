@@ -284,6 +284,10 @@ class Diagnostics:
                 "rounds": [],
                 "latest_round": None,
                 "latest_reasoning_tokens": None,
+                "first_truncation_round": None,
+                "first_truncation_reasoning_tokens": None,
+                "first_truncation_n": None,
+                "first_truncation_decision": None,
                 "continuation_count": 0,
                 "truncation_match": False,
                 "final_status": None,
@@ -375,6 +379,11 @@ class Diagnostics:
                 req["rounds"].append(round_summary)
                 req["latest_round"] = round_no
                 req["latest_reasoning_tokens"] = reasoning_tokens
+                if truncation_match and req.get("first_truncation_round") is None:
+                    req["first_truncation_round"] = round_no
+                    req["first_truncation_reasoning_tokens"] = reasoning_tokens
+                    req["first_truncation_n"] = n
+                    req["first_truncation_decision"] = decision
                 req["truncation_match"] = bool(req.get("truncation_match") or truncation_match)
                 req["updated_at"] = utc_now_iso()
                 if truncation_match and decision != "continue" and req.get("continuation_count", 0) == 0:

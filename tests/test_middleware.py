@@ -464,6 +464,8 @@ def test_diagnostics_request_summaries():
           str(summary))
     check("request summary keeps reasoning tokens",
           summary.get("latest_reasoning_tokens") == 140, str(summary))
+    check("request summary clean has no truncation round",
+          summary.get("first_truncation_round") is None, str(summary))
 
     cont = Diagnostics(max_events=10, max_requests=5)
     rid = cont.request_started(path="/v1/responses", model="gpt-5.5")
@@ -480,6 +482,12 @@ def test_diagnostics_request_summaries():
           str(summary))
     check("request summary continuation count", summary.get("continuation_count") == 1,
           str(summary))
+    check("request summary records first truncation round",
+          summary.get("first_truncation_round") == 1, str(summary))
+    check("request summary records first truncation tokens",
+          summary.get("first_truncation_reasoning_tokens") == 516, str(summary))
+    check("request summary latest reasoning can be clean round",
+          summary.get("latest_reasoning_tokens") == 181, str(summary))
 
     risk = Diagnostics(max_events=10, max_requests=5)
     rid = risk.request_started(path="/v1/responses", model="gpt-5.5")
@@ -491,6 +499,8 @@ def test_diagnostics_request_summaries():
     summary = risk.recent_requests(limit=1)[0]
     check("request summary risk uncontinued", summary.get("protection") == "risk_uncontinued",
           str(summary))
+    check("request summary risk decision captured",
+          summary.get("first_truncation_decision") == "no_encrypted_content", str(summary))
 
     passthrough = Diagnostics(max_events=10, max_requests=5)
     rid = passthrough.request_started(path="/v1/responses", model="gpt-5.5")
@@ -570,6 +580,8 @@ def test_admin_routes_smoke():
         check("admin dashboard html 200", html.status_code == 200, str(html.status_code))
         check("admin dashboard contains EventSource", "new EventSource" in html.text)
         check("admin dashboard Chinese first screen", "最近请求" in html.text)
+        check("admin dashboard has trigger round column", "命中轮" in html.text)
+        check("admin dashboard has latest reasoning column", "末轮思考量" in html.text)
 
         stream = client.get("/admin/logs/stream?once=1")
         check("admin logs stream ready", "event: ready" in stream.text, stream.text[:80])
