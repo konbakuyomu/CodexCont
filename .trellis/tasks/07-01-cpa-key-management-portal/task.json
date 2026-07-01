@@ -21,6 +21,6 @@
   "children": [],
   "parent": null,
   "relatedFiles": [],
-  "notes": "",
+  "notes": "Completed: CPA/CPAMP/Key Policy remain official artifacts; custom code is split into CodexCont and cpa-usage-portal sidecars. Ordinary users use Key Policy cpa_... keys for Codex and self-service usage; native sk... keys are admin/compatibility only.",
   "meta": {}
 }

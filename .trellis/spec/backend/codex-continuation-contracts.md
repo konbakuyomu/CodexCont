@@ -166,9 +166,28 @@ This spreads the event contract into JavaScript and makes the beginner-facing st
 ### 3. Contracts
 - CPA stays on the official image. Do not fork CPA to implement per-key usage
   views.
+- CPAMP stays on the official `seakee/cpa-manager-plus:latest` image. Do not
+  patch CPAMP source for user self-service behavior; add sidecars or routes
+  around it instead.
+- CPA Key Policy stays as the official release plugin binary mounted into CPA.
+  Updating Key Policy should mean replacing the plugin binary and preserving
+  `plugin-state`, not editing CPA source.
+- Keep CPA, CPAMP, CodexCont, and `cpa-usage-portal` as separate containers /
+  stacks on the shared `cpa_net`. Do not bundle them into one image because
+  independent updates are part of the maintenance contract.
 - The user portal is a read-only sidecar. It may read Key Policy state and
   query CPAMP monitoring, but it must not mutate CPA, OAuth accounts, proxy
   routing, or Key Policy records in v1.
+- Ordinary users should receive Key Policy `cpa_...` keys. CPA native `sk...`
+  keys are compatibility/admin escape hatches and should not be treated as
+  self-service user credentials.
+- There is no automatic one-to-one binding between native CPA `sk...` keys and
+  Key Policy `cpa_...` keys. If a future migration needs such a bridge, design
+  an explicit mapping layer and prove it cannot bypass Key Policy limits.
+- The CPAMP login key and the CPA management key are different secrets.
+  `cpa-admin.konbakuyomu.us/management.html` currently points to CPAMP, so it
+  requires the CPAMP admin key. CPA-native management calls use the CPA
+  management key through the internal admin proxy path.
 - Login validation uses the raw user key only once:
   `sha256(trimmed_raw_cpa_key)` must match Key Policy `key_hash`
   (`sha256:<hex>`). The raw key must not be stored, logged, or returned.
@@ -193,9 +212,13 @@ This spreads the event contract into JavaScript and makes the beginner-facing st
 
 ### 4. Validation & Error Matrix
 - Unknown raw API key -> `401 invalid_api_key`.
+- Native CPA `sk...` key submitted to the user portal -> `401 invalid_api_key`
+  unless it has been explicitly migrated into Key Policy; this is expected.
 - Disabled Key Policy record -> `403 api_key_disabled` at login or
   `401 key_not_available` for an existing session.
 - Missing or invalid session -> `401 not_authenticated`.
+- CPA management key submitted to CPAMP UI -> reject as an invalid admin key;
+  use the CPAMP admin key for CPAMP.
 - CPAMP rows whose `api_key_hash` does not match the current key's CPAMP usage
   hash -> drop them server-side.
 - `GET /api/usage` must not include the full raw-key hash or full policy-id
@@ -208,12 +231,17 @@ This spreads the event contract into JavaScript and makes the beginner-facing st
 - Good: A user logs in with a `cpa_...` key; the portal validates
   `sha256(raw key)` against Key Policy state, then queries CPAMP with
   `sha256(key.id)` and shows only that key's events.
+- Good: CPA and CPAMP are updated by pulling their official images while the
+  custom user portal is rebuilt separately from this repository.
 - Base: A Key Policy key has no events yet. The portal still shows safe key
   metadata and empty usage tables.
 - Bad: The portal filters CPAMP with `sha256(raw key)` and shows zero events
   even though CPAMP has usage records for the key id.
 - Bad: `/api/usage` returns CPAMP `api_key_stats` unchanged and leaks a full
   `api_key_hash` to the browser.
+- Bad: Ordinary users log into CPAMP or create native `sk...` keys for
+  themselves. That expands the admin trust boundary and bypasses the intended
+  Key Policy user model.
 
 ### 6. Tests Required
 - Unit: raw key hash validates login while `record.cpamp_hash` equals
@@ -228,3 +256,20 @@ This spreads the event contract into JavaScript and makes the beginner-facing st
 - Production smoke: allowed Key Policy model succeeds, disallowed model is
   rejected, CPAMP records real usage, the portal login succeeds, and
   `/api/events` returns only own events.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+```text
+user -> native sk... key -> user portal / CPAMP admin
+```
+
+Native CPA keys are not the quota-managed user identity in this deployment.
+
+#### Correct
+```text
+admin -> Key Policy creates cpa_... key -> user uses cpa_... for Codex and usage portal
+```
+
+The `cpa_...` key is both the request credential and the self-service usage
+credential, while CPAMP remains admin-only.

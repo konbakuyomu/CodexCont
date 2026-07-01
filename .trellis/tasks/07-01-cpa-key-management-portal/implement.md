@@ -115,9 +115,27 @@
 
 ## Remaining Operational Note
 
-- `getent hosts cpa-usage.konbakuyomu.us` returned no records during final
-  verification. The service and Caddy route are ready; public access needs the
-  Cloudflare DNS record `cpa-usage.konbakuyomu.us -> 38.59.246.182`.
+- `cpa-usage.konbakuyomu.us` DNS was later added by the user. Server-side
+  public health verification returned `200`.
 - RPM/daily-limit enforcement was not stress-tested with many live requests to
   avoid unnecessary spend. Model allowlist rejection and normal Key Policy
   authentication were verified.
+
+## Closeout Decisions
+
+- Ordinary users should use Key Policy `cpa_...` keys for both Codex requests
+  and the user usage portal. Native CPA `sk...` keys are compatibility/admin
+  escape hatches, not the self-service user identity.
+- The user portal intentionally rejects native `sk...` keys with
+  `invalid_api_key` unless they are explicitly migrated into Key Policy.
+- `https://cpa-admin.konbakuyomu.us/management.html` points to CPAMP, so its
+  login key is the CPAMP admin key. CPA management key is a separate secret for
+  CPA-native management calls.
+- There is no one-to-one binding between native `sk...` keys and Key Policy
+  `cpa_...` keys in the current design. Adding such a bridge would need a
+  separate mapping layer and bypass-risk review.
+- CPA, CPAMP, and CPA Key Policy were not source-modified. They are deployed as
+  official image/plugin artifacts plus config, volumes, and Caddy routing.
+- `cpa-usage-portal` and CodexCont are the custom-maintained sidecars. All
+  production components are separate containers/stacks so CPA/CPAMP/Key Policy
+  can be updated independently from custom code.

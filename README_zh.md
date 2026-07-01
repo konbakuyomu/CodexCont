@@ -179,6 +179,40 @@ Key Policy 有两个容易混淆的标识：
 
 因此门户登录时用原始 key hash 找到 Key Policy 记录，查询 CPAMP 时改用该记录 `id` 的 hash。所有 CPAMP 查询都会强制带当前登录 key 对应的 `api_key_hash` 过滤。
 
+### Key 体系
+
+生产上推荐把普通用户统一迁移到 Key Policy 生成的 `cpa_...` key：
+
+```text
+Codex Base URL: https://cpa.konbakuyomu.us/v1
+Codex API Key:  cpa_...
+用量自助页:     https://cpa-usage.konbakuyomu.us/
+```
+
+CPA 原生 `api-keys` 里的 `sk...` key 只建议保留为管理员兼容/救急入口，不作为普通用户分发体系。它不天然带 Key Policy 的用户身份、模型 allowlist、RPM、每日/每周限额，也不作为用量自助页的登录凭据。
+
+管理面板也有两类密钥：
+
+- CPAMP 管理面板登录使用 CPAMP admin key。
+- CPA 原生 management API 使用 CPA management key。
+
+当前 `https://cpa-admin.konbakuyomu.us/management.html` 指向 CPAMP，所以登录它需要 CPAMP admin key，而不是 CPA management key。
+
+### 维护边界
+
+CPA、CPAMP、CPA Key Policy 都保持官方来源，不在本仓库二开：
+
+- CPA：官方镜像 `eceasy/cli-proxy-api:latest`。
+- CPAMP：官方镜像 `seakee/cpa-manager-plus:latest`。
+- CPA Key Policy：官方 release 的 `cpa-key-policy.so`，挂载到 CPA 插件目录。
+
+本仓库自定义维护的只有：
+
+- `CodexCont`：负责 516/518n-2 续写保护。
+- `cpa_usage_portal`：普通用户用量自助页。
+
+服务器上它们是独立 stack / 独立容器，后续可以分别更新 CPA、CPAMP、Key Policy、CodexCont 和用户自助页。
+
 ## 什么时候会执行续写折叠
 
 只有同时满足以下条件时，中间件才会执行折叠逻辑：
