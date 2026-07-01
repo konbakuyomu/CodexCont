@@ -65,3 +65,73 @@ client -> continuation supervisor -> Codex executor same-auth upstream rounds ->
 ```
 
 The continuation owner must sit at executor level, where it can inspect raw upstream SSE, preserve auth/proxy identity, replay encrypted reasoning, and reconstruct the final logical response.
+
+## Scenario: CodexCont admin diagnostics dashboard and request summaries
+
+### 1. Scope / Trigger
+- Trigger this spec whenever work touches CodexCont `/admin/*` routes, in-process diagnostics, SSE admin streams, dashboard UI, or production deployment of the CodexCont sidecar behind CPA.
+- This is a cross-layer contract: `/v1/responses` lifecycle events feed `Diagnostics`, `Diagnostics` projects request summaries, Starlette exposes JSON/SSE admin APIs, and the static dashboard renders beginner-facing protection status.
+- The admin dashboard is observability for the 516 continuation mitigation. It must never become a second control plane that mutates CPA, OAuth accounts, proxy routes, or request payloads.
+
+### 2. Signatures
+- Admin routes:
+  - `GET /admin/healthz` -> service health and uptime.
+  - `GET /admin/status` -> counters, active request metadata, upstream health, and safe config summary.
+  - `GET /admin/requests?limit=N` -> recent request-level protection summaries.
+  - `GET /admin/logs?limit=N` -> recent redacted diagnostic log events.
+  - `GET /admin/logs/stream` -> SSE stream with `event: ready`, `event: request`, and `event: log`.
+  - `GET /admin/` -> static dashboard HTML.
+- Request summary projection fields:
+  - `request_id`, `model`, `path`, `started_at`, `updated_at`, `ended_at`, `duration_ms`
+  - `status`, `protection`, `folded`, `passthrough`, `passthrough_reason`
+  - `rounds[]`, `latest_round`, `latest_reasoning_tokens`, `continuation_count`
+  - `truncation_match`, `final_status`, `stopped_reason`, `failure_reason`, `failure_detail`
+- Protection values:
+  - `protected_clean`, `auto_continued`, `risk_uncontinued`, `passthrough`, `failed`, `incomplete`, `processing`
+
+### 3. Contracts
+- `Diagnostics` owns the request-summary projection. The frontend may format labels, but it must not re-derive protection status from raw log event names or ad hoc field parsing.
+- Admin data is memory-only. Do not add persistent log files, databases, Redis, or CPA Manager dependencies for dashboard v1/v2 behavior.
+- Request summaries and logs must not include request bodies, Authorization headers, API keys, OAuth tokens, encrypted reasoning content, or internal implementation-only fields such as `_started_perf`.
+- `event: log` behavior is backward-compatible with the original dashboard stream. Adding request updates must use a separate `event: request` SSE event.
+- The beginner-facing dashboard must distinguish "entered CodexCont protection and no continuation was needed" from "516/518n-2 was detected and a hidden continuation round was opened".
+- Production admin access must remain behind `cpa-admin.konbakuyomu.us` plus Cloudflare Access. Public `cpa.konbakuyomu.us` must not expose `/admin/*`, `/codexcont/*`, `/management.html`, or CPA management APIs.
+- SJC is a small-disk host. Deployment must prefer uploading changed files plus single-service rebuild/restart; do not use Docker prune or broad filesystem cleanup as part of dashboard rollout.
+
+### 4. Validation & Error Matrix
+- Invalid `limit` query on `/admin/requests` or `/admin/logs` -> fall back to safe defaults.
+- Request summary retention exceeds configured cap -> discard oldest non-active summaries first.
+- Active request summary is returned -> internal monotonic timer fields must be stripped before JSON/SSE output.
+- `GET /admin/logs/stream?once=1` -> emits `ready`, recent `request` events, then recent `log` events, then ends.
+- Upstream CPA health probe fails -> dashboard reports upstream unhealthy but admin routes still return safely.
+- Public API host exposes any admin path -> deployment validation fails; fix Caddy/admin proxy routing before accepting rollout.
+- SJC free space is tight before rebuild -> verify `df -h /` and avoid pulls/prune; if rebuild needs new image layers and space is insufficient, pause rather than cleaning broad data.
+
+### 5. Good/Base/Bad Cases
+- Good: A real Codex request appears in `/admin/requests` with `protection=protected_clean` or `auto_continued`, and no raw reasoning content is present.
+- Base: An invalid JSON request returns `400` from `/v1/responses` and appears as `protection=failed`, `failure_reason=invalid_json_body`.
+- Bad: The dashboard scans log strings like `round_decision` in JavaScript and guesses whether the request was protected. This duplicates backend contract logic and will drift.
+- Bad: A production rollout fixes the page but exposes `/admin/requests` on `https://cpa.konbakuyomu.us/`. This leaks operational metadata and violates the public/admin boundary.
+
+### 6. Tests Required
+- Unit: request summary projection covers `protected_clean`, `auto_continued`, `risk_uncontinued`, `passthrough`, `failed`, and retention behavior.
+- Unit: redaction preserves numeric counters such as `reasoning_tokens` and `total_tokens`, while redacting bearer/API/OAuth/encrypted-content fields.
+- Route smoke: `/admin/requests` returns summaries and `/admin/logs/stream?once=1` includes both `event: request` and `event: log`.
+- Frontend smoke: desktop and mobile dashboard render without horizontal overflow, and simulated protection states are visibly distinct.
+- Production smoke: `cpa-admin.konbakuyomu.us/codexcont/` reaches the dashboard through Cloudflare Access, while public `cpa.konbakuyomu.us/admin/*` and `/codexcont/*` return `404`.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+```text
+raw log event -> frontend string matching -> protection label
+```
+
+This spreads the event contract into JavaScript and makes the beginner-facing status depend on incidental log wording.
+
+#### Correct
+```text
+/v1/responses lifecycle -> Diagnostics request summary -> /admin/requests + event: request -> dashboard label
+```
+
+`Diagnostics` is the single projection owner. The UI renders the explicit `protection` value and keeps raw logs as an advanced troubleshooting view only.
