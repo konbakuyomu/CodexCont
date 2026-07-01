@@ -41,6 +41,7 @@ class FakeCPAMP:
         self.expected_hash = expected_hash
         self.other_hash = other_hash
         self.seen_hashes: list[str] = []
+        self.seen_windows: list[tuple[bool, int]] = []
 
     async def health(self):
         return {"ok": True}
@@ -49,6 +50,7 @@ class FakeCPAMP:
                         include_model_stats=False,
                         event_limit=100, before_ms=None, before_id=None):
         self.seen_hashes.append(api_key_hash)
+        self.seen_windows.append((include_events, window.to_ms - window.from_ms))
         data = {
             "summary": {
                 "total_calls": 2,
@@ -328,6 +330,9 @@ def test_app_routes(tmp: Path) -> None:
         check("portal dashboard shows key limits", "用量限额" in html.text and "日限" in html.text and "周限" in html.text)
         check("portal dashboard follows delayed usage updates",
               "mergeEvent(JSON.parse(ev.data))" in html.text and "scheduleFollowUpRefreshes" in html.text)
+        check("portal dashboard applies selected range to events",
+              "api(`/api/events?range=${encodeURIComponent(range)}&limit=100`)" in html.text
+              and "当前显示" in html.text)
 
         bad = client.post("/api/session", json={"api_key": "nope"})
         check("portal rejects unknown key", bad.status_code == 401)
@@ -355,8 +360,12 @@ def test_app_routes(tmp: Path) -> None:
         check("portal usage stats reject other hash",
               len(usage_body["api_key_stats"]) == 1 and usage_body["api_key_stats"][0]["calls"] == 2,
               str(usage_body))
-        events = client.get("/api/events?limit=100")
+        events = client.get("/api/events?range=24h&limit=100")
         body = events.json()
+        check("portal events return selected range",
+              body.get("range") == "24h"
+              and any(include_events and delta <= 25 * 60 * 60 * 1000 for include_events, delta in fake.seen_windows),
+              str(body))
         check("portal filters events to own key", len(body["events"]) == 1, str(body))
         check("portal events recompute cost from key policy prices",
               body["events"][0]["cost"] > 0 and body["events"][0]["cost_source"] == "key_policy",

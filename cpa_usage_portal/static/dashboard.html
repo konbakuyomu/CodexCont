@@ -512,7 +512,7 @@
         <div class="section-head">
           <div class="section-title">
             <h2>模型分布</h2>
-            <p class="muted">按当前 Key 和所选时间范围统计。</p>
+            <p id="modelRangeHint" class="muted">按当前 Key 和所选时间范围统计。</p>
           </div>
         </div>
         <div class="table-wrap">
@@ -527,7 +527,7 @@
         <div class="section-head">
           <div class="section-title">
             <h2>最近请求</h2>
-            <p class="muted">主表只显示摘要；展开后查看脱敏详情。</p>
+            <p id="eventsRangeHint" class="muted">当前范围内最近 100 条；展开后查看脱敏详情。</p>
           </div>
           <span id="eventCountChip" class="chip info"><span class="dot"></span><span>0 条</span></span>
         </div>
@@ -563,6 +563,7 @@
       refreshSeq: 0,
       refreshTimer: null,
       lastRefreshAt: 0,
+      currentRange: "24h",
     };
 
     function escapeHtml(value) {
@@ -596,6 +597,9 @@
       const n = Number(ms);
       if (n < 1000) return `${Math.round(n)} ms`;
       return `${(n / 1000).toFixed(2)} s`;
+    }
+    function rangeLabel(range) {
+      return range === "7d" ? "最近 7 天" : "最近 24 小时";
     }
     function setLive(kind, text) {
       const chip = $("liveChip");
@@ -661,8 +665,12 @@
     function renderUsage(data) {
       const s = data.summary || {};
       const me = state.me || {};
-      const range = $("rangeSelect").value;
+      const range = data.range || $("rangeSelect").value;
+      state.currentRange = range;
       const limit = range === "7d" ? me.limits?.weekly_usd : me.limits?.daily_usd;
+      const windowText = data.from_ms && data.to_ms ? ` · ${time(data.from_ms)} 至 ${time(data.to_ms)}` : "";
+      $("modelRangeHint").textContent = `按当前 Key 统计：${rangeLabel(range)}${windowText}`;
+      $("eventsRangeHint").textContent = `当前显示 ${rangeLabel(range)} 内最近 100 条请求；展开后查看脱敏详情。`;
       $("calls").textContent = num(s.total_calls);
       $("successRate").textContent = pct(s.success_rate);
       $("failureCount").textContent = `失败 ${num(s.failure_calls)}`;
@@ -709,9 +717,10 @@
         </td>
       </tr>`;
     }
-    function renderEvents(events) {
+    function renderEvents(events, meta = {}) {
       state.events = events || [];
-      $("eventCountChip").innerHTML = `<span class="dot"></span><span>${num(state.events.length)} 条</span>`;
+      const range = meta.range || state.currentRange || $("rangeSelect").value;
+      $("eventCountChip").innerHTML = `<span class="dot"></span><span>${num(state.events.length)} 条 · ${rangeLabel(range)}</span>`;
       if (!state.events.length) {
         $("eventRows").innerHTML = '<tr><td colspan="8" class="empty">暂无请求记录</td></tr>';
         return;
@@ -749,19 +758,19 @@
     async function refreshDashboard(options = {}) {
       if (state.refreshing && !options.force) return;
       const seq = ++state.refreshSeq;
+      const range = $("rangeSelect").value;
       state.refreshing = true;
       if (options.feedback) setRefreshBusy(true);
       try {
         const meData = await api("/api/me");
         if (seq !== state.refreshSeq) return;
         renderMe(meData.me);
-        const range = $("rangeSelect").value;
         const usage = await api(`/api/usage?range=${encodeURIComponent(range)}`);
         if (seq !== state.refreshSeq) return;
         renderUsage(usage);
-        const events = await api("/api/events?limit=100");
+        const events = await api(`/api/events?range=${encodeURIComponent(range)}&limit=100`);
         if (seq !== state.refreshSeq) return;
-        renderEvents(events.events || []);
+        renderEvents(events.events || [], { range: events.range || range });
         showLoggedIn(true);
         state.lastRefreshAt = Date.now();
       } finally {

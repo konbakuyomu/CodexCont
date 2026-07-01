@@ -73,6 +73,11 @@ def _parse_before(request: Request) -> tuple[int | None, int | None]:
     return parsed_ms, parsed_id
 
 
+def _parse_range(request: Request, *, default: str) -> str:
+    value = request.query_params.get("range", default)
+    return value if value in {"24h", "7d"} else default
+
+
 async def dashboard(_request: Request) -> HTMLResponse:
     return HTMLResponse(_DASHBOARD.read_text(encoding="utf-8"))
 
@@ -145,7 +150,8 @@ async def usage(request: Request) -> JSONResponse:
         record = _current_key(request)
     except AuthError as exc:
         return _json_error(str(exc), 401)
-    window = range_window(request.query_params.get("range", "24h"))
+    range_name = _parse_range(request, default="24h")
+    window = range_window(range_name)
     data = await request.app.state.cpamp.analytics(
         api_key_hash=record.cpamp_hash,
         window=window,
@@ -154,7 +160,7 @@ async def usage(request: Request) -> JSONResponse:
     )
     data = apply_key_policy_pricing(data, record.model_prices)
     return JSONResponse({
-        "range": request.query_params.get("range", "24h") if request.query_params.get("range") in {"24h", "7d"} else "24h",
+        "range": range_name,
         "from_ms": window.from_ms,
         "to_ms": window.to_ms,
         "summary": data.get("summary") or {},
@@ -176,7 +182,8 @@ async def events(request: Request) -> JSONResponse:
     except ValueError:
         limit = 100
     before_ms, before_id = _parse_before(request)
-    window = range_window("7d")
+    range_name = _parse_range(request, default="7d")
+    window = range_window(range_name)
     data = await request.app.state.cpamp.analytics(
         api_key_hash=record.cpamp_hash,
         window=window,
@@ -191,6 +198,9 @@ async def events(request: Request) -> JSONResponse:
         record.model_prices,
     )
     return JSONResponse({
+        "range": range_name,
+        "from_ms": window.from_ms,
+        "to_ms": window.to_ms,
         "events": items,
         "next_before_ms": page.get("next_before_ms") or 0,
         "next_before_id": page.get("next_before_id") or 0,

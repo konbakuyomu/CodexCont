@@ -168,7 +168,7 @@ This spreads the event contract into JavaScript and makes the beginner-facing st
   - `DELETE /api/session`
   - `GET /api/me`
   - `GET /api/usage?range=24h|7d`
-  - `GET /api/events?limit=N&before=...`
+  - `GET /api/events?range=24h|7d&limit=N&before=...`
   - `GET /api/events/stream`
 - Production user route: `https://cpa-usage.konbakuyomu.us/`
 - Production admin route for CPAMP: `https://cpa-admin.konbakuyomu.us/`
@@ -235,6 +235,10 @@ This spreads the event contract into JavaScript and makes the beginner-facing st
 - `/api/me` must expose safe daily/weekly USD limits and a safe pricing
   summary. The user dashboard must show both daily and weekly limits directly,
   not only as a selected-range hint.
+- The usage portal's selected time range controls both `/api/usage` aggregates
+  and the visible `/api/events` recent-request table. The page must also render
+  the active range label, because 24h and 7d can legitimately return identical
+  numbers when all retained usage happened in the last day.
 - Public `cpa.konbakuyomu.us` must continue to block management, plugin,
   admin, CodexCont dashboard, CPAMP, and usage-portal internals.
 - The usage portal frontend must not rely on an old `/api/events/stream`
@@ -269,6 +273,8 @@ This spreads the event contract into JavaScript and makes the beginner-facing st
 - Key Policy prices exist but CPAMP returns zero cost -> user portal shows
   nonzero estimated cost from Key Policy prices and marks the source as
   `key_policy`.
+- `GET /api/events?range=24h` -> recent events are fetched from the 24h window;
+  omitting `range` keeps the compatibility default.
 - Key Policy daily/weekly USD limits exist -> `/api/me` and the dashboard show
   both values safely.
 - `GET /api/usage` must not include the full raw-key hash or full policy-id

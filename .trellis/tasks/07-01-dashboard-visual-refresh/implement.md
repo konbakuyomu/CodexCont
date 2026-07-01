@@ -277,3 +277,58 @@ Validation:
 - Node parsed the inline scripts from both HTML files successfully:
   `cpa_usage_portal/static/dashboard.html: js parse ok` and
   `middleware/dashboard.html: js parse ok`.
+
+## Follow-up: Usage Range Visibility And Event Window
+
+Problem reported on 2026-07-01:
+
+- The user usage page's `24 小时` / `7 天` selector appeared to do nothing.
+- The page did not clearly show which time window was active, and the recent
+  request table was still fetched from a fixed 7-day window.
+
+Evidence:
+
+- A server-side CPAMP check for `kuma专用` showed the same totals for both
+  windows because all retained traffic was inside the last 24 hours:
+  `24h calls=242`, `7d calls=242`, same tokens, cost, and model distribution.
+- After the fix and redeploy, the same key still legitimately returned
+  identical totals (`260` calls in both windows), but the APIs now returned
+  explicit `usage_range` / `events_range` values for `24h` and `7d`.
+
+Implemented fix:
+
+- `GET /api/events` now accepts `range=24h|7d` and returns `range`,
+  `from_ms`, and `to_ms`; the compatibility default remains 7 days.
+- The frontend now sends the selected range to both `/api/usage` and
+  `/api/events`, so top metrics, model distribution, and recent requests share
+  one selected window.
+- The model and recent-request section subtitles now render the active range
+  and the resolved time window. This makes a same-number 24h/7d result visibly
+  understandable instead of looking like a dead dropdown.
+
+Validation:
+
+- `.venv\Scripts\python.exe tests\test_cpa_usage_portal.py` -> 50/50 checks
+  passed.
+- `.venv\Scripts\python.exe tests\test_middleware.py` -> 147/147 checks
+  passed.
+- `.venv\Scripts\python.exe -m compileall cpa_usage_portal run_usage_portal.py middleware run.py`
+  -> passed.
+- Node parsed `cpa_usage_portal/static/dashboard.html` and
+  `middleware/dashboard.html` inline scripts successfully.
+
+Server rollout:
+
+- Preflight remained disk-tight but stable: `/` was 9.6G total, 8.8G used,
+  751M available, 93% used.
+- Root-only backup path:
+  `/root/codex-backups/usage-range-refresh-20260701-231819/`.
+- Uploaded only `cpa_usage_portal/app.py` and
+  `cpa_usage_portal/static/dashboard.html`.
+- Rebuilt/restarted only `cpa-usage-portal`; `cpa`, `cpamp`, `codexcont`, and
+  `caddy-edge` kept their prior uptime.
+- Container-internal `/healthz` returned
+  `{"ok":true,"key_policy_state":true,"cpamp":true}`.
+- Public `https://cpa-usage.konbakuyomu.us/` returned `200` and contains the
+  new selected-range UI code; public `https://cpa.konbakuyomu.us/cpa-usage/`
+  returned `404`.
