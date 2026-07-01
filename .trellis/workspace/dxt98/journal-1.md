@@ -141,3 +141,36 @@ Added the custom CPA usage portal local quota admin, 5H/month windows, soft rese
 ### Next Steps
 
 - None - task complete
+
+
+## Session 5: CPA usage request detail closeout
+
+**Date**: 2026-07-02
+**Task**: CPA usage request detail closeout
+**Branch**: `main`
+
+### Summary
+
+Completed and deployed the CPA usage admin batch-save/request-detail task, including CPAMP-compatible cache semantics, safe key identity on CodexCont, all-key usage-admin events, server validation, and task archive.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `432ca38` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
