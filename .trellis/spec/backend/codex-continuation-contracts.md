@@ -137,3 +137,94 @@ This spreads the event contract into JavaScript and makes the beginner-facing st
 ```
 
 `Diagnostics` is the single projection owner. The UI renders the explicit `protection` value and keeps raw logs as an advanced troubleshooting view only.
+
+## Scenario: CPA Key Policy, CPAMP, and user usage portal
+
+### 1. Scope / Trigger
+- Trigger this spec whenever work touches `cpa_usage_portal/`, CPAMP monitoring
+  queries, CPA Key Policy state parsing, per-key quota display, user usage
+  events, or production routes for `cpa-usage.konbakuyomu.us`.
+- This is a cross-layer contract: Key Policy state authenticates a raw
+  `cpa_...` key, CPA records the plugin principal into usage events, CPAMP
+  hashes that principal, the portal filters CPAMP analytics, and the frontend
+  renders only safe per-user summaries.
+
+### 2. Signatures
+- Portal routes:
+  - `GET /healthz`
+  - `POST /api/session`
+  - `DELETE /api/session`
+  - `GET /api/me`
+  - `GET /api/usage?range=24h|7d`
+  - `GET /api/events?limit=N&before=...`
+  - `GET /api/events/stream`
+- Production user route: `https://cpa-usage.konbakuyomu.us/`
+- Production admin route for CPAMP: `https://cpa-admin.konbakuyomu.us/`
+- Key Policy state path on SJC:
+  `/opt/codex-stacks/cpa/plugin-state/cpa-key-policy-state.json`
+
+### 3. Contracts
+- CPA stays on the official image. Do not fork CPA to implement per-key usage
+  views.
+- The user portal is a read-only sidecar. It may read Key Policy state and
+  query CPAMP monitoring, but it must not mutate CPA, OAuth accounts, proxy
+  routing, or Key Policy records in v1.
+- Login validation uses the raw user key only once:
+  `sha256(trimmed_raw_cpa_key)` must match Key Policy `key_hash`
+  (`sha256:<hex>`). The raw key must not be stored, logged, or returned.
+- CPAMP filtering for Key Policy keys must use `sha256(Key Policy id)`, not
+  `sha256(raw cpa_... key)`. CPA Key Policy authenticates requests with
+  `Principal = key.ID`, and CPAMP hashes CPA's usage-record principal.
+- Keep raw-key hash and CPAMP usage hash as separate concepts in code and
+  tests. Session cookies may contain safe hash identifiers, but every request
+  must re-load Key Policy state and validate the raw-key hash still maps to an
+  enabled record.
+- User APIs must never return raw API keys, full raw-key hashes, full CPAMP
+  usage hashes, OAuth tokens, CPA management keys, CPAMP admin keys, cookies,
+  Authorization headers, request bodies, response bodies, or encrypted
+  reasoning content.
+- CPAMP `api_key_stats` must be projected before returning it to the browser.
+  Do not pass CPAMP rows through directly because they may include full
+  `api_key_hash` values.
+- Public `cpa.konbakuyomu.us` must continue to block management, plugin,
+  admin, CodexCont dashboard, CPAMP, and usage-portal internals.
+- SJC is disk-constrained. Portal rollouts should upload changed files and
+  rebuild only `cpa-usage-portal`; do not use Docker prune or broad deletion.
+
+### 4. Validation & Error Matrix
+- Unknown raw API key -> `401 invalid_api_key`.
+- Disabled Key Policy record -> `403 api_key_disabled` at login or
+  `401 key_not_available` for an existing session.
+- Missing or invalid session -> `401 not_authenticated`.
+- CPAMP rows whose `api_key_hash` does not match the current key's CPAMP usage
+  hash -> drop them server-side.
+- `GET /api/usage` must not include the full raw-key hash or full policy-id
+  hash anywhere in the JSON response.
+- DNS for `cpa-usage.konbakuyomu.us` may be absent while the sidecar and Caddy
+  route are ready; verify with explicit host resolution before declaring the
+  route broken.
+
+### 5. Good/Base/Bad Cases
+- Good: A user logs in with a `cpa_...` key; the portal validates
+  `sha256(raw key)` against Key Policy state, then queries CPAMP with
+  `sha256(key.id)` and shows only that key's events.
+- Base: A Key Policy key has no events yet. The portal still shows safe key
+  metadata and empty usage tables.
+- Bad: The portal filters CPAMP with `sha256(raw key)` and shows zero events
+  even though CPAMP has usage records for the key id.
+- Bad: `/api/usage` returns CPAMP `api_key_stats` unchanged and leaks a full
+  `api_key_hash` to the browser.
+
+### 6. Tests Required
+- Unit: raw key hash validates login while `record.cpamp_hash` equals
+  `sha256(policy id)` when `id` is present.
+- Unit: CPAMP analytics calls use the policy-id hash, not the raw-key hash.
+- Unit: usage/event projections reject another key's hash and do not return
+  full hash values.
+- Unit: redaction covers Authorization, cookies, API keys, tokens, management
+  keys, and encrypted reasoning fields while preserving numeric token counters.
+- Unit: retention deletes old CPAMP `usage_events` in batches and does not run
+  `VACUUM`.
+- Production smoke: allowed Key Policy model succeeds, disallowed model is
+  rejected, CPAMP records real usage, the portal login succeeds, and
+  `/api/events` returns only own events.

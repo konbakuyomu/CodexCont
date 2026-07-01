@@ -124,6 +124,24 @@ max_log_events = 800
 
 Do not expose `/admin/` on a public API hostname unless it is protected by an external access layer such as Cloudflare Access.
 
+## CPA Usage Portal
+
+This repository also includes a small self-service sidecar in `cpa_usage_portal/`.
+It is designed to sit next to CPA Manager Plus and CPA Key Policy: users log in
+with their own `cpa_...` key and can only see usage filtered to that key. The
+portal validates login with the raw key's Key Policy hash, but filters CPAMP
+usage with `sha256(Key Policy id)` because the plugin authenticates to CPA as
+the key id. Raw API keys, OAuth tokens, management keys, request bodies,
+response bodies, and encrypted reasoning content are never returned.
+
+Run locally:
+
+```bash
+.venv/Scripts/python.exe run_usage_portal.py
+```
+
+Docker deployment templates live in `deploy/cpa-usage-portal/`.
+
 ## When continuation is applied
 
 The middleware folds only when all of the following are true:
@@ -181,6 +199,7 @@ Current offline coverage includes:
 - upstream URL resolution
 - auth safety guard
 - dashboard diagnostics and admin route smoke
+- CPA usage portal hash/session/filtering/redaction/retention behavior
 - EOF/upstream-error behavior
 
 ## Project layout
@@ -200,9 +219,11 @@ middleware/
 
 tests/
   test_middleware.py
+  test_cpa_usage_portal.py
   fixtures/
 
 run.py         # uvicorn entrypoint
+run_usage_portal.py # CPA usage portal entrypoint
 config.example.toml # example runtime configuration; copy to config.toml for local use
 ```
 

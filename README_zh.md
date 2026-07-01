@@ -131,6 +131,54 @@ max_log_events = 800
 
 不要把 `/admin/` 直接暴露在公网 API 域名上；生产环境应放在 Cloudflare Access 这类外层访问控制之后。
 
+## CPA 用量自助页
+
+本仓库还包含一个独立的 CPA 用量自助页 sidecar：
+
+```bash
+.venv/Scripts/python.exe run_usage_portal.py
+```
+
+它不是 CPA fork，也不是 CPAMP 的替代品。推荐生产链路是：
+
+```text
+CPA Key Policy 负责 key 和限额
+CPAMP 负责请求级用量采集
+cpa_usage_portal 只给普通用户看自己的用量
+```
+
+关键环境变量：
+
+```text
+CPA_USAGE_PORTAL_KEY_POLICY_STATE=/data/cpa-key-policy-state.json
+CPA_USAGE_PORTAL_CPAMP_URL=http://cpamp:18317
+CPA_USAGE_PORTAL_CPAMP_ADMIN_KEY_FILE=/run/secrets/cpamp_admin_key
+CPA_USAGE_PORTAL_SESSION_SECRET_FILE=/run/secrets/session_secret
+```
+
+用户只在登录时提交自己的 `cpa_...` API Key。服务端会用 `sha256` 校验 Key Policy state，并在 HttpOnly cookie 中只保存用于会话校验的哈希和安全元数据；页面和接口不会返回原始 key、完整 key hash、OAuth token、CPA/CPAMP 管理密钥、请求正文、响应正文或 encrypted reasoning 内容。
+
+Docker 部署模板在：
+
+```text
+deploy/cpa-usage-portal/
+```
+
+## CPAMP 与 Key Policy 配合
+
+计划中的生产组合是：
+
+- CPAMP：管理员面板和请求级监控，放在 `cpa-admin.konbakuyomu.us` + Cloudflare Access 后面。
+- CPA Key Policy：生成 `cpa_...` key，配置每个 key 的模型权限、RPM、每日/每周 USD 限额。
+- CPA 用量自助页：普通用户用自己的 key 登录，只能看自己的用量和最近请求。
+
+Key Policy 有两个容易混淆的标识：
+
+- `key_hash`：原始 `cpa_...` key 的 `sha256:<hex>`，只用于登录校验。
+- `id`：Key Policy 交给 CPA 的 Principal；CPAMP monitoring 里的 `api_key_hash` 实际是 `sha256(id)`。
+
+因此门户登录时用原始 key hash 找到 Key Policy 记录，查询 CPAMP 时改用该记录 `id` 的 hash。所有 CPAMP 查询都会强制带当前登录 key 对应的 `api_key_hash` 过滤。
+
 ## 什么时候会执行续写折叠
 
 只有同时满足以下条件时，中间件才会执行折叠逻辑：
@@ -188,6 +236,7 @@ uv run python tests/test_middleware.py
 - 上游 URL 解析
 - 鉴权安全保护
 - dashboard diagnostics 和 admin route smoke
+- CPA 用量自助页的 key hash/session/过滤/脱敏/retention 行为
 - EOF / 上游错误处理
 
 ## 项目结构
@@ -205,11 +254,21 @@ middleware/
   sse.py       # 增量 SSE 解析和序列化
   store.py     # 可选 stateful repair 使用的内存 ID 存储
 
+cpa_usage_portal/
+  app.py       # 用户用量自助页 Starlette 应用
+  key_policy.py # CPA Key Policy state 只读解析
+  cpamp.py     # CPAMP monitoring API client
+  redaction.py # 用户可见事件脱敏投影
+  retention.py # CPAMP SQLite 7 天保留辅助
+  static/dashboard.html # 中文自助页
+
 tests/
   test_middleware.py
+  test_cpa_usage_portal.py
   fixtures/
 
 run.py         # uvicorn 入口
+run_usage_portal.py # CPA 用量自助页入口
 config.example.toml # 示例运行配置；复制为 config.toml 后本地使用
 ```
 
