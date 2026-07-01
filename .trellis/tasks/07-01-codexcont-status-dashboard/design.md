@@ -16,8 +16,11 @@ Admin view path:
 
 - `GET /admin/healthz` returns `{ "ok": true }` plus process uptime.
 - `GET /admin/status` returns process metrics, recent counters, upstream health, and a safe config summary.
+- `GET /admin/requests?limit=N` returns recent request-level protection summaries. Each summary is a redacted,
+  memory-only projection of internal diagnostics events keyed by the generated request id.
 - `GET /admin/logs?limit=N` returns the newest redacted in-memory log events.
-- `GET /admin/logs/stream` uses `text/event-stream`; new events are emitted as JSON `data:` frames.
+- `GET /admin/logs/stream` uses `text/event-stream`; new log events are emitted as `event: log`, and request
+  summary updates are emitted as `event: request`.
 - `GET /admin/` serves the static dashboard. Static assets can be embedded or served under `/admin/static/...`; no Node build is required.
 
 ## Metrics And Logs
@@ -36,14 +39,22 @@ Admin view path:
   - request finished cleanly or failed
   - upstream health probe result
 - Use generated request IDs for dashboard correlation only; do not expose upstream tokens or reasoning payloads.
+- Add a request summary projection inside `Diagnostics` so frontend code does not re-derive protection meaning from raw log fields.
+- Request protection result values:
+  - `protected_clean`: folded request completed without a truncation fingerprint.
+  - `auto_continued`: a truncation fingerprint was detected and a hidden continuation round opened.
+  - `risk_uncontinued`: a truncation fingerprint was detected but continuation was blocked by a guard.
+  - `passthrough`: request did not enter folding protection.
+  - `failed`, `incomplete`, `processing`: failure, incomplete upstream ending, or still active.
 
 ## Frontend
 
 - Single static operational dashboard, not a landing page.
-- Compact top band: CodexCont health, CPA health, active requests, SSE connection status.
-- Metrics grid: total requests, continuations, truncation hits, failures, last continuation.
-- Live log table: timestamp, level, event, request id, model, round, reason, message.
-- Controls: level/event filter, pause, autoscroll, clear local view, reconnect state.
+- Chinese-first operational copy.
+- Compact top band: CodexCont health, CPA health, continuation config, active requests, SSE connection status.
+- Metrics grid: total requests, folded/protected requests, continuations, truncation hits, failures.
+- Primary table: recent requests with protection result chips, model, rounds, reasoning token count, continuation count, final result, and expandable round details.
+- Advanced log table remains available below the primary request view, with filters, pause/autoscroll, clear local view, and Chinese event labels.
 - Styling is plain CSS with restrained colors, max 8px card radius, stable dimensions, responsive grid, and no decorative gradient/orb background.
 
 ## Deployment Contract

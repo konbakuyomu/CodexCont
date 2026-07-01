@@ -1,92 +1,114 @@
 <!doctype html>
-<html lang="en">
+<html lang="zh-CN">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>CodexCont Dashboard</title>
+  <link rel="icon" href="data:,">
+  <title>CodexCont 保护状态面板</title>
   <style>
     :root {
       color-scheme: light;
-      --bg: #f6f8fa;
+      --bg: #f5f7fa;
       --panel: #ffffff;
-      --panel-2: #eef3f6;
-      --text: #1d252c;
-      --muted: #65717c;
-      --line: #d9e1e7;
-      --ok: #0f8f68;
-      --warn: #a86612;
-      --bad: #b42318;
-      --accent: #1565c0;
-      --shadow: 0 12px 30px rgba(29, 37, 44, .08);
+      --panel-soft: #f0f5f7;
+      --text: #19232d;
+      --muted: #607080;
+      --line: #d9e2e8;
+      --line-strong: #c5d2dc;
+      --blue: #1769aa;
+      --green: #0b7d62;
+      --teal: #087f8c;
+      --amber: #a45f00;
+      --red: #b42318;
+      --violet: #6a4bc3;
+      --shadow: 0 10px 28px rgba(25, 35, 45, .08);
+      --mono: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+      --sans: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
     }
     * { box-sizing: border-box; }
     body {
       margin: 0;
       background: var(--bg);
       color: var(--text);
-      font: 14px/1.45 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font: 14px/1.48 var(--sans);
       letter-spacing: 0;
     }
-    .shell { max-width: 1440px; margin: 0 auto; padding: 20px; }
-    header {
-      display: flex;
-      align-items: flex-start;
-      justify-content: space-between;
-      gap: 16px;
-      margin-bottom: 16px;
-    }
-    h1 { margin: 0; font-size: 22px; line-height: 1.2; font-weight: 720; }
-    .subtle { color: var(--muted); font-size: 13px; margin-top: 4px; }
-    .toolbar { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
     button, select, input {
       min-height: 34px;
       border: 1px solid var(--line);
+      border-radius: 6px;
       background: var(--panel);
       color: var(--text);
-      border-radius: 6px;
       padding: 0 10px;
       font: inherit;
     }
     button { cursor: pointer; }
-    button.active { background: #dfefff; border-color: #98bee8; color: #0f4e93; }
-    .grid {
-      display: grid;
-      grid-template-columns: repeat(4, minmax(160px, 1fr));
-      gap: 12px;
-      margin-bottom: 12px;
+    button.active { border-color: #90b8dd; background: #e7f2ff; color: #0f518d; }
+    .shell { max-width: 1480px; margin: 0 auto; padding: 18px; }
+    header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 14px;
+      margin-bottom: 14px;
     }
+    h1 { margin: 0; font-size: 24px; line-height: 1.2; font-weight: 760; }
+    h2 { margin: 0; font-size: 15px; line-height: 1.3; font-weight: 720; }
+    .subtle { margin-top: 5px; color: var(--muted); font-size: 13px; }
+    .toolbar, .filters { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
     .panel {
       background: var(--panel);
       border: 1px solid var(--line);
       border-radius: 8px;
       box-shadow: var(--shadow);
     }
-    .metric { padding: 14px; min-height: 92px; }
-    .metric .label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0; }
-    .metric .value { font-size: 26px; line-height: 1.25; font-weight: 740; margin-top: 8px; overflow-wrap: anywhere; }
-    .metric .hint { color: var(--muted); font-size: 12px; margin-top: 4px; overflow-wrap: anywhere; }
-    .status-row { display: grid; grid-template-columns: 1.1fr 1fr 1fr; gap: 12px; margin-bottom: 12px; }
-    .status { padding: 14px; min-height: 112px; }
-    .status h2 { margin: 0 0 10px; font-size: 15px; }
-    .kv { display: grid; grid-template-columns: 132px 1fr; gap: 6px 10px; font-size: 13px; }
+    .status-row {
+      display: grid;
+      grid-template-columns: 1.05fr 1fr 1fr 1fr;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+    .status { min-height: 112px; padding: 14px; }
+    .kv { display: grid; grid-template-columns: 104px minmax(0, 1fr); gap: 7px 10px; margin-top: 11px; }
     .kv span:nth-child(odd) { color: var(--muted); }
-    .pill {
+    .kv strong { overflow-wrap: anywhere; }
+    .metrics {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(150px, 1fr));
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+    .metric { min-height: 94px; padding: 14px; }
+    .metric .label { color: var(--muted); font-size: 12px; }
+    .metric .value { margin-top: 8px; font-size: 27px; line-height: 1.18; font-weight: 760; }
+    .metric .hint { margin-top: 5px; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+    .pill, .chip {
       display: inline-flex;
       align-items: center;
-      gap: 6px;
+      gap: 7px;
       min-height: 24px;
-      padding: 2px 8px;
+      padding: 2px 9px;
       border-radius: 999px;
-      background: var(--panel-2);
+      background: var(--panel-soft);
+      border: 1px solid transparent;
       font-size: 12px;
-      font-weight: 650;
+      font-weight: 680;
+      white-space: nowrap;
     }
-    .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
-    .ok .dot { background: var(--ok); }
-    .warn .dot { background: var(--warn); }
-    .bad .dot { background: var(--bad); }
-    .log-panel { overflow: hidden; }
-    .log-head {
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: 0 0 auto; }
+    .ok .dot, .chip-ok .dot { background: var(--green); }
+    .live .dot, .chip-live .dot { background: var(--teal); }
+    .warn .dot, .chip-warn .dot { background: var(--amber); }
+    .bad .dot, .chip-bad .dot { background: var(--red); }
+    .info .dot, .chip-info .dot { background: var(--blue); }
+    .chip-ok { background: #e8f6f1; color: #075f4a; border-color: #b9e1d3; }
+    .chip-live { background: #e6f7f9; color: #096873; border-color: #b9e3e8; }
+    .chip-warn { background: #fff4df; color: #805000; border-color: #f0d29b; }
+    .chip-bad { background: #fdebea; color: #942117; border-color: #f1b8b4; }
+    .chip-info { background: #e8f2fc; color: #145894; border-color: #b7d4ef; }
+    .chip-neutral { background: #eef2f5; color: #4f5d68; border-color: #d5dee5; }
+    .requests { overflow: hidden; margin-bottom: 12px; }
+    .section-head {
       display: flex;
       align-items: center;
       justify-content: space-between;
@@ -95,51 +117,93 @@
       border-bottom: 1px solid var(--line);
       background: #fbfcfd;
     }
-    .log-head h2 { margin: 0; font-size: 15px; }
-    .filters { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
-    .table-wrap {
-      height: min(58vh, 640px);
-      min-height: 340px;
+    .request-wrap, .log-wrap {
       overflow: auto;
-      background: #0e1621;
+      background: var(--panel);
     }
-    table { width: 100%; border-collapse: collapse; table-layout: fixed; color: #e7eef6; }
-    th, td { padding: 8px 10px; border-bottom: 1px solid rgba(255,255,255,.08); vertical-align: top; }
+    table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+    th, td { padding: 9px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
     th {
       position: sticky;
       top: 0;
       z-index: 2;
-      background: #142233;
-      color: #aebccd;
+      background: #edf3f7;
+      color: #536575;
       text-align: left;
       font-size: 12px;
-      font-weight: 680;
+      font-weight: 700;
     }
-    td { font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace; font-size: 12px; overflow-wrap: anywhere; }
-    .col-time { width: 178px; }
-    .col-level { width: 82px; }
-    .col-event { width: 180px; }
-    .col-id { width: 118px; }
+    td { overflow-wrap: anywhere; }
+    .col-time { width: 168px; }
+    .col-protect { width: 176px; }
+    .col-model { width: 126px; }
+    .col-small { width: 86px; }
+    .col-result { width: 132px; }
+    .col-action { width: 76px; }
+    .mono { font-family: var(--mono); font-size: 12px; }
+    .muted { color: var(--muted); }
+    .empty { padding: 34px; color: var(--muted); text-align: center; }
+    .detail-row td { background: #f8fafb; }
+    .detail {
+      display: grid;
+      grid-template-columns: minmax(260px, 1fr) minmax(300px, 1.6fr);
+      gap: 12px;
+      color: #2c3a45;
+    }
+    .detail h3 { margin: 0 0 8px; font-size: 13px; }
+    .detail-list { display: grid; grid-template-columns: 118px minmax(0, 1fr); gap: 6px 10px; }
+    .detail-list span:nth-child(odd) { color: var(--muted); }
+    .rounds { display: flex; flex-wrap: wrap; gap: 8px; }
+    .round {
+      min-width: 174px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+      padding: 8px;
+    }
+    .round strong { display: block; margin-bottom: 5px; }
+    .log-panel { overflow: hidden; }
+    .log-panel > summary {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 12px 14px;
+      cursor: pointer;
+      font-weight: 720;
+      list-style: none;
+    }
+    .log-panel > summary::-webkit-details-marker { display: none; }
+    .log-body { border-top: 1px solid var(--line); }
+    .log-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 10px 14px;
+      background: #fbfcfd;
+      border-bottom: 1px solid var(--line);
+    }
+    .log-wrap { height: min(42vh, 520px); min-height: 280px; background: #101821; }
+    .log-table { color: #e8eef5; }
+    .log-table th { background: #172435; color: #b6c4d4; border-bottom-color: rgba(255,255,255,.08); }
+    .log-table td { border-bottom-color: rgba(255,255,255,.08); font-family: var(--mono); font-size: 12px; }
     .level-info { color: #8bd8ff; }
     .level-warning { color: #ffd27a; }
     .level-error { color: #ff9b92; }
-    .empty { padding: 36px; color: #9aa8b8; text-align: center; }
-    @media (max-width: 900px) {
-      .shell { padding: 12px; }
-      header, .log-head { align-items: stretch; flex-direction: column; }
-      .toolbar, .filters { justify-content: flex-start; }
-      .grid, .status-row { grid-template-columns: 1fr 1fr; }
-      .kv { grid-template-columns: 108px 1fr; }
-      .col-time { width: 150px; }
-      .col-event { width: 150px; }
+    @media (max-width: 1100px) {
+      .status-row { grid-template-columns: 1fr 1fr; }
+      .metrics { grid-template-columns: repeat(3, minmax(150px, 1fr)); }
     }
-    @media (max-width: 560px) {
-      .grid, .status-row { grid-template-columns: 1fr; }
-      .metric { min-height: 80px; }
-      .metric .value { font-size: 22px; }
-      .table-wrap { min-height: 420px; }
-      th, td { padding: 7px 8px; }
-      .col-id { width: 96px; }
+    @media (max-width: 720px) {
+      .shell { padding: 12px; }
+      header, .section-head, .log-head { flex-direction: column; align-items: stretch; }
+      .toolbar, .filters { justify-content: flex-start; }
+      .status-row, .metrics, .detail { grid-template-columns: 1fr; }
+      h1 { font-size: 21px; }
+      .metric { min-height: 82px; }
+      .metric .value { font-size: 23px; }
+      .request-wrap table, .log-wrap table { min-width: 920px; }
     }
   </style>
 </head>
@@ -147,103 +211,211 @@
   <main class="shell">
     <header>
       <div>
-        <h1>CodexCont Dashboard</h1>
-        <div class="subtle" id="subtitle">Waiting for live diagnostics...</div>
+        <h1>CodexCont 保护状态面板</h1>
+        <div class="subtle" id="subtitle">正在读取运行状态...</div>
       </div>
       <div class="toolbar">
-        <span class="pill warn" id="stream-pill"><span class="dot"></span><span id="stream-label">Connecting</span></span>
-        <button id="pause-btn" title="Pause live log updates">Pause</button>
-        <button id="autoscroll-btn" class="active" title="Keep latest logs in view">Autoscroll</button>
-        <button id="clear-btn" title="Clear only the local table">Clear</button>
+        <span class="pill warn" id="stream-pill"><span class="dot"></span><span id="stream-label">连接中</span></span>
+        <button id="refresh-btn" title="立即刷新状态">刷新</button>
       </div>
     </header>
 
     <section class="status-row">
       <article class="panel status">
-        <h2>Service</h2>
+        <h2>服务状态</h2>
         <div class="kv">
-          <span>CodexCont</span><strong id="svc-ok">unknown</strong>
-          <span>Uptime</span><strong id="uptime">-</strong>
-          <span>Started</span><strong id="started">-</strong>
+          <span>CodexCont</span><strong id="svc-ok">未知</strong>
+          <span>运行时间</span><strong id="uptime">-</strong>
+          <span>启动时间</span><strong id="started">-</strong>
         </div>
       </article>
       <article class="panel status">
-        <h2>CPA Upstream</h2>
+        <h2>CPA 上游</h2>
         <div class="kv">
-          <span>Health</span><strong id="upstream-ok">unknown</strong>
-          <span>Status</span><strong id="upstream-status">-</strong>
-          <span>Host</span><strong id="upstream-host">-</strong>
+          <span>健康</span><strong id="upstream-ok">未知</strong>
+          <span>状态码</span><strong id="upstream-status">-</strong>
+          <span>地址</span><strong id="upstream-host">-</strong>
         </div>
       </article>
       <article class="panel status">
-        <h2>Config</h2>
+        <h2>保护配置</h2>
         <div class="kv">
-          <span>Mode</span><strong id="upstream-mode">-</strong>
-          <span>Continuation</span><strong id="cont-mode">-</strong>
-          <span>Retention</span><strong id="retention">-</strong>
+          <span>模式</span><strong id="upstream-mode">-</strong>
+          <span>续写</span><strong id="cont-mode">-</strong>
+          <span>日志保留</span><strong id="retention">-</strong>
+        </div>
+      </article>
+      <article class="panel status">
+        <h2>实时流</h2>
+        <div class="kv">
+          <span>连接</span><strong id="stream-state">连接中</strong>
+          <span>活跃请求</span><strong id="active-now">0</strong>
+          <span>请求记录</span><strong id="request-cache">0</strong>
         </div>
       </article>
     </section>
 
-    <section class="grid">
-      <article class="panel metric"><div class="label">Total Requests</div><div class="value" id="m-total">0</div><div class="hint" id="m-last-request">-</div></article>
-      <article class="panel metric"><div class="label">Active</div><div class="value" id="m-active">0</div><div class="hint">in-flight streams</div></article>
-      <article class="panel metric"><div class="label">Continuations</div><div class="value" id="m-cont">0</div><div class="hint" id="m-last-cont">-</div></article>
-      <article class="panel metric"><div class="label">516 / 518n-2 Hits</div><div class="value" id="m-trunc">0</div><div class="hint" id="m-fail">0 failures</div></article>
+    <section class="metrics">
+      <article class="panel metric"><div class="label">总请求</div><div class="value" id="m-total">0</div><div class="hint" id="m-last-request">-</div></article>
+      <article class="panel metric"><div class="label">进入保护链</div><div class="value" id="m-folded">0</div><div class="hint">由 CodexCont 折叠处理</div></article>
+      <article class="panel metric"><div class="label">自动续写</div><div class="value" id="m-cont">0</div><div class="hint" id="m-last-cont">-</div></article>
+      <article class="panel metric"><div class="label">疑似截断</div><div class="value" id="m-trunc">0</div><div class="hint">516 / 518n-2 指纹</div></article>
+      <article class="panel metric"><div class="label">失败</div><div class="value" id="m-fail">0</div><div class="hint" id="m-last-error">-</div></article>
     </section>
 
-    <section class="panel log-panel">
-      <div class="log-head">
-        <h2>Live Logs</h2>
+    <section class="panel requests">
+      <div class="section-head">
+        <h2>最近请求</h2>
         <div class="filters">
-          <select id="level-filter" title="Filter by level">
-            <option value="">All levels</option>
-            <option value="info">Info</option>
-            <option value="warning">Warning</option>
-            <option value="error">Error</option>
+          <select id="protect-filter" title="按保护结果筛选">
+            <option value="">全部保护结果</option>
+            <option value="protected_clean">已保护 / 无需续写</option>
+            <option value="auto_continued">已自动续写</option>
+            <option value="risk_uncontinued">疑似截断 / 未续写</option>
+            <option value="passthrough">透传</option>
+            <option value="failed">失败</option>
+            <option value="incomplete">不完整</option>
+            <option value="processing">处理中</option>
           </select>
-          <input id="text-filter" type="search" placeholder="Filter text" aria-label="Filter log text">
+          <input id="request-filter" type="search" placeholder="筛选模型 / 请求 ID / 原因" aria-label="筛选最近请求">
         </div>
       </div>
-      <div class="table-wrap" id="table-wrap">
+      <div class="request-wrap">
         <table>
           <thead>
             <tr>
-              <th class="col-time">Time</th>
-              <th class="col-level">Level</th>
-              <th class="col-event">Event</th>
-              <th class="col-id">Request</th>
-              <th>Message / Fields</th>
+              <th class="col-time">时间</th>
+              <th class="col-protect">保护结果</th>
+              <th class="col-model">模型</th>
+              <th class="col-small">轮次</th>
+              <th class="col-small">思考量</th>
+              <th class="col-small">续写</th>
+              <th class="col-result">最终结果</th>
+              <th class="col-action">详情</th>
             </tr>
           </thead>
-          <tbody id="logs-body"><tr><td colspan="5" class="empty">No log events yet</td></tr></tbody>
+          <tbody id="requests-body"><tr><td colspan="8" class="empty">暂无请求</td></tr></tbody>
         </table>
       </div>
     </section>
+
+    <details class="panel log-panel">
+      <summary>
+        <span>高级日志</span>
+        <span class="muted">用于排查原始事件</span>
+      </summary>
+      <div class="log-body">
+        <div class="log-head">
+          <div class="filters">
+            <select id="level-filter" title="按级别筛选">
+              <option value="">全部级别</option>
+              <option value="info">信息</option>
+              <option value="warning">警告</option>
+              <option value="error">错误</option>
+            </select>
+            <input id="text-filter" type="search" placeholder="筛选日志文本" aria-label="筛选日志文本">
+          </div>
+          <div class="toolbar">
+            <button id="pause-btn" title="暂停日志追加">暂停日志</button>
+            <button id="autoscroll-btn" class="active" title="自动滚到最新日志">自动滚动</button>
+            <button id="clear-btn" title="只清空当前浏览器里的日志表">清空本地</button>
+          </div>
+        </div>
+        <div class="log-wrap" id="log-wrap">
+          <table class="log-table">
+            <thead>
+              <tr>
+                <th class="col-time">时间</th>
+                <th class="col-small">级别</th>
+                <th class="col-protect">事件</th>
+                <th class="col-model">请求</th>
+                <th>消息 / 字段</th>
+              </tr>
+            </thead>
+            <tbody id="logs-body"><tr><td colspan="5" class="empty">暂无日志</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </details>
   </main>
 
   <script>
-    const state = { events: [], paused: false, autoscroll: true, source: null };
+    const state = {
+      logs: [],
+      requests: new Map(),
+      expanded: new Set(),
+      pausedLogs: false,
+      autoscroll: true,
+      source: null,
+    };
     const $ = (id) => document.getElementById(id);
+    const PROTECTION = {
+      protected_clean: ["已保护 / 无需续写", "chip-ok", "经过保护链，未命中 516/518n-2"],
+      auto_continued: ["已自动续写", "chip-live", "检测到 516/518n-2，已打开隐藏续写轮"],
+      risk_uncontinued: ["疑似截断 / 未续写", "chip-warn", "检测到截断指纹，但保护条件未满足"],
+      passthrough: ["透传", "chip-neutral", "未进入折叠保护链"],
+      failed: ["失败", "chip-bad", "请求或上游处理失败"],
+      incomplete: ["不完整", "chip-warn", "上游未完整结束"],
+      processing: ["处理中", "chip-info", "请求仍在处理中"],
+    };
+    const DECISIONS = {
+      continue: "自动续写",
+      clean: "正常结束",
+      upstream_eof: "上游提前断开",
+      no_encrypted_content: "缺少可回放思维",
+      max_continue: "达到续写上限",
+      max_total_output_tokens: "达到输出上限",
+      tier_out_of_window: "不在续写窗口",
+    };
+    const EVENTS = {
+      request_started: "收到请求",
+      fold_start: "进入保护链",
+      passthrough: "透传",
+      round_decision: "轮次判断",
+      continuation_opened: "自动续写",
+      request_finished: "请求完成",
+      request_failed: "请求失败",
+      manual_event: "手动事件",
+    };
 
+    function esc(value) {
+      return String(value == null ? "" : value)
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#39;");
+    }
     function fmtTime(value) {
       if (!value) return "-";
       const d = new Date(value);
-      return Number.isNaN(d.getTime()) ? value : d.toLocaleString();
+      return Number.isNaN(d.getTime()) ? value : d.toLocaleString("zh-CN", { hour12: false });
     }
     function fmtDuration(seconds) {
       seconds = Number(seconds || 0);
       const h = Math.floor(seconds / 3600);
       const m = Math.floor((seconds % 3600) / 60);
       const s = Math.floor(seconds % 60);
-      return h ? `${h}h ${m}m ${s}s` : m ? `${m}m ${s}s` : `${s}s`;
+      return h ? `${h}时 ${m}分 ${s}秒` : m ? `${m}分 ${s}秒` : `${s}秒`;
     }
-    function setText(id, value) { $(id).textContent = value == null || value === "" ? "-" : String(value); }
-    function pill(status, text) {
+    function fmtMs(ms) {
+      if (ms == null) return "-";
+      if (ms < 1000) return `${ms} ms`;
+      return `${(ms / 1000).toFixed(1)} 秒`;
+    }
+    function setText(id, value) {
+      $(id).textContent = value == null || value === "" ? "-" : String(value);
+    }
+    function setStream(status, text) {
       const el = $("stream-pill");
-      el.classList.remove("ok", "warn", "bad");
+      el.classList.remove("ok", "warn", "bad", "info", "live");
       el.classList.add(status);
       setText("stream-label", text);
+      setText("stream-state", text);
+    }
+    function chip(kind) {
+      const [label, cls, title] = PROTECTION[kind] || PROTECTION.processing;
+      return `<span class="chip ${cls}" title="${esc(title)}"><span class="dot"></span>${esc(label)}</span>`;
     }
     function summarizeFields(fields) {
       if (!fields || typeof fields !== "object") return "";
@@ -252,33 +424,123 @@
         .map(([k, v]) => `${k}=${typeof v === "object" ? JSON.stringify(v) : v}`)
         .join(" ");
     }
+    function requestSearchText(req) {
+      return JSON.stringify({
+        id: req.request_id,
+        model: req.model,
+        protection: req.protection,
+        status: req.status,
+        stopped: req.stopped_reason,
+        fail: req.failure_reason,
+        passthrough: req.passthrough_reason,
+      }).toLowerCase();
+    }
+    function requestReason(req) {
+      if (req.failure_reason) return req.failure_reason;
+      if (req.stopped_reason) return DECISIONS[req.stopped_reason] || req.stopped_reason;
+      if (req.passthrough_reason) return req.passthrough_reason;
+      return "-";
+    }
+    function renderRounds(rounds) {
+      if (!Array.isArray(rounds) || !rounds.length) return '<span class="muted">暂无轮次数据</span>';
+      return rounds.map((round) => {
+        const hit = round.truncation_match ? "命中" : "未命中";
+        const decision = DECISIONS[round.decision] || round.decision || "-";
+        return `<div class="round">
+          <strong>第 ${esc(round.round)} 轮</strong>
+          <div>reasoning: <span class="mono">${esc(round.reasoning_tokens ?? "-")}</span></div>
+          <div>516 指纹: ${esc(hit)}</div>
+          <div>决策: ${esc(decision)}</div>
+        </div>`;
+      }).join("");
+    }
+    function renderRequests() {
+      const tbody = $("requests-body");
+      const protect = $("protect-filter").value;
+      const text = $("request-filter").value.trim().toLowerCase();
+      const requests = Array.from(state.requests.values())
+        .sort((a, b) => Date.parse(b.started_at || 0) - Date.parse(a.started_at || 0))
+        .filter((req) => (!protect || req.protection === protect) && (!text || requestSearchText(req).includes(text)))
+        .slice(0, 100);
+      setText("request-cache", state.requests.size);
+      if (!requests.length) {
+        tbody.innerHTML = '<tr><td colspan="8" class="empty">暂无匹配请求</td></tr>';
+        return;
+      }
+      tbody.innerHTML = requests.map((req) => {
+        const id = req.request_id || "";
+        const open = state.expanded.has(id);
+        const rounds = Array.isArray(req.rounds) ? req.rounds : [];
+        const reason = requestReason(req);
+        const result = req.status === "processing" ? "处理中" : req.final_status || req.status || "-";
+        return `<tr>
+          <td><div>${esc(fmtTime(req.started_at))}</div><div class="muted mono">${esc(id)}</div></td>
+          <td>${chip(req.protection)}<div class="muted">${esc(PROTECTION[req.protection]?.[2] || "")}</div></td>
+          <td class="mono">${esc(req.model || "-")}</td>
+          <td>${esc(req.latest_round || rounds.length || 0)}</td>
+          <td class="mono">${esc(req.latest_reasoning_tokens ?? "-")}</td>
+          <td>${esc(req.continuation_count || 0)}</td>
+          <td>${esc(result)}<div class="muted">${esc(reason)}</div></td>
+          <td><button data-toggle-request="${esc(id)}">${open ? "收起" : "展开"}</button></td>
+        </tr>
+        <tr class="detail-row" ${open ? "" : "hidden"}>
+          <td colspan="8">
+            <div class="detail">
+              <div>
+                <h3>请求摘要</h3>
+                <div class="detail-list">
+                  <span>请求 ID</span><strong class="mono">${esc(id)}</strong>
+                  <span>路径</span><strong>${esc(req.path || "-")}</strong>
+                  <span>耗时</span><strong>${esc(fmtMs(req.duration_ms))}</strong>
+                  <span>结束时间</span><strong>${esc(fmtTime(req.ended_at))}</strong>
+                  <span>透传原因</span><strong>${esc(req.passthrough_reason || "-")}</strong>
+                  <span>失败原因</span><strong>${esc(req.failure_reason || "-")}</strong>
+                </div>
+              </div>
+              <div>
+                <h3>思维链保护判断</h3>
+                <div class="rounds">${renderRounds(rounds)}</div>
+              </div>
+            </div>
+          </td>
+        </tr>`;
+      }).join("");
+      tbody.querySelectorAll("[data-toggle-request]").forEach((button) => {
+        button.onclick = () => {
+          const id = button.getAttribute("data-toggle-request");
+          if (state.expanded.has(id)) state.expanded.delete(id);
+          else state.expanded.add(id);
+          renderRequests();
+        };
+      });
+    }
     function renderLogs() {
       const tbody = $("logs-body");
       const level = $("level-filter").value;
       const text = $("text-filter").value.trim().toLowerCase();
-      const filtered = state.events.filter((ev) => {
+      const logs = state.logs.filter((ev) => {
         if (level && ev.level !== level) return false;
         if (!text) return true;
         return JSON.stringify(ev).toLowerCase().includes(text);
       }).slice(-600);
-      if (!filtered.length) {
-        tbody.innerHTML = '<tr><td colspan="5" class="empty">No matching log events</td></tr>';
+      if (!logs.length) {
+        tbody.innerHTML = '<tr><td colspan="5" class="empty">暂无匹配日志</td></tr>';
         return;
       }
-      tbody.innerHTML = filtered.map((ev) => {
+      tbody.innerHTML = logs.map((ev) => {
         const fields = ev.fields || {};
-        const requestId = fields.request_id || "";
         const details = [ev.message, summarizeFields(fields)].filter(Boolean).join(" | ");
+        const label = EVENTS[ev.event] || ev.event || "";
         const levelClass = `level-${ev.level || "info"}`;
         return `<tr>
-          <td>${fmtTime(ev.ts)}</td>
-          <td class="${levelClass}">${ev.level || ""}</td>
-          <td>${ev.event || ""}</td>
-          <td>${requestId}</td>
-          <td>${details}</td>
+          <td>${esc(fmtTime(ev.ts))}</td>
+          <td class="${levelClass}">${esc(ev.level || "")}</td>
+          <td>${esc(label)}</td>
+          <td class="mono">${esc(fields.request_id || "")}</td>
+          <td>${esc(details)}</td>
         </tr>`;
       }).join("");
-      if (state.autoscroll) $("table-wrap").scrollTop = $("table-wrap").scrollHeight;
+      if (state.autoscroll) $("log-wrap").scrollTop = $("log-wrap").scrollHeight;
     }
     async function refreshStatus() {
       try {
@@ -287,32 +549,42 @@
         const counters = data.counters || {};
         const cfg = data.config || {};
         const upstream = data.upstream || {};
-        setText("subtitle", `Last refresh ${new Date().toLocaleTimeString()}`);
-        setText("svc-ok", data.ok ? "ok" : "bad");
+        setText("subtitle", `最后刷新 ${new Date().toLocaleTimeString("zh-CN", { hour12: false })}`);
+        setText("svc-ok", data.ok ? "正常" : "异常");
         setText("uptime", fmtDuration(data.uptime_seconds));
         setText("started", fmtTime(data.started_at));
-        setText("upstream-ok", upstream.ok === true ? "ok" : upstream.ok === false ? "bad" : "unknown");
+        setText("upstream-ok", upstream.ok === true ? "正常" : upstream.ok === false ? "异常" : "未知");
         setText("upstream-status", upstream.status_code || upstream.status || upstream.error);
         setText("upstream-host", cfg.upstream_host);
         setText("upstream-mode", cfg.upstream_mode);
-        setText("cont-mode", `${cfg.continuation_enabled ? "enabled" : "disabled"} / ${cfg.continuation_method || "-"}`);
-        setText("retention", cfg.log_retention ? `${cfg.log_retention} events` : "-");
+        setText("cont-mode", `${cfg.continuation_enabled ? "开启" : "关闭"} / ${cfg.continuation_method || "-"}`);
+        setText("retention", cfg.log_retention ? `${cfg.log_retention} 条事件` : "-");
         setText("m-total", counters.total_requests || 0);
-        setText("m-active", counters.active_requests || 0);
+        setText("m-folded", counters.folded_requests || 0);
         setText("m-cont", counters.continuations || 0);
         setText("m-trunc", counters.truncation_hits || 0);
-        setText("m-fail", `${counters.failures || 0} failures`);
-        setText("m-last-request", data.last_request_at ? `last ${fmtTime(data.last_request_at)}` : "-");
-        setText("m-last-cont", data.last_continuation_at ? `last ${fmtTime(data.last_continuation_at)}` : "-");
+        setText("m-fail", counters.failures || 0);
+        setText("active-now", counters.active_requests || 0);
+        setText("m-last-request", data.last_request_at ? `最近 ${fmtTime(data.last_request_at)}` : "-");
+        setText("m-last-cont", data.last_continuation_at ? `最近 ${fmtTime(data.last_continuation_at)}` : "-");
+        setText("m-last-error", data.last_error_at ? `最近 ${fmtTime(data.last_error_at)}` : "-");
       } catch (err) {
-        setText("subtitle", `Status refresh failed: ${err.name || err}`);
+        setText("subtitle", `状态刷新失败：${err.name || err}`);
       }
+    }
+    async function loadRequests() {
+      try {
+        const res = await fetch("requests?limit=100", { cache: "no-store" });
+        const data = await res.json();
+        state.requests = new Map((data.requests || []).map((req) => [req.request_id, req]));
+        renderRequests();
+      } catch (_) {}
     }
     async function loadInitialLogs() {
       try {
         const res = await fetch("logs?limit=200", { cache: "no-store" });
         const data = await res.json();
-        state.events = data.events || [];
+        state.logs = data.events || [];
         renderLogs();
       } catch (_) {}
     }
@@ -320,34 +592,46 @@
       if (state.source) state.source.close();
       const source = new EventSource("logs/stream");
       state.source = source;
-      pill("warn", "Connecting");
-      source.addEventListener("ready", () => pill("ok", "Live"));
-      source.addEventListener("log", (ev) => {
-        if (state.paused) return;
+      setStream("warn", "连接中");
+      source.addEventListener("ready", () => setStream("live", "实时已连接"));
+      source.addEventListener("request", (ev) => {
         try {
-          state.events.push(JSON.parse(ev.data));
-          if (state.events.length > 800) state.events.splice(0, state.events.length - 800);
+          const req = JSON.parse(ev.data);
+          state.requests.set(req.request_id, req);
+          renderRequests();
+        } catch (_) {}
+      });
+      source.addEventListener("log", (ev) => {
+        if (state.pausedLogs) return;
+        try {
+          state.logs.push(JSON.parse(ev.data));
+          if (state.logs.length > 800) state.logs.splice(0, state.logs.length - 800);
           renderLogs();
         } catch (_) {}
       });
-      source.onerror = () => pill("bad", "Disconnected");
+      source.onerror = () => setStream("bad", "连接中断");
     }
+    $("refresh-btn").onclick = () => { refreshStatus(); loadRequests(); };
     $("pause-btn").onclick = () => {
-      state.paused = !state.paused;
-      $("pause-btn").textContent = state.paused ? "Resume" : "Pause";
-      $("pause-btn").classList.toggle("active", state.paused);
+      state.pausedLogs = !state.pausedLogs;
+      $("pause-btn").textContent = state.pausedLogs ? "继续日志" : "暂停日志";
+      $("pause-btn").classList.toggle("active", state.pausedLogs);
     };
     $("autoscroll-btn").onclick = () => {
       state.autoscroll = !state.autoscroll;
       $("autoscroll-btn").classList.toggle("active", state.autoscroll);
     };
-    $("clear-btn").onclick = () => { state.events = []; renderLogs(); };
+    $("clear-btn").onclick = () => { state.logs = []; renderLogs(); };
     $("level-filter").onchange = renderLogs;
     $("text-filter").oninput = renderLogs;
+    $("protect-filter").onchange = renderRequests;
+    $("request-filter").oninput = renderRequests;
+    loadRequests();
     loadInitialLogs();
     refreshStatus();
     connectStream();
     setInterval(refreshStatus, 5000);
+    setInterval(loadRequests, 15000);
   </script>
 </body>
 </html>

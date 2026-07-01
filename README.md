@@ -115,7 +115,7 @@ CodexCont serves a lightweight read-only dashboard at:
 http://127.0.0.1:8787/admin/
 ```
 
-It exposes service status, upstream health, in-memory request metrics, and live redacted logs through SSE. Log history is memory-only and bounded by:
+It exposes service status, upstream health, in-memory request metrics, recent request protection summaries, and live redacted logs through SSE. The request view distinguishes protected-clean, auto-continued, risky-uncontinued, passthrough, failed, and incomplete requests. Log history is memory-only and bounded by:
 
 ```toml
 [admin]

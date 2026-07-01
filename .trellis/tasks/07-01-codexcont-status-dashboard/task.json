@@ -21,6 +21,6 @@
   "children": [],
   "parent": null,
   "relatedFiles": [],
-  "notes": "CodexCont dashboard is implemented and deployed. Local tests passed 123/123; Edge smoke verified desktop/mobile layout and live SSE logs. SJC cpa-admin path /codexcont/ routes through Cloudflare Access to CodexCont; public cpa.konbakuyomu.us admin/codexcont paths return 404. Live logs showed current gpt-5.5 Codex conversation traffic and a controlled invalid_json_body event.",
+  "notes": "CodexCont dashboard v2 is implemented and deployed. Local tests passed 136/136; Playwright/Edge verified Chinese request-first UI, desktop/mobile no-overflow layout, all protection chips, and SSE request/log behavior. SJC cpa-admin path /codexcont/ routes through Cloudflare Access to CodexCont; public cpa.konbakuyomu.us admin/codexcont/management paths return 404. Live requests showed current gpt-5.5 traffic as protected_clean and a controlled invalid_json_body event as failed.",
   "meta": {}
 }

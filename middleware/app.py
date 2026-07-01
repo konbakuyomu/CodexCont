@@ -24,6 +24,7 @@ from .admin import (
     admin_healthz,
     admin_logs,
     admin_logs_stream,
+    admin_requests,
     admin_redirect,
     admin_status,
 )
@@ -310,6 +311,7 @@ def create_app(cfg: Config) -> Starlette:
         Route("/admin/", admin_dashboard, methods=["GET"]),
         Route("/admin/healthz", admin_healthz, methods=["GET"]),
         Route("/admin/status", admin_status, methods=["GET"]),
+        Route("/admin/requests", admin_requests, methods=["GET"]),
         Route("/admin/logs", admin_logs, methods=["GET"]),
         Route("/admin/logs/stream", admin_logs_stream, methods=["GET"]),
     ] + [

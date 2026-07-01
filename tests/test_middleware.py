@@ -451,6 +451,71 @@ def test_diagnostics_ring_and_redaction():
     check("keep token counters", token_counts.get("reasoning_tokens") == 516)
 
 
+def test_diagnostics_request_summaries():
+    clean = Diagnostics(max_events=10, max_requests=5)
+    rid = clean.request_started(path="/v1/responses", model="gpt-5.5")
+    clean.mark_fold_start(rid, model="gpt-5.5", path="/v1/responses",
+                          upstream_url="http://cpa:8317/v1/responses")
+    clean.round_decision(rid, round_no=1, reasoning_tokens=140, n=None,
+                         decision="clean", buffered=["message"], truncation_match=False)
+    clean.request_finished(rid, status="completed", stopped_reason="natural")
+    summary = clean.recent_requests(limit=1)[0]
+    check("request summary protected clean", summary.get("protection") == "protected_clean",
+          str(summary))
+    check("request summary keeps reasoning tokens",
+          summary.get("latest_reasoning_tokens") == 140, str(summary))
+
+    cont = Diagnostics(max_events=10, max_requests=5)
+    rid = cont.request_started(path="/v1/responses", model="gpt-5.5")
+    cont.mark_fold_start(rid, model="gpt-5.5", path="/v1/responses",
+                         upstream_url="http://cpa:8317/v1/responses")
+    cont.round_decision(rid, round_no=1, reasoning_tokens=516, n=1,
+                        decision="continue", buffered=["message"], truncation_match=True)
+    cont.continuation_opened(rid, from_round=1, next_round=2, method="commentary")
+    cont.round_decision(rid, round_no=2, reasoning_tokens=181, n=None,
+                        decision="clean", buffered=["message"], truncation_match=False)
+    cont.request_finished(rid, status="completed", stopped_reason="natural")
+    summary = cont.recent_requests(limit=1)[0]
+    check("request summary auto continued", summary.get("protection") == "auto_continued",
+          str(summary))
+    check("request summary continuation count", summary.get("continuation_count") == 1,
+          str(summary))
+
+    risk = Diagnostics(max_events=10, max_requests=5)
+    rid = risk.request_started(path="/v1/responses", model="gpt-5.5")
+    risk.mark_fold_start(rid, model="gpt-5.5", path="/v1/responses",
+                         upstream_url="http://cpa:8317/v1/responses")
+    risk.round_decision(rid, round_no=1, reasoning_tokens=516, n=1,
+                        decision="no_encrypted_content", buffered=["message"], truncation_match=True)
+    risk.request_finished(rid, status="completed", stopped_reason="no_encrypted_content")
+    summary = risk.recent_requests(limit=1)[0]
+    check("request summary risk uncontinued", summary.get("protection") == "risk_uncontinued",
+          str(summary))
+
+    passthrough = Diagnostics(max_events=10, max_requests=5)
+    rid = passthrough.request_started(path="/v1/responses", model="gpt-5.5")
+    passthrough.mark_passthrough(rid, reason="non-stream", model="gpt-5.5")
+    passthrough.request_finished(rid, status="passthrough:200")
+    summary = passthrough.recent_requests(limit=1)[0]
+    check("request summary passthrough", summary.get("protection") == "passthrough",
+          str(summary))
+
+    failed = Diagnostics(max_events=10, max_requests=5)
+    rid = failed.request_started(path="/v1/responses", model="gpt-5.5")
+    failed.request_failed(rid, reason="invalid_json_body")
+    summary = failed.recent_requests(limit=1)[0]
+    check("request summary failed", summary.get("protection") == "failed", str(summary))
+
+    retained = Diagnostics(max_events=10, max_requests=2)
+    for idx in range(3):
+        rid = retained.request_started(path="/v1/responses", model=f"m{idx}")
+        retained.request_finished(rid, status="completed")
+    summaries = retained.recent_requests()
+    check("request summary retention bounded", len(summaries) == 2, str(summaries))
+    check("request summary retention newest", [s["model"] for s in summaries] == ["m1", "m2"],
+          str(summaries))
+
+
 async def test_diagnostics_subscriber_broadcast():
     diag = Diagnostics(max_events=5)
     queue = diag.subscribe()
@@ -474,11 +539,24 @@ def test_admin_routes_smoke():
         check("admin healthz ok", health.json().get("ok") is True, str(health.text))
 
         client.app.state.diagnostics.record("info", "manual_event", "hello")
+        rid = client.app.state.diagnostics.request_started(path="/v1/responses", model="gpt-5.5")
+        client.app.state.diagnostics.mark_fold_start(
+            rid, model="gpt-5.5", path="/v1/responses",
+            upstream_url="http://127.0.0.1:9/v1/responses"
+        )
+        client.app.state.diagnostics.request_finished(rid, status="completed")
         logs = client.get("/admin/logs?limit=1")
         body = logs.json()
         check("admin logs 200", logs.status_code == 200, str(logs.status_code))
         check("admin logs returns recent event",
-              (body.get("events") or [{}])[-1].get("event") == "manual_event", str(body))
+              (body.get("events") or [{}])[-1].get("event") == "request_finished", str(body))
+
+        requests = client.get("/admin/requests?limit=1")
+        requests_body = requests.json()
+        check("admin requests 200", requests.status_code == 200, str(requests.status_code))
+        check("admin requests returns summary",
+              (requests_body.get("requests") or [{}])[-1].get("protection") == "protected_clean",
+              str(requests_body))
 
         status = client.get("/admin/status")
         status_body = status.json()
@@ -491,9 +569,11 @@ def test_admin_routes_smoke():
         html = client.get("/admin/")
         check("admin dashboard html 200", html.status_code == 200, str(html.status_code))
         check("admin dashboard contains EventSource", "new EventSource" in html.text)
+        check("admin dashboard Chinese first screen", "最近请求" in html.text)
 
         stream = client.get("/admin/logs/stream?once=1")
         check("admin logs stream ready", "event: ready" in stream.text, stream.text[:80])
+        check("admin logs stream request event", "event: request" in stream.text, stream.text[:200])
 
 
 # --- upstream URL resolution via Responses-API-Base header ------------------
@@ -716,6 +796,7 @@ async def _main():
     test_header_transparency()
     test_zstd_request_body_decode()
     test_diagnostics_ring_and_redaction()
+    test_diagnostics_request_summaries()
     await test_diagnostics_subscriber_broadcast()
     test_admin_routes_smoke()
     test_upstream_url_resolution()

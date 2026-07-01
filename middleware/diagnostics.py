@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+from copy import deepcopy
 import re
 import threading
 import time
@@ -52,6 +53,20 @@ def redact_value(value: Any, *, key: str = "") -> Any:
     return str(value)
 
 
+_RISK_STOP_REASONS = {
+    "no_encrypted_content",
+    "max_continue",
+    "max_total_output_tokens",
+    "tier_out_of_window",
+}
+
+
+def _public_request_summary(summary: dict[str, Any]) -> dict[str, Any]:
+    public = deepcopy(summary)
+    public.pop("_started_perf", None)
+    return redact_value(public)
+
+
 class Diagnostics:
     """Small memory-only metrics and event hub.
 
@@ -59,10 +74,12 @@ class Diagnostics:
     and simple enough to keep CodexCont independent from CPA internals.
     """
 
-    def __init__(self, *, max_events: int = 800) -> None:
+    def __init__(self, *, max_events: int = 800, max_requests: int = 200) -> None:
         self.max_events = max(1, int(max_events))
+        self.max_requests = max(1, int(max_requests))
         self._events: deque[dict[str, Any]] = deque(maxlen=self.max_events)
         self._subscribers: set[asyncio.Queue[dict[str, Any]]] = set()
+        self._request_subscribers: set[asyncio.Queue[dict[str, Any]]] = set()
         self._lock = threading.RLock()
         self._seq = 0
         self._started_wall = utc_now_iso()
@@ -82,6 +99,7 @@ class Diagnostics:
         self._last_error_at: str | None = None
         self._last_error: dict[str, Any] | None = None
         self._request_meta: dict[str, dict[str, Any]] = {}
+        self._request_summaries: dict[str, dict[str, Any]] = {}
 
     def recent(self, *, limit: int | None = None) -> list[dict[str, Any]]:
         with self._lock:
@@ -100,6 +118,24 @@ class Diagnostics:
     def unsubscribe(self, queue: asyncio.Queue[dict[str, Any]]) -> None:
         with self._lock:
             self._subscribers.discard(queue)
+
+    def subscribe_requests(self) -> asyncio.Queue[dict[str, Any]]:
+        queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=200)
+        with self._lock:
+            self._request_subscribers.add(queue)
+        return queue
+
+    def unsubscribe_requests(self, queue: asyncio.Queue[dict[str, Any]]) -> None:
+        with self._lock:
+            self._request_subscribers.discard(queue)
+
+    def recent_requests(self, *, limit: int | None = None) -> list[dict[str, Any]]:
+        with self._lock:
+            summaries = [_public_request_summary(item) for item in self._request_summaries.values()]
+        if limit is None:
+            return summaries
+        limit = max(0, min(int(limit), self.max_requests))
+        return summaries[-limit:]
 
     def record(self, level: str, event: str, message: str = "", **fields: Any) -> dict[str, Any]:
         item = {
@@ -130,9 +166,97 @@ class Diagnostics:
                     pass
         return item
 
+    def _trim_requests_locked(self) -> None:
+        while len(self._request_summaries) > self.max_requests:
+            removed = False
+            for request_id in list(self._request_summaries.keys()):
+                if request_id not in self._active_ids:
+                    self._request_summaries.pop(request_id, None)
+                    removed = True
+                    break
+            if not removed:
+                break
+
+    def _request_copy_locked(self, request_id: str) -> dict[str, Any] | None:
+        summary = self._request_summaries.get(request_id)
+        if summary is None:
+            return None
+        return _public_request_summary(summary)
+
+    def _publish_request(self, summary: dict[str, Any] | None) -> None:
+        if summary is None:
+            return
+        with self._lock:
+            subscribers = list(self._request_subscribers)
+        for queue in subscribers:
+            try:
+                queue.put_nowait(summary)
+            except asyncio.QueueFull:
+                try:
+                    queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    pass
+                try:
+                    queue.put_nowait(summary)
+                except asyncio.QueueFull:
+                    pass
+
+    def _set_request_result_locked(self, summary: dict[str, Any]) -> None:
+        if summary.get("status") == "failed":
+            summary["protection"] = "failed"
+            return
+        if summary.get("status") == "incomplete":
+            summary["protection"] = "incomplete"
+            return
+        if summary.get("passthrough"):
+            summary["protection"] = "passthrough"
+            return
+        if summary.get("continuation_count", 0) > 0:
+            summary["protection"] = "auto_continued"
+            return
+        if summary.get("truncation_match") or summary.get("stopped_reason") in _RISK_STOP_REASONS:
+            summary["protection"] = "risk_uncontinued"
+            return
+        if summary.get("folded"):
+            summary["protection"] = "protected_clean"
+            return
+        summary["protection"] = "processing"
+
+    def _finish_request_locked(
+        self,
+        request_id: str,
+        *,
+        status: str,
+        stopped_reason: str | None = None,
+        failure_reason: str | None = None,
+        failure_detail: Any = None,
+    ) -> dict[str, Any] | None:
+        now = utc_now_iso()
+        summary = self._request_summaries.get(request_id)
+        if summary is None:
+            return None
+        summary["updated_at"] = now
+        summary["ended_at"] = now
+        started_perf = summary.pop("_started_perf", None)
+        if isinstance(started_perf, (int, float)):
+            summary["duration_ms"] = round((time.monotonic() - started_perf) * 1000)
+        summary["final_status"] = status
+        summary["stopped_reason"] = stopped_reason
+        if failure_reason is not None:
+            summary["status"] = "failed"
+            summary["failure_reason"] = failure_reason
+            summary["failure_detail"] = redact_value(failure_detail)
+        elif status == "incomplete" or status == "closed":
+            summary["status"] = "incomplete"
+        else:
+            summary["status"] = "completed"
+        self._set_request_result_locked(summary)
+        return _public_request_summary(summary)
+
     def request_started(self, *, path: str, model: str | None = None) -> str:
         request_id = uuid.uuid4().hex[:12]
         now = utc_now_iso()
+        perf = time.monotonic()
         with self._lock:
             self._active_ids.add(request_id)
             self._counters["total_requests"] += 1
@@ -144,25 +268,81 @@ class Diagnostics:
                 "model": model,
                 "started_at": now,
             }
+            self._request_summaries[request_id] = {
+                "request_id": request_id,
+                "model": model,
+                "path": path,
+                "started_at": now,
+                "updated_at": now,
+                "ended_at": None,
+                "duration_ms": None,
+                "status": "processing",
+                "protection": "processing",
+                "folded": False,
+                "passthrough": False,
+                "passthrough_reason": None,
+                "rounds": [],
+                "latest_round": None,
+                "latest_reasoning_tokens": None,
+                "continuation_count": 0,
+                "truncation_match": False,
+                "final_status": None,
+                "stopped_reason": None,
+                "failure_reason": None,
+                "failure_detail": None,
+                "_started_perf": perf,
+            }
+            self._trim_requests_locked()
+            summary = self._request_copy_locked(request_id)
+        self._publish_request(summary)
         self.record("info", "request_started", "Responses request received",
                     request_id=request_id, path=path, model=model)
         return request_id
 
     def request_update(self, request_id: str, **fields: Any) -> None:
+        summary = None
         with self._lock:
             meta = self._request_meta.get(request_id)
             if meta is not None:
                 meta.update({k: v for k, v in fields.items() if v is not None})
+            req = self._request_summaries.get(request_id)
+            if req is not None:
+                safe_updates = {k: v for k, v in fields.items() if k in {"model", "path"} and v is not None}
+                if safe_updates:
+                    req.update(safe_updates)
+                    req["updated_at"] = utc_now_iso()
+                    summary = self._request_copy_locked(request_id)
+        self._publish_request(summary)
 
     def mark_fold_start(self, request_id: str, *, model: Any, path: str, upstream_url: str) -> None:
+        summary = None
         with self._lock:
             self._counters["folded_requests"] += 1
+            req = self._request_summaries.get(request_id)
+            if req is not None:
+                req["folded"] = True
+                req["model"] = model
+                req["path"] = path
+                req["updated_at"] = utc_now_iso()
+                req["protection"] = "processing"
+                summary = self._request_copy_locked(request_id)
+        self._publish_request(summary)
         self.record("info", "fold_start", "Folded Responses stream started",
                     request_id=request_id, model=model, path=path, upstream_url=upstream_url)
 
     def mark_passthrough(self, request_id: str, *, reason: str, model: Any) -> None:
+        summary = None
         with self._lock:
             self._counters["passthrough_requests"] += 1
+            req = self._request_summaries.get(request_id)
+            if req is not None:
+                req["passthrough"] = True
+                req["passthrough_reason"] = reason
+                req["model"] = model
+                req["updated_at"] = utc_now_iso()
+                req["protection"] = "passthrough"
+                summary = self._request_copy_locked(request_id)
+        self._publish_request(summary)
         self.record("info", "passthrough", "Request passed through without folding",
                     request_id=request_id, reason=reason, model=model)
 
@@ -177,9 +357,31 @@ class Diagnostics:
         buffered: list[str],
         truncation_match: bool,
     ) -> None:
+        summary = None
         if truncation_match:
             with self._lock:
                 self._counters["truncation_hits"] += 1
+        with self._lock:
+            req = self._request_summaries.get(request_id)
+            if req is not None:
+                round_summary = {
+                    "round": round_no,
+                    "reasoning_tokens": reasoning_tokens,
+                    "n": n,
+                    "decision": decision,
+                    "buffered": list(buffered),
+                    "truncation_match": truncation_match,
+                }
+                req["rounds"].append(round_summary)
+                req["latest_round"] = round_no
+                req["latest_reasoning_tokens"] = reasoning_tokens
+                req["truncation_match"] = bool(req.get("truncation_match") or truncation_match)
+                req["updated_at"] = utc_now_iso()
+                if truncation_match and decision != "continue" and req.get("continuation_count", 0) == 0:
+                    req["protection"] = "risk_uncontinued"
+                    req["stopped_reason"] = decision
+                summary = self._request_copy_locked(request_id)
+        self._publish_request(summary)
         self.record(
             "info",
             "round_decision",
@@ -195,23 +397,38 @@ class Diagnostics:
 
     def continuation_opened(self, request_id: str, *, from_round: int, next_round: int, method: str) -> None:
         now = utc_now_iso()
+        summary = None
         with self._lock:
             self._counters["continuations"] += 1
             self._last_continuation_at = now
+            req = self._request_summaries.get(request_id)
+            if req is not None:
+                req["continuation_count"] = int(req.get("continuation_count") or 0) + 1
+                req["updated_at"] = now
+                req["protection"] = "auto_continued"
+                summary = self._request_copy_locked(request_id)
+        self._publish_request(summary)
         self.record("info", "continuation_opened", "Opened hidden continuation round",
                     request_id=request_id, from_round=from_round, next_round=next_round, method=method)
 
     def request_finished(self, request_id: str, *, status: str, stopped_reason: str | None = None) -> None:
+        summary = None
         with self._lock:
             self._active_ids.discard(request_id)
             self._counters["active_requests"] = len(self._active_ids)
             self._request_meta.pop(request_id, None)
+            summary = self._finish_request_locked(
+                request_id, status=status, stopped_reason=stopped_reason
+            )
+            self._trim_requests_locked()
+        self._publish_request(summary)
         self.record("info", "request_finished", "Responses request finished",
                     request_id=request_id, status=status, stopped_reason=stopped_reason)
 
     def request_failed(self, request_id: str, *, reason: str, detail: Any = None) -> None:
         now = utc_now_iso()
         error = {"request_id": request_id, "reason": reason, "detail": redact_value(detail)}
+        summary = None
         with self._lock:
             self._active_ids.discard(request_id)
             self._counters["active_requests"] = len(self._active_ids)
@@ -219,6 +436,14 @@ class Diagnostics:
             self._last_error_at = now
             self._last_error = error
             self._request_meta.pop(request_id, None)
+            summary = self._finish_request_locked(
+                request_id,
+                status="failed",
+                failure_reason=reason,
+                failure_detail=detail,
+            )
+            self._trim_requests_locked()
+        self._publish_request(summary)
         self.record("warning", "request_failed", "Responses request failed", **error)
 
     def health(self) -> dict[str, Any]:
@@ -245,6 +470,7 @@ class Diagnostics:
             **self.health(),
             "counters": counters,
             "active_requests": active,
+            "recent_requests": self.recent_requests(limit=10),
             "last_request_at": last_request_at,
             "last_continuation_at": last_continuation_at,
             "last_error_at": last_error_at,

@@ -12,6 +12,23 @@ Add a lightweight, server-side CodexCont dashboard that shows current service he
 - Admin access already works through `cpa-admin.konbakuyomu.us` via Cloudflare Tunnel + Cloudflare Access + CPA management key.
 - SJC disk is small, so first version must avoid persistent logs, databases, Docker prune, and broad cleanup.
 - This Codex conversation is expected to use the same production path, so the dashboard should be able to show live logs from real ongoing chat traffic.
+- Current dashboard v1 is English-first and log-first. It exposes raw events such as `fold_start`,
+  `round_decision`, `continuation_opened`, and `request_finished`, but a beginner cannot quickly tell
+  whether a request was protected, clean, automatically continued, risky, or failed.
+
+## UX Refinement Request
+
+- Convert the dashboard to Chinese-first copy.
+- Make the first screen explain operational state in beginner-readable terms, without requiring the user
+  to understand internal event names or raw fields.
+- Promote request-level protection status above raw logs:
+  - protected and clean: the request passed through CodexCont folding/protection and did not hit the
+    516/518n-2 truncation fingerprint.
+  - auto-continued: CodexCont detected the 516/518n-2 fingerprint and opened a hidden continuation round.
+  - risky/unhandled: the truncation fingerprint was seen but continuation could not be opened because a
+    guard stopped it.
+  - failed: request or upstream handling failed.
+- Keep raw logs available as an advanced detail view for debugging.
 
 ## Requirements
 
@@ -28,6 +45,10 @@ Add a lightweight, server-side CodexCont dashboard that shows current service he
 - R6: Expose the page only through `https://cpa-admin.konbakuyomu.us/codexcont/`; keep public `https://cpa.konbakuyomu.us` from exposing `/admin` or `/codexcont`.
 - R7: Keep logs memory-only by default, with a bounded retention size around 500-1000 entries.
 - R8: Preserve existing `/v1/responses` behavior and current continuation semantics.
+- R9: Add Chinese dashboard labels and beginner-readable status explanations.
+- R10: Add a request-centric view that groups events by request id and surfaces protection state, model,
+  rounds, reasoning token counts, continuation count, and final status.
+- R11: Clearly distinguish "经过 CodexCont 保护但无需续写" from "检测到 516/518n-2 并已自动续写".
 
 ## Acceptance Criteria
 
@@ -40,6 +61,9 @@ Add a lightweight, server-side CodexCont dashboard that shows current service he
 - [x] This active Codex conversation or a real `/v1/responses` request appears in the dashboard live logs.
 - [x] `https://cpa.konbakuyomu.us/admin/` and `https://cpa.konbakuyomu.us/codexcont/` are not publicly exposed.
 - [x] No secrets are printed or committed, no persistent log store is added, and no Docker prune or bulk deletion is used.
+- [x] Dashboard first screen is Chinese-first and readable for non-technical users.
+- [x] Recent requests show beginner-readable protection status without opening raw logs.
+- [x] Requests that triggered automatic continuation are visually distinct from clean protected requests.
 
 ## Out Of Scope
 

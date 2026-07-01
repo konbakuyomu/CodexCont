@@ -87,6 +87,18 @@ async def admin_logs(request: Request) -> JSONResponse:
     return JSONResponse({"events": diag.recent(limit=limit), "max_events": diag.max_events})
 
 
+async def admin_requests(request: Request) -> JSONResponse:
+    raw_limit = request.query_params.get("limit", "100")
+    try:
+        limit = int(raw_limit)
+    except ValueError:
+        limit = 100
+    diag = _admin_diag(request)
+    return JSONResponse(
+        {"requests": diag.recent_requests(limit=limit), "max_requests": diag.max_requests}
+    )
+
+
 def _sse_event(name: str, data: Any) -> bytes:
     body = json.dumps(data, ensure_ascii=False, separators=(",", ":"))
     return f"event: {name}\ndata: {body}\n\n".encode("utf-8")
@@ -94,12 +106,15 @@ def _sse_event(name: str, data: Any) -> bytes:
 
 async def admin_logs_stream(request: Request) -> StreamingResponse:
     diag = _admin_diag(request)
-    queue = diag.subscribe()
+    log_queue = diag.subscribe()
+    request_queue = diag.subscribe_requests()
     once = request.query_params.get("once") == "1"
 
     async def events():
         try:
             yield _sse_event("ready", {"ok": True})
+            for item in diag.recent_requests(limit=50):
+                yield _sse_event("request", item)
             for item in diag.recent(limit=50):
                 yield _sse_event("log", item)
             if once:
@@ -107,14 +122,27 @@ async def admin_logs_stream(request: Request) -> StreamingResponse:
             while True:
                 if await request.is_disconnected():
                     break
-                try:
-                    item = await asyncio.wait_for(queue.get(), timeout=15.0)
-                except TimeoutError:
+                log_task = asyncio.create_task(log_queue.get())
+                req_task = asyncio.create_task(request_queue.get())
+                done, pending = await asyncio.wait(
+                    {log_task, req_task},
+                    timeout=15.0,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                for task in pending:
+                    task.cancel()
+                if pending:
+                    await asyncio.gather(*pending, return_exceptions=True)
+                if not done:
                     yield b": keepalive\n\n"
                     continue
-                yield _sse_event("log", item)
+                for task in done:
+                    item = task.result()
+                    event_name = "log" if task is log_task else "request"
+                    yield _sse_event(event_name, item)
         finally:
-            diag.unsubscribe(queue)
+            diag.unsubscribe(log_queue)
+            diag.unsubscribe_requests(request_queue)
 
     return StreamingResponse(
         events(),
