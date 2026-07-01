@@ -167,10 +167,17 @@ This spreads the event contract into JavaScript and makes the beginner-facing st
   - `POST /api/session`
   - `DELETE /api/session`
   - `GET /api/me`
-  - `GET /api/usage?range=24h|7d`
-  - `GET /api/events?range=24h|7d&limit=N&before=...`
+  - `GET /api/usage?range=5h|24h|7d|month`
+  - `GET /api/events?range=5h|24h|7d|month&limit=N&before=...`
   - `GET /api/events/stream`
+  - `GET /admin/`
+  - `GET /admin/api/keys`
+  - `PUT /admin/api/keys/{id}/limits`
+  - `POST /admin/api/keys/{id}/reset`
+  - `GET /admin/api/events?key_id=...&range=5h|24h|7d|month`
 - Production user route: `https://cpa-usage.konbakuyomu.us/`
+- Production local quota admin route:
+  `https://cpa-admin.konbakuyomu.us/usage-admin/`
 - Production admin route for CPAMP: `https://cpa-admin.konbakuyomu.us/`
 - Key Policy state path on SJC:
   `/opt/codex-stacks/cpa/plugin-state/cpa-key-policy-state.json`
@@ -187,9 +194,10 @@ This spreads the event contract into JavaScript and makes the beginner-facing st
 - Keep CPA, CPAMP, CodexCont, and `cpa-usage-portal` as separate containers /
   stacks on the shared `cpa_net`. Do not bundle them into one image because
   independent updates are part of the maintenance contract.
-- The user portal is a read-only sidecar. It may read Key Policy state and
+- The user portal may mutate only its own local SQLite metadata: 5H/month
+  limits, reset watermarks, and audit entries. It may read Key Policy state and
   query CPAMP monitoring, but it must not mutate CPA, OAuth accounts, proxy
-  routing, or Key Policy records in v1.
+  routing, CPAMP source events, or Key Policy records.
 - Ordinary users should receive Key Policy `cpa_...` keys. CPA native `sk...`
   keys are compatibility/admin escape hatches and should not be treated as
   self-service user credentials.
@@ -233,12 +241,22 @@ This spreads the event contract into JavaScript and makes the beginner-facing st
   book. Do not interpret CPAMP zero cost as "free" when Key Policy prices are
   configured.
 - `/api/me` must expose safe daily/weekly USD limits and a safe pricing
-  summary. The user dashboard must show both daily and weekly limits directly,
-  not only as a selected-range hint.
+  summary. It must also expose local 5H/month USD limits and reset points when
+  the portal SQLite has them. The user dashboard must show 5H, daily, weekly,
+  and monthly limits directly, not only as a selected-range hint.
 - The usage portal's selected time range controls both `/api/usage` aggregates
   and the visible `/api/events` recent-request table. The page must also render
   the active range label, because 24h and 7d can legitimately return identical
   numbers when all retained usage happened in the last day.
+- Supported portal ranges are `5h`, `24h`, `7d`, and `month`. `month` is the
+  current Asia/Shanghai calendar month. `5h`, `24h`, and `7d` are rolling
+  windows.
+- A portal soft reset writes a reset watermark and narrows future CPAMP query
+  windows to `max(base_window_start, reset_at_ms)`. It must not delete CPAMP
+  rows or rewrite Key Policy's own historical usage display.
+- All `/admin/*` portal routes require a proxy-injected admin header from
+  `cpa-admin.konbakuyomu.us/usage-admin/`. Public `cpa-usage.konbakuyomu.us`
+  must not be able to call these routes successfully.
 - Public `cpa.konbakuyomu.us` must continue to block management, plugin,
   admin, CodexCont dashboard, CPAMP, and usage-portal internals.
 - The usage portal frontend must not rely on an old `/api/events/stream`
@@ -277,6 +295,11 @@ This spreads the event contract into JavaScript and makes the beginner-facing st
   omitting `range` keeps the compatibility default.
 - Key Policy daily/weekly USD limits exist -> `/api/me` and the dashboard show
   both values safely.
+- Portal local 5H/month limits exist -> `/api/me` and the dashboard show both
+  values safely.
+- `POST /admin/api/keys/{id}/reset` -> updates only portal reset watermarks;
+  CPAMP original rows remain visible in CPAMP itself.
+- `GET /admin/api/keys` without the proxy-injected admin header -> `404`.
 - `GET /api/usage` must not include the full raw-key hash or full policy-id
   hash anywhere in the JSON response.
 - DNS for `cpa-usage.konbakuyomu.us` may be absent while the sidecar and Caddy
@@ -309,6 +332,10 @@ This spreads the event contract into JavaScript and makes the beginner-facing st
   safe daily/weekly limits, and per-model prices.
 - Unit: `/api/usage` and `/api/events` recompute nonzero costs from Key Policy
   prices when CPAMP cost fields are zero.
+- Unit: portal local SQLite stores 5H/month limits, applies reset watermarks,
+  and closes connections cleanly on Windows.
+- Unit: `/admin/*` routes reject requests without the proxy-injected admin
+  header and expose safe quota projections when the header is present.
 - Unit: redaction covers Authorization, cookies, API keys, tokens, management
   keys, and encrypted reasoning fields while preserving numeric token counters.
 - Unit: retention deletes old CPAMP `usage_events` in batches and does not run

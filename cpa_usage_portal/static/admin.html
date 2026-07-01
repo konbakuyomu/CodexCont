@@ -1,0 +1,427 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CPA 用量管理</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0b1220;
+      --shell: #111827;
+      --panel: #151d2c;
+      --panel-2: #1a2434;
+      --line: #283448;
+      --line-strong: #33445e;
+      --text: #e8edf5;
+      --muted: #9aa7b8;
+      --blue: #3b96ff;
+      --green: #61d34f;
+      --red: #ff646d;
+      --amber: #f0aa2b;
+      --teal: #15c7d4;
+      --mono: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+      --sans: Inter, "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+      font-family: var(--sans);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: linear-gradient(180deg, #101827 0%, var(--bg) 44%, #080e19 100%);
+      color: var(--text);
+      letter-spacing: 0;
+    }
+    button, input, select { font: inherit; }
+    button, select, input {
+      min-height: 36px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #111827;
+      color: var(--text);
+    }
+    button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      padding: 0 12px;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    button.primary { border-color: transparent; background: linear-gradient(180deg, #43a2ff, #2d86ef); font-weight: 760; }
+    button.secondary { background: var(--panel-2); }
+    button.danger { border-color: rgba(255, 100, 109, .45); background: rgba(255, 100, 109, .12); color: #ffb5ba; }
+    button.is-loading::before {
+      content: "";
+      width: 14px;
+      height: 14px;
+      border: 2px solid rgba(232, 237, 245, .28);
+      border-top-color: currentColor;
+      border-radius: 50%;
+      animation: spin .75s linear infinite;
+    }
+    input, select { padding: 0 10px; }
+    input { width: 92px; min-width: 0; background: #0e1524; }
+    h1, h2, p { margin: 0; }
+    h1 { font-size: 20px; line-height: 1.2; }
+    h2 { font-size: 15px; }
+    .shell { width: min(1560px, calc(100% - 32px)); margin: 0 auto; padding: 22px 0 34px; }
+    .topbar, .section {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: rgba(21, 29, 44, .96);
+      box-shadow: 0 14px 34px rgba(0, 0, 0, .18);
+    }
+    .topbar {
+      min-height: 58px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 0 16px;
+      margin-bottom: 16px;
+      background: rgba(17, 24, 39, .9);
+    }
+    .brand { display: flex; align-items: center; gap: 12px; min-width: 0; }
+    .mark {
+      width: 34px; height: 34px; display: grid; place-items: center;
+      border-radius: 8px; background: linear-gradient(135deg, #2d86ef, #15c7d4); font-weight: 850;
+    }
+    .subtitle { margin-top: 2px; color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .toolbar { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
+    .chip {
+      display: inline-flex; align-items: center; gap: 7px; min-height: 28px; padding: 0 10px;
+      border-radius: 999px; border: 1px solid var(--line); background: var(--panel-2);
+      color: var(--muted); font-size: 12px; font-weight: 720; white-space: nowrap;
+    }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); position: relative; flex: 0 0 auto; }
+    .chip.stream .dot { animation: statusBlink 1.45s ease-in-out infinite; }
+    .chip.stream .dot::after {
+      content: ""; position: absolute; inset: -5px; border-radius: inherit;
+      border: 1px solid currentColor; opacity: .55; animation: statusPing 1.45s ease-out infinite;
+    }
+    .ok { color: #a8ef9c; }
+    .bad { color: #ffb5ba; }
+    .warn { color: #ffd083; }
+    .info { color: #acd4ff; }
+    .chip.ok { border-color: rgba(97, 211, 79, .28); background: rgba(97, 211, 79, .13); color: #a8ef9c; }
+    .chip.ok .dot { background: var(--green); }
+    .chip.warn { border-color: rgba(240, 170, 43, .34); background: rgba(240, 170, 43, .14); color: #ffd083; }
+    .chip.warn .dot { background: var(--amber); }
+    .chip.bad { border-color: rgba(255, 100, 109, .34); background: rgba(255, 100, 109, .13); color: #ffb5ba; }
+    .chip.bad .dot { background: var(--red); }
+    .metrics { display: grid; grid-template-columns: repeat(4, minmax(180px, 1fr)); gap: 12px; margin-bottom: 14px; }
+    .metric {
+      min-height: 112px; padding: 15px; border: 1px solid var(--line); border-radius: 8px;
+      background: linear-gradient(180deg, rgba(26, 36, 52, .96), rgba(21, 29, 44, .96));
+    }
+    .metric-label { color: var(--muted); font-size: 12px; font-weight: 760; }
+    .metric-value { margin-top: 18px; font-size: 28px; line-height: 1; font-weight: 800; overflow-wrap: anywhere; }
+    .metric-hint { margin-top: 9px; color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .section { margin-bottom: 14px; overflow: hidden; }
+    .section-head {
+      min-height: 60px; display: flex; align-items: center; justify-content: space-between; gap: 12px;
+      padding: 12px 16px; border-bottom: 1px solid var(--line); background: rgba(26, 36, 52, .8);
+    }
+    .muted { color: var(--muted); }
+    .table-wrap { overflow-x: auto; background: #121a29; }
+    table { width: 100%; min-width: 1120px; border-collapse: separate; border-spacing: 0 8px; table-layout: fixed; padding: 8px 10px 12px; }
+    th { padding: 0 10px 4px; color: var(--muted); text-align: left; font-size: 12px; font-weight: 760; white-space: nowrap; }
+    td {
+      padding: 13px 10px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line);
+      background: #161e2d; vertical-align: middle; overflow: hidden; text-overflow: ellipsis;
+    }
+    tbody tr td:first-child { border-left: 1px solid var(--line); border-radius: 8px 0 0 8px; }
+    tbody tr td:last-child { border-right: 1px solid var(--line); border-radius: 0 8px 8px 0; }
+    .mono { font-family: var(--mono); font-size: 12px; }
+    .cell-stack { display: grid; gap: 5px; min-width: 0; }
+    .quota { display: grid; gap: 4px; }
+    .bar { height: 6px; border-radius: 999px; overflow: hidden; background: #0d1422; border: 1px solid var(--line); }
+    .bar span { display: block; height: 100%; width: 0%; background: linear-gradient(90deg, var(--teal), var(--blue)); }
+    .bar.danger span { background: linear-gradient(90deg, var(--amber), var(--red)); }
+    .actions { display: flex; gap: 6px; flex-wrap: wrap; }
+    .empty { padding: 28px; color: var(--muted); text-align: center; background: transparent !important; border: 0 !important; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    @keyframes statusBlink { 0%, 100% { transform: scale(1); opacity: .72; } 50% { transform: scale(1.35); opacity: 1; } }
+    @keyframes statusPing { 0% { transform: scale(.65); opacity: .58; } 100% { transform: scale(1.9); opacity: 0; } }
+    @media (max-width: 980px) { .metrics { grid-template-columns: repeat(2, minmax(160px, 1fr)); } }
+    @media (max-width: 720px) {
+      .shell { width: min(100% - 18px, 1560px); padding-top: 10px; }
+      .topbar, .section-head { align-items: flex-start; flex-direction: column; }
+      .toolbar { justify-content: flex-start; width: 100%; }
+      .metrics { grid-template-columns: 1fr; }
+      table { min-width: 1040px; }
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <div class="brand">
+        <div class="mark">U</div>
+        <div>
+          <h1>CPA 用量管理</h1>
+          <div class="subtitle">自有门户的限额、估算用量与软清零；不修改 CPAMP 原始请求记录。</div>
+        </div>
+      </div>
+      <div class="toolbar">
+        <span id="statusChip" class="chip stream warn"><span class="dot"></span><span>等待刷新</span></span>
+        <select id="rangeSelect">
+          <option value="5h">5 小时</option>
+          <option value="24h">24 小时</option>
+          <option value="7d">7 天</option>
+          <option value="month">本月</option>
+        </select>
+        <button id="refreshBtn" class="secondary" type="button">刷新</button>
+      </div>
+    </header>
+
+    <section class="metrics">
+      <article class="metric">
+        <div class="metric-label">Key 数量</div>
+        <div id="keyCount" class="metric-value">0</div>
+        <div id="enabledCount" class="metric-hint">启用 0</div>
+      </article>
+      <article class="metric">
+        <div class="metric-label">所选窗口总费用</div>
+        <div id="windowCost" class="metric-value">$0.0000</div>
+        <div id="windowLabel" class="metric-hint">-</div>
+      </article>
+      <article class="metric">
+        <div class="metric-label">超限风险</div>
+        <div id="riskCount" class="metric-value warn">0</div>
+        <div class="metric-hint">按门户估算，不是官方账单</div>
+      </article>
+      <article class="metric">
+        <div class="metric-label">清零方式</div>
+        <div class="metric-value info">Soft</div>
+        <div class="metric-hint">只写 reset watermark</div>
+      </article>
+    </section>
+
+    <section class="section">
+      <div class="section-head">
+        <div>
+          <h2>Key 限额与窗口用量</h2>
+          <p class="muted">日限/周限来自 Key Policy；5H/月限和清零点保存在自有 SQLite。</p>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th style="width:180px;">Key</th>
+              <th style="width:120px;">状态</th>
+              <th style="width:170px;">5H</th>
+              <th style="width:170px;">日</th>
+              <th style="width:170px;">周</th>
+              <th style="width:170px;">月</th>
+              <th style="width:220px;">本地限额</th>
+              <th style="width:230px;">操作</th>
+            </tr>
+          </thead>
+          <tbody id="keyRows"><tr><td colspan="8" class="empty">正在读取...</td></tr></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-head">
+        <div>
+          <h2>最近请求</h2>
+          <p id="eventsHint" class="muted">选择一条 Key 后查看安全摘要。</p>
+        </div>
+        <select id="keySelect"></select>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th style="width:170px;">时间</th>
+              <th style="width:100px;">状态</th>
+              <th style="width:150px;">模型</th>
+              <th style="width:110px;">延迟</th>
+              <th style="width:130px;">Tokens</th>
+              <th style="width:110px;">Reasoning</th>
+              <th style="width:100px;">费用</th>
+              <th>计入窗口</th>
+            </tr>
+          </thead>
+          <tbody id="eventRows"><tr><td colspan="8" class="empty">暂无请求记录</td></tr></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const state = { keys: [], selectedKey: "" };
+    const labels = { "5h": "5 小时", "24h": "24 小时", "7d": "7 天", month: "本月" };
+    const API_BASE = location.pathname.startsWith("/usage-admin") ? "/usage-admin" : "/admin";
+
+    function escapeHtml(value) {
+      return String(value == null ? "" : value).replace(/[&<>"']/g, ch => ({
+        "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+      }[ch]));
+    }
+    function num(value) { return Number(value || 0).toLocaleString("zh-CN"); }
+    function money(value) { return "$" + Number(value || 0).toFixed(4); }
+    function limitText(value) {
+      if (value === null || value === undefined || value === "") return "未设置";
+      const n = Number(value);
+      if (!Number.isFinite(n)) return "未设置";
+      if (n === 0) return "不限";
+      return money(n);
+    }
+    function time(ms) {
+      if (!ms) return "-";
+      return new Date(Number(ms)).toLocaleString("zh-CN", { hour12: false });
+    }
+    function duration(ms) {
+      if (ms === null || ms === undefined || ms === "") return "-";
+      const n = Number(ms);
+      if (n < 1000) return `${Math.round(n)} ms`;
+      return `${(n / 1000).toFixed(2)} s`;
+    }
+    function setStatus(kind, text) {
+      $("statusChip").className = `chip stream ${kind}`;
+      $("statusChip").innerHTML = `<span class="dot"></span><span>${escapeHtml(text)}</span>`;
+    }
+    async function api(path, options = {}) {
+      const method = String(options.method || "GET").toUpperCase();
+      const joiner = path.includes("?") ? "&" : "?";
+      const target = method === "GET" ? `${path}${joiner}_=${Date.now()}` : path;
+      const resp = await fetch(target, {
+        credentials: "same-origin",
+        cache: "no-store",
+        headers: { "Content-Type": "application/json" },
+        ...options,
+      });
+      if (!resp.ok) {
+        const body = await resp.json().catch(() => ({}));
+        throw new Error(body.error || resp.statusText);
+      }
+      return resp.json();
+    }
+    function quotaCell(q) {
+      if (!q || q.error) return `<div class="quota"><strong class="bad">${escapeHtml(q?.error || "-")}</strong></div>`;
+      const limit = q.limit_usd;
+      const used = Number(q.used_usd || 0);
+      const pct = Number(q.used_percent || 0);
+      const width = Math.max(0, Math.min(100, pct * 100));
+      const danger = pct >= 0.9;
+      return `<div class="quota">
+        <strong>${money(used)} / ${limitText(limit)}</strong>
+        <div class="bar ${danger ? "danger" : ""}"><span style="width:${width}%"></span></div>
+        <span class="muted">${q.reset_at_ms ? "清零点 " + time(q.reset_at_ms) : "未清零"}</span>
+      </div>`;
+    }
+    function renderKeys(keys) {
+      state.keys = keys || [];
+      const range = $("rangeSelect").value;
+      const enabled = state.keys.filter(k => k.enabled).length;
+      const total = state.keys.reduce((sum, key) => sum + Number(key.usage_windows?.[range]?.used_usd || 0), 0);
+      const risk = state.keys.filter(key => Number(key.usage_windows?.[range]?.used_percent || 0) >= 0.9).length;
+      $("keyCount").textContent = num(state.keys.length);
+      $("enabledCount").textContent = `启用 ${num(enabled)}`;
+      $("windowCost").textContent = money(total);
+      $("windowLabel").textContent = labels[range] || range;
+      $("riskCount").textContent = num(risk);
+      $("riskCount").className = `metric-value ${risk ? "warn" : "ok"}`;
+
+      $("keySelect").innerHTML = state.keys.map(key => `<option value="${escapeHtml(key.id)}">${escapeHtml(key.name || key.id)}</option>`).join("");
+      if (!state.selectedKey && state.keys[0]) state.selectedKey = state.keys[0].id;
+      if (state.selectedKey) $("keySelect").value = state.selectedKey;
+
+      $("keyRows").innerHTML = state.keys.map(key => {
+        const limits = key.limits || {};
+        return `<tr>
+          <td><div class="cell-stack"><strong>${escapeHtml(key.name || "-")}</strong><span class="muted mono">${escapeHtml(key.preview || key.id)}</span></div></td>
+          <td><span class="chip ${key.enabled ? "ok" : "bad"}"><span class="dot"></span><span>${key.enabled ? "启用" : "停用"}</span></span><div class="muted">RPM ${key.rpm || "不限"}</div></td>
+          <td>${quotaCell(key.usage_windows?.["5h"])}</td>
+          <td>${quotaCell(key.usage_windows?.["24h"])}</td>
+          <td>${quotaCell(key.usage_windows?.["7d"])}</td>
+          <td>${quotaCell(key.usage_windows?.month)}</td>
+          <td>
+            <div class="cell-stack">
+              <label>5H <input data-limit="5h" data-key="${escapeHtml(key.id)}" value="${limits.five_hour_usd ?? ""}" placeholder="未设置"></label>
+              <label>月 <input data-limit="month" data-key="${escapeHtml(key.id)}" value="${limits.monthly_usd ?? ""}" placeholder="未设置"></label>
+            </div>
+          </td>
+          <td>
+            <div class="actions">
+              <button class="primary" data-save="${escapeHtml(key.id)}">保存</button>
+              <button class="danger" data-reset="${escapeHtml(key.id)}" data-window="${escapeHtml(range)}">清零当前</button>
+              <button class="danger" data-reset="${escapeHtml(key.id)}" data-window="all">清零全部</button>
+            </div>
+          </td>
+        </tr>`;
+      }).join("") || '<tr><td colspan="8" class="empty">暂无 Key</td></tr>';
+      $("keyRows").querySelectorAll("[data-save]").forEach(button => {
+        button.onclick = () => saveLimits(button.getAttribute("data-save"));
+      });
+      $("keyRows").querySelectorAll("[data-reset]").forEach(button => {
+        button.onclick = () => resetUsage(button.getAttribute("data-reset"), button.getAttribute("data-window"));
+      });
+    }
+    function renderEvents(events, meta) {
+      $("eventsHint").textContent = `${labels[meta.range] || meta.range} · ${time(meta.from_ms)} 至 ${time(meta.to_ms)} · 估算剩余 ${limitText(meta.quota?.remaining_usd)}`;
+      $("eventRows").innerHTML = (events || []).map(ev => `
+        <tr>
+          <td><div>${escapeHtml(time(ev.timestamp_ms))}</div><div class="muted mono">${escapeHtml(ev.request_id || "")}</div></td>
+          <td><span class="chip ${ev.failed ? "bad" : "ok"}"><span class="dot"></span><span>${ev.failed ? "失败" : "成功"}</span></span></td>
+          <td><div class="mono">${escapeHtml(ev.model || "-")}</div><div class="muted">${escapeHtml(ev.reasoning_effort || "")}</div></td>
+          <td><strong>${escapeHtml(duration(ev.latency_ms))}</strong><div class="muted">TTFT ${escapeHtml(duration(ev.ttft_ms))}</div></td>
+          <td><strong>${num(ev.total_tokens)}</strong><div class="muted">I ${num(ev.input_tokens)} / O ${num(ev.output_tokens)}</div></td>
+          <td><strong class="info">${num(ev.reasoning_tokens)}</strong></td>
+          <td>${money(ev.cost)}</td>
+          <td>${escapeHtml((ev.accounting?.included_windows || []).map(x => labels[x] || x).join(" / ") || "-")}<div class="muted">${ev.accounting?.reset_at_ms ? "清零点 " + time(ev.accounting.reset_at_ms) : "未清零"}</div></td>
+        </tr>`).join("") || '<tr><td colspan="8" class="empty">暂无请求记录</td></tr>';
+    }
+    async function refresh() {
+      $("refreshBtn").classList.add("is-loading");
+      setStatus("warn", "刷新中");
+      try {
+        const keys = await api(`${API_BASE}/api/keys`);
+        renderKeys(keys.keys || []);
+        if (state.selectedKey) {
+          const range = $("rangeSelect").value;
+          const events = await api(`${API_BASE}/api/events?key_id=${encodeURIComponent(state.selectedKey)}&range=${encodeURIComponent(range)}&limit=100`);
+          renderEvents(events.events || [], events);
+        }
+        setStatus("ok", "已刷新");
+      } catch (err) {
+        setStatus("bad", err.message || "刷新失败");
+      } finally {
+        $("refreshBtn").classList.remove("is-loading");
+      }
+    }
+    async function saveLimits(keyId) {
+      const five = document.querySelector(`input[data-key="${CSS.escape(keyId)}"][data-limit="5h"]`)?.value ?? "";
+      const month = document.querySelector(`input[data-key="${CSS.escape(keyId)}"][data-limit="month"]`)?.value ?? "";
+      await api(`${API_BASE}/api/keys/${encodeURIComponent(keyId)}/limits`, {
+        method: "PUT",
+        body: JSON.stringify({ five_hour_usd: five === "" ? null : Number(five), monthly_usd: month === "" ? null : Number(month) }),
+      });
+      await refresh();
+    }
+    async function resetUsage(keyId, windowName) {
+      const ok = window.confirm(`确认清零 ${windowName === "all" ? "全部窗口" : labels[windowName]}？这只影响自有门户统计，不删除 CPAMP 原始记录。`);
+      if (!ok) return;
+      await api(`${API_BASE}/api/keys/${encodeURIComponent(keyId)}/reset`, {
+        method: "POST",
+        body: JSON.stringify({ window: windowName }),
+      });
+      await refresh();
+    }
+    $("refreshBtn").onclick = refresh;
+    $("rangeSelect").onchange = refresh;
+    $("keySelect").onchange = () => {
+      state.selectedKey = $("keySelect").value;
+      refresh();
+    };
+    refresh();
+  </script>
+</body>
+</html>

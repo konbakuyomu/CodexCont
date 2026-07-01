@@ -14,14 +14,16 @@ from starlette.responses import HTMLResponse, JSONResponse, Response, StreamingR
 from starlette.routing import Route
 
 from .config import PortalConfig
-from .cpamp import CPAMPClient, range_window
-from .key_policy import KeyPolicyState
+from .cpamp import CPAMPClient, SUPPORTED_RANGES
+from .key_policy import KeyPolicyState, KeyRecord
 from .pricing import apply_event_pricing, apply_key_policy_pricing
+from .quota_state import QuotaState, RESET_WINDOWS
 from .redaction import safe_api_key_stats, safe_events
 from .security import sha256_hex, sign_session, verify_session
 
 _STATIC = Path(__file__).with_name("static")
 _DASHBOARD = _STATIC / "dashboard.html"
+_ADMIN_DASHBOARD = _STATIC / "admin.html"
 
 
 class AuthError(Exception):
@@ -55,6 +57,31 @@ def _current_key(request: Request):
     return record
 
 
+def _quota(request: Request) -> QuotaState:
+    return request.app.state.quota
+
+
+def _record_id(record: KeyRecord) -> str:
+    return record.policy_id or record.raw_key_hash
+
+
+def _safe_record(record: KeyRecord, quota: QuotaState) -> dict[str, Any]:
+    safe = record.safe_dict()
+    local_limits = quota.get_limits(_record_id(record))
+    limits = dict(safe.get("limits") or {})
+    limits.update(local_limits.safe_dict())
+    safe["limits"] = limits
+    safe["reset_points"] = quota.get_reset_points(_record_id(record))
+    return safe
+
+
+def _find_record(state: KeyPolicyState, key_id: str) -> KeyRecord | None:
+    for record in state.keys:
+        if _record_id(record) == key_id:
+            return record
+    return None
+
+
 def _parse_before(request: Request) -> tuple[int | None, int | None]:
     before_ms = request.query_params.get("before_ms")
     before_id = request.query_params.get("before_id")
@@ -75,7 +102,125 @@ def _parse_before(request: Request) -> tuple[int | None, int | None]:
 
 def _parse_range(request: Request, *, default: str) -> str:
     value = request.query_params.get("range", default)
-    return value if value in {"24h", "7d"} else default
+    return value if value in SUPPORTED_RANGES else default
+
+
+def _parse_float_limit(value: Any) -> float | None:
+    if value is None or value == "":
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        raise ValueError("invalid_limit")
+    if parsed < 0:
+        raise ValueError("invalid_limit")
+    return parsed
+
+
+def _actor(request: Request) -> str:
+    return (
+        request.headers.get("cf-access-authenticated-user-email")
+        or request.headers.get("x-usage-admin-actor")
+        or "admin"
+    )
+
+
+def _admin_allowed(request: Request) -> bool:
+    cfg: PortalConfig = request.app.state.cfg
+    return request.headers.get(cfg.admin_header_name) == cfg.admin_header_value
+
+
+def _admin_guard(request: Request) -> JSONResponse | None:
+    if _admin_allowed(request):
+        return None
+    return _json_error("not_found", 404)
+
+
+def _limit_for(record: KeyRecord, quota: QuotaState, range_name: str) -> float | None:
+    local = quota.get_limits(_record_id(record))
+    if range_name == "5h":
+        return local.five_hour_usd
+    if range_name == "24h":
+        return record.daily_limit_usd
+    if range_name == "7d":
+        return record.weekly_limit_usd
+    if range_name == "month":
+        return local.monthly_usd
+    return None
+
+
+def _quota_projection(
+    record: KeyRecord,
+    quota: QuotaState,
+    *,
+    range_name: str,
+    window_from_ms: int,
+    window_to_ms: int,
+    reset_at_ms: int | None,
+    used_usd: Any,
+) -> dict[str, Any]:
+    limit = _limit_for(record, quota, range_name)
+    used = _float(used_usd)
+    remaining = None
+    percent = None
+    if limit is not None and limit > 0:
+        remaining = max(limit - used, 0.0)
+        percent = used / limit
+    return {
+        "range": range_name,
+        "from_ms": window_from_ms,
+        "to_ms": window_to_ms,
+        "reset_at_ms": reset_at_ms,
+        "limit_usd": limit,
+        "used_usd": used,
+        "remaining_usd": remaining,
+        "used_percent": percent,
+    }
+
+
+def _float(value: Any) -> float:
+    try:
+        return float(value or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _attach_event_accounting(
+    events: list[dict[str, Any]],
+    *,
+    record: KeyRecord,
+    quota: QuotaState,
+    selected_range: str,
+    selected_quota: dict[str, Any],
+    now_ms_value: int,
+) -> list[dict[str, Any]]:
+    effective_windows: dict[str, tuple[int, int, int | None]] = {}
+    key_id = _record_id(record)
+    for name in RESET_WINDOWS:
+        window, reset_at = quota.effective_window(key_id, name, now_ms_value=now_ms_value)
+        effective_windows[name] = (window.from_ms, window.to_ms, reset_at)
+
+    projected: list[dict[str, Any]] = []
+    for event in events:
+        row = dict(event)
+        ts = int(row.get("timestamp_ms") or 0)
+        included = [
+            name
+            for name, (from_ms, to_ms, _reset_at) in effective_windows.items()
+            if ts and from_ms <= ts <= to_ms
+        ]
+        window_from, window_to, reset_at = effective_windows.get(selected_range, (0, 0, None))
+        row["accounting"] = {
+            "selected_range": selected_range,
+            "included_windows": included,
+            "window_from_ms": window_from,
+            "window_to_ms": window_to,
+            "reset_at_ms": reset_at,
+            "current_window_remaining_usd": selected_quota.get("remaining_usd"),
+            "current_window_limit_usd": selected_quota.get("limit_usd"),
+        }
+        projected.append(row)
+    return projected
 
 
 async def dashboard(_request: Request) -> HTMLResponse:
@@ -117,7 +262,7 @@ async def create_session(request: Request) -> JSONResponse:
         cfg.session_secret,
         ttl_seconds=cfg.session_ttl_seconds,
     )
-    response = JSONResponse({"me": record.safe_dict()})
+    response = JSONResponse({"me": _safe_record(record, _quota(request))})
     response.set_cookie(
         cfg.session_cookie_name,
         token,
@@ -142,7 +287,7 @@ async def me(request: Request) -> JSONResponse:
         record = _current_key(request)
     except AuthError as exc:
         return _json_error(str(exc), 401)
-    return JSONResponse({"me": record.safe_dict()})
+    return JSONResponse({"me": _safe_record(record, _quota(request))})
 
 
 async def usage(request: Request) -> JSONResponse:
@@ -151,7 +296,8 @@ async def usage(request: Request) -> JSONResponse:
     except AuthError as exc:
         return _json_error(str(exc), 401)
     range_name = _parse_range(request, default="24h")
-    window = range_window(range_name)
+    quota_state = _quota(request)
+    window, reset_at = quota_state.effective_window(_record_id(record), range_name)
     data = await request.app.state.cpamp.analytics(
         api_key_hash=record.cpamp_hash,
         window=window,
@@ -159,10 +305,23 @@ async def usage(request: Request) -> JSONResponse:
         include_model_stats=True,
     )
     data = apply_key_policy_pricing(data, record.model_prices)
+    quota_summary = _quota_projection(
+        record,
+        quota_state,
+        range_name=range_name,
+        window_from_ms=window.from_ms,
+        window_to_ms=window.to_ms,
+        reset_at_ms=reset_at,
+        used_usd=(data.get("summary") or {}).get("total_cost"),
+    )
     return JSONResponse({
         "range": range_name,
         "from_ms": window.from_ms,
         "to_ms": window.to_ms,
+        "reset_at_ms": reset_at,
+        "limits": _safe_record(record, quota_state).get("limits") or {},
+        "reset_points": quota_state.get_reset_points(_record_id(record)),
+        "quota": quota_summary,
         "summary": data.get("summary") or {},
         "timeline": data.get("timeline") or [],
         "model_share": data.get("model_share") or [],
@@ -183,24 +342,46 @@ async def events(request: Request) -> JSONResponse:
         limit = 100
     before_ms, before_id = _parse_before(request)
     range_name = _parse_range(request, default="7d")
-    window = range_window(range_name)
+    quota_state = _quota(request)
+    window, reset_at = quota_state.effective_window(_record_id(record), range_name)
     data = await request.app.state.cpamp.analytics(
         api_key_hash=record.cpamp_hash,
         window=window,
         include_events=True,
+        include_model_stats=True,
         event_limit=limit,
         before_ms=before_ms,
         before_id=before_id,
+    )
+    data = apply_key_policy_pricing(data, record.model_prices)
+    quota_summary = _quota_projection(
+        record,
+        quota_state,
+        range_name=range_name,
+        window_from_ms=window.from_ms,
+        window_to_ms=window.to_ms,
+        reset_at_ms=reset_at,
+        used_usd=(data.get("summary") or {}).get("total_cost"),
     )
     page = data.get("events") or {}
     items = apply_event_pricing(
         safe_events(page.get("items") or [], expected_hash=record.cpamp_hash),
         record.model_prices,
     )
+    items = _attach_event_accounting(
+        items,
+        record=record,
+        quota=quota_state,
+        selected_range=range_name,
+        selected_quota=quota_summary,
+        now_ms_value=window.to_ms,
+    )
     return JSONResponse({
         "range": range_name,
         "from_ms": window.from_ms,
         "to_ms": window.to_ms,
+        "reset_at_ms": reset_at,
+        "quota": quota_summary,
         "events": items,
         "next_before_ms": page.get("next_before_ms") or 0,
         "next_before_id": page.get("next_before_id") or 0,
@@ -231,7 +412,7 @@ async def events_stream(request: Request) -> StreamingResponse:
             try:
                 data = await request.app.state.cpamp.analytics(
                     api_key_hash=record.cpamp_hash,
-                    window=range_window("24h"),
+                    window=_quota(request).effective_window(_record_id(record), "24h")[0],
                     include_events=True,
                     event_limit=20,
                 )
@@ -256,6 +437,153 @@ async def events_stream(request: Request) -> StreamingResponse:
     )
 
 
+async def admin_dashboard(request: Request) -> Response:
+    blocked = _admin_guard(request)
+    if blocked is not None:
+        return blocked
+    return HTMLResponse(_ADMIN_DASHBOARD.read_text(encoding="utf-8"))
+
+
+async def _analytics_for_quota(request: Request, record: KeyRecord, range_name: str) -> dict[str, Any]:
+    quota_state = _quota(request)
+    window, reset_at = quota_state.effective_window(_record_id(record), range_name)
+    data = await request.app.state.cpamp.analytics(
+        api_key_hash=record.cpamp_hash,
+        window=window,
+        include_events=False,
+        include_model_stats=True,
+    )
+    data = apply_key_policy_pricing(data, record.model_prices)
+    summary = data.get("summary") or {}
+    return _quota_projection(
+        record,
+        quota_state,
+        range_name=range_name,
+        window_from_ms=window.from_ms,
+        window_to_ms=window.to_ms,
+        reset_at_ms=reset_at,
+        used_usd=summary.get("total_cost"),
+    )
+
+
+async def admin_keys(request: Request) -> JSONResponse:
+    blocked = _admin_guard(request)
+    if blocked is not None:
+        return blocked
+    state = _load_key_state(request)
+    quota_state = _quota(request)
+    keys = []
+    for record in state.keys:
+        usage_windows: dict[str, Any] = {}
+        for name in RESET_WINDOWS:
+            try:
+                usage_windows[name] = await _analytics_for_quota(request, record, name)
+            except Exception as exc:
+                usage_windows[name] = {"range": name, "error": type(exc).__name__}
+        row = _safe_record(record, quota_state)
+        row["usage_windows"] = usage_windows
+        keys.append(row)
+    return JSONResponse({"keys": keys})
+
+
+async def admin_update_limits(request: Request) -> JSONResponse:
+    blocked = _admin_guard(request)
+    if blocked is not None:
+        return blocked
+    key_id = request.path_params["key_id"]
+    state = _load_key_state(request)
+    record = _find_record(state, key_id)
+    if record is None:
+        return _json_error("key_not_found", 404)
+    try:
+        body = await request.json()
+        five_hour = _parse_float_limit((body or {}).get("five_hour_usd"))
+        monthly = _parse_float_limit((body or {}).get("monthly_usd"))
+    except (json.JSONDecodeError, ValueError) as exc:
+        return _json_error(str(exc) or "invalid_json", 400)
+    quota_state = _quota(request)
+    quota_state.set_limits(_record_id(record), five_hour_usd=five_hour, monthly_usd=monthly, actor=_actor(request))
+    return JSONResponse({"me": _safe_record(record, quota_state)})
+
+
+async def admin_reset_usage(request: Request) -> JSONResponse:
+    blocked = _admin_guard(request)
+    if blocked is not None:
+        return blocked
+    key_id = request.path_params["key_id"]
+    state = _load_key_state(request)
+    record = _find_record(state, key_id)
+    if record is None:
+        return _json_error("key_not_found", 404)
+    try:
+        body = await request.json()
+    except json.JSONDecodeError:
+        return _json_error("invalid_json", 400)
+    window = str((body or {}).get("window") or "all")
+    try:
+        points = _quota(request).reset(_record_id(record), window=window, actor=_actor(request))
+    except ValueError as exc:
+        return _json_error(str(exc), 400)
+    return JSONResponse({"ok": True, "reset_points": points})
+
+
+async def admin_events(request: Request) -> JSONResponse:
+    blocked = _admin_guard(request)
+    if blocked is not None:
+        return blocked
+    key_id = request.query_params.get("key_id", "")
+    state = _load_key_state(request)
+    record = _find_record(state, key_id)
+    if record is None:
+        return _json_error("key_not_found", 404)
+    limit_raw = request.query_params.get("limit", "100")
+    try:
+        limit = max(1, min(int(limit_raw), 200))
+    except ValueError:
+        limit = 100
+    range_name = _parse_range(request, default="24h")
+    quota_state = _quota(request)
+    window, reset_at = quota_state.effective_window(_record_id(record), range_name)
+    data = await request.app.state.cpamp.analytics(
+        api_key_hash=record.cpamp_hash,
+        window=window,
+        include_events=True,
+        include_model_stats=True,
+        event_limit=limit,
+    )
+    data = apply_key_policy_pricing(data, record.model_prices)
+    quota_summary = _quota_projection(
+        record,
+        quota_state,
+        range_name=range_name,
+        window_from_ms=window.from_ms,
+        window_to_ms=window.to_ms,
+        reset_at_ms=reset_at,
+        used_usd=(data.get("summary") or {}).get("total_cost"),
+    )
+    page = data.get("events") or {}
+    items = apply_event_pricing(
+        safe_events(page.get("items") or [], expected_hash=record.cpamp_hash),
+        record.model_prices,
+    )
+    items = _attach_event_accounting(
+        items,
+        record=record,
+        quota=quota_state,
+        selected_range=range_name,
+        selected_quota=quota_summary,
+        now_ms_value=window.to_ms,
+    )
+    return JSONResponse({
+        "range": range_name,
+        "from_ms": window.from_ms,
+        "to_ms": window.to_ms,
+        "reset_at_ms": reset_at,
+        "quota": quota_summary,
+        "events": items,
+    })
+
+
 def create_app(cfg: PortalConfig) -> Starlette:
     if not cfg.session_secret:
         raise ValueError("CPA_USAGE_PORTAL_SESSION_SECRET or file is required")
@@ -268,6 +596,7 @@ def create_app(cfg: PortalConfig) -> Starlette:
         app.state.cfg = cfg
         app.state.client = client
         app.state.cpamp = CPAMPClient(cfg.cpamp_base_url, cfg.cpamp_admin_key, client)
+        app.state.quota = QuotaState(cfg.local_state_db_path)
         try:
             yield
         finally:
@@ -282,5 +611,10 @@ def create_app(cfg: PortalConfig) -> Starlette:
         Route("/api/usage", usage, methods=["GET"]),
         Route("/api/events", events, methods=["GET"]),
         Route("/api/events/stream", events_stream, methods=["GET"]),
+        Route("/admin/", admin_dashboard, methods=["GET"]),
+        Route("/admin/api/keys", admin_keys, methods=["GET"]),
+        Route("/admin/api/keys/{key_id:str}/limits", admin_update_limits, methods=["PUT"]),
+        Route("/admin/api/keys/{key_id:str}/reset", admin_reset_usage, methods=["POST"]),
+        Route("/admin/api/events", admin_events, methods=["GET"]),
     ]
     return Starlette(routes=routes, lifespan=lifespan)

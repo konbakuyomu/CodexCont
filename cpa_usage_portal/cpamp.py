@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import httpx
@@ -14,17 +15,29 @@ class AnalyticsWindow:
     to_ms: int
 
 
+SUPPORTED_RANGES = {"5h", "24h", "7d", "month"}
+_SHANGHAI_TZ = timezone(timedelta(hours=8))
+
+
 def now_ms() -> int:
     return int(time.time() * 1000)
 
 
-def range_window(range_name: str) -> AnalyticsWindow:
-    current = now_ms()
+def range_window(range_name: str, *, now_ms_value: int | None = None) -> AnalyticsWindow:
+    current = int(now_ms_value if now_ms_value is not None else now_ms())
+    if range_name == "5h":
+        delta = 5 * 60 * 60 * 1000
+        return AnalyticsWindow(from_ms=current - delta, to_ms=current)
     if range_name == "7d":
         delta = 7 * 24 * 60 * 60 * 1000
+        return AnalyticsWindow(from_ms=current - delta, to_ms=current)
+    if range_name == "month":
+        local_now = datetime.fromtimestamp(current / 1000, _SHANGHAI_TZ)
+        start = local_now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        return AnalyticsWindow(from_ms=int(start.timestamp() * 1000), to_ms=current)
     else:
         delta = 24 * 60 * 60 * 1000
-    return AnalyticsWindow(from_ms=current - delta, to_ms=current)
+        return AnalyticsWindow(from_ms=current - delta, to_ms=current)
 
 
 class CPAMPClient:

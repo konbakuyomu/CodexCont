@@ -72,3 +72,63 @@ Only the static HTML/CSS/JS changes. The first screen becomes:
 - If public admin route checks fail, revert the touched Caddy route only after
   confirming this task changed Caddy; expected implementation does not change
   Caddy.
+
+## Follow-up Design: Local Quota Admin
+
+### Data Flow
+
+```text
+browser -> cpa-usage-portal -> Key Policy state
+                         -> CPAMP analytics
+                         -> local portal SQLite
+```
+
+Key Policy remains the identity and price source for user keys. CPAMP remains
+the immutable request-event source. The portal overlays local 5H/month limits
+and reset watermarks, then queries CPAMP from the effective window start.
+
+### Local SQLite
+
+The portal owns a small SQLite database at `/data/portal/usage_portal.sqlite`
+in production. It stores only:
+
+- `key_limits`: `policy_id`, `five_hour_limit_usd`, `monthly_limit_usd`.
+- `reset_watermarks`: `policy_id`, `window`, `reset_at_ms`.
+- `audit_log`: operator actions and before/after JSON for local metadata.
+
+It does not store raw API keys, request bodies, response bodies, OAuth tokens,
+management keys, or encrypted reasoning content.
+
+### Windows And Reset
+
+Supported ranges are `5h`, `24h`, `7d`, and `month`.
+
+- `5h`: rolling five hours.
+- `24h`: rolling twenty-four hours, matched to Key Policy daily limit display.
+- `7d`: rolling seven days, matched to Key Policy weekly limit display.
+- `month`: current Asia/Shanghai calendar month.
+
+A soft reset writes a watermark. For a selected range, the effective CPAMP
+window starts at `max(base_window_start, reset_at_ms)`. CPAMP original event
+rows are not deleted or rewritten.
+
+### Admin Boundary
+
+The admin UI is served by the same portal container but only under the admin
+proxy. The app requires a proxy-injected header (`X-Usage-Admin: 1`) for all
+`/admin/*` routes. The public user route does not set this header, so admin
+routes return `404` there even if DNS points at the same container.
+
+The planned production mount is:
+
+```text
+cpa-admin.konbakuyomu.us/usage-admin/* -> admin proxy injects header
+                                      -> cpa-usage-portal /admin/*
+```
+
+### Price Correction
+
+CPAMP Model Prices and Key Policy per-key model entries both use USD per 1M
+tokens. The portal still recomputes self-service costs from Key Policy prices
+because CPAMP can legitimately return zero for custom aliases until its global
+price book is configured.

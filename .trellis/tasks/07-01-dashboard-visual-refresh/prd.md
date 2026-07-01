@@ -56,3 +56,49 @@ The affected pages are:
 - Adding a frontend build system.
 - Creating new auth flows, user management, or key migration behavior.
 - Changing CodexCont `/v1/responses` folding logic.
+
+## Follow-up: Price Correction, Local Quotas, And Soft Reset
+
+### Goal
+
+Fix inflated/zero cost display and add operator-controlled local quota views
+without forking CPA, CPAMP, or CPA Key Policy.
+
+### Requirements
+
+- Keep CPA, CPAMP, and CPA Key Policy official source/images untouched.
+- Correct server configuration data so Key Policy per-key model prices and
+  CPAMP global Model Prices use USD per 1M tokens.
+- Use the confirmed text-model prices:
+  `gpt-5.5 = 5 / 30 / 0.5`, `gpt-5.4 = 2.5 / 15 / 0.25`,
+  `gpt-5.4-mini = 0.75 / 4.5 / 0.075`,
+  `gpt-5.3-codex-spark = 1.75 / 14 / 0.175`, and
+  `codex-auto-review = 5 / 30 / 0.5`.
+- Do not guess image model prices.
+- Add a self-owned portal admin entry at
+  `cpa-admin.konbakuyomu.us/usage-admin/`, still protected by Cloudflare
+  Access and a proxy-injected admin header.
+- Store only local portal metadata in SQLite: 5H/month limits, reset
+  watermarks, and admin audit entries.
+- Add soft reset only: reset portal statistics from a watermark while keeping
+  CPAMP original events intact.
+- User self-service pages must show 5H/day/week/month limits and remaining
+  estimated quota.
+- First version does not hard-block production requests when a local limit is
+  exceeded.
+
+### Acceptance Criteria
+
+- [ ] CPAMP global model price table and Key Policy model entries are corrected
+      for the text aliases above.
+- [ ] User `/api/usage` and `/api/events` support
+      `range=5h|24h|7d|month`.
+- [ ] User `/api/me` exposes safe 5H/month local limits and reset points in
+      addition to Key Policy daily/weekly limits.
+- [ ] Admin page lists every Key with 5H/day/week/month used/limit/remaining
+      estimates.
+- [ ] Admin page can set 5H/month limits and soft-reset one or all windows.
+- [ ] Public `cpa-usage.konbakuyomu.us` cannot access admin APIs without the
+      admin proxy header.
+- [ ] No raw API keys, full hashes, OAuth tokens, management keys, request
+      bodies, response bodies, or encrypted reasoning content are returned.

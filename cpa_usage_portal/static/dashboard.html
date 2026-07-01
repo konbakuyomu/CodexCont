@@ -451,8 +451,10 @@
       <div class="toolbar">
         <span id="liveChip" class="chip stream warn"><span class="dot"></span><span>实时未连接</span></span>
         <select id="rangeSelect" class="hidden" title="统计范围">
+          <option value="5h">5 小时</option>
           <option value="24h">24 小时</option>
           <option value="7d">7 天</option>
+          <option value="month">本月</option>
         </select>
         <button id="refreshBtn" class="secondary hidden" type="button">刷新</button>
         <button id="logoutBtn" class="secondary hidden" type="button">退出</button>
@@ -599,7 +601,10 @@
       return `${(n / 1000).toFixed(2)} s`;
     }
     function rangeLabel(range) {
-      return range === "7d" ? "最近 7 天" : "最近 24 小时";
+      if (range === "5h") return "最近 5 小时";
+      if (range === "7d") return "最近 7 天";
+      if (range === "month") return "本月";
+      return "最近 24 小时";
     }
     function setLive(kind, text) {
       const chip = $("liveChip");
@@ -655,19 +660,22 @@
       state.me = me;
       const daily = me.limits?.daily_usd;
       const weekly = me.limits?.weekly_usd;
+      const fiveHour = me.limits?.five_hour_usd;
+      const monthly = me.limits?.monthly_usd;
       const pricingCount = me.pricing?.priced_model_count || 0;
-      $("keyStatus").textContent = `日限 ${limitMoney(daily)}`;
+      $("keyStatus").textContent = `5H ${limitMoney(fiveHour)}`;
       $("keyStatus").className = `metric-value ${me.enabled ? "success" : "danger"}`;
       $("keyMeta").textContent = `${me.name || "未命名"} / ${me.preview || "-"} `;
-      $("rpmHint").textContent = `周限 ${limitMoney(weekly)} · ${me.enabled ? "启用中" : "已停用"} · RPM ${me.rpm || "不限"} · 价格 ${pricingCount || 0} 个模型`;
+      $("rpmHint").textContent = `日限 ${limitMoney(daily)} · 周限 ${limitMoney(weekly)} · 月限 ${limitMoney(monthly)} · RPM ${me.rpm || "不限"} · 价格 ${pricingCount || 0} 个模型`;
       $("keyLine").textContent = `${me.name || "当前 Key"} · ${me.preview || ""}`;
     }
     function renderUsage(data) {
       const s = data.summary || {};
       const me = state.me || {};
       const range = data.range || $("rangeSelect").value;
+      const quota = data.quota || {};
       state.currentRange = range;
-      const limit = range === "7d" ? me.limits?.weekly_usd : me.limits?.daily_usd;
+      const limit = quota.limit_usd ?? (range === "5h" ? me.limits?.five_hour_usd : range === "7d" ? me.limits?.weekly_usd : range === "month" ? me.limits?.monthly_usd : me.limits?.daily_usd);
       const windowText = data.from_ms && data.to_ms ? ` · ${time(data.from_ms)} 至 ${time(data.to_ms)}` : "";
       $("modelRangeHint").textContent = `按当前 Key 统计：${rangeLabel(range)}${windowText}`;
       $("eventsRangeHint").textContent = `当前显示 ${rangeLabel(range)} 内最近 100 条请求；展开后查看脱敏详情。`;
@@ -676,7 +684,9 @@
       $("failureCount").textContent = `失败 ${num(s.failure_calls)}`;
       $("totalCost").textContent = money(s.total_cost);
       if (Number(limit) > 0) {
-        $("limitHint").textContent = `${range === "7d" ? "周限" : "日限"} ${money(limit)} / 已用 ${Math.min(100, Number(s.total_cost || 0) / Number(limit) * 100).toFixed(1)}%`;
+        const usedPercent = quota.used_percent == null ? Number(s.total_cost || 0) / Number(limit) : Number(quota.used_percent || 0);
+        const remaining = quota.remaining_usd == null ? Math.max(Number(limit) - Number(s.total_cost || 0), 0) : Number(quota.remaining_usd || 0);
+        $("limitHint").textContent = `${rangeLabel(range)}限额 ${money(limit)} / 已用 ${Math.min(100, usedPercent * 100).toFixed(1)}% / 剩余 ${money(remaining)}`;
       } else {
         const unpriced = Array.isArray(s.unpriced_models) && s.unpriced_models.length ? `未定价 ${s.unpriced_models.slice(0, 3).join(", ")}` : "";
         $("limitHint").textContent = unpriced || (s.cost_source === "key_policy" ? "按 Key Policy 单价估算" : "未设置 USD 限额");
@@ -697,6 +707,8 @@
     }
     function detailRow(event, id) {
       const quota = event.quota || {};
+      const accounting = event.accounting || {};
+      const included = Array.isArray(accounting.included_windows) ? accounting.included_windows.map(rangeLabel).join(" / ") : "-";
       const failure = event.failure || event.failure_brief || "无失败详情";
       return `<tr class="detail-row" ${state.expanded.has(id) ? "" : "hidden"}>
         <td colspan="8">
@@ -707,7 +719,10 @@
               <span>状态码</span><strong>${escapeHtml(event.status_code || "-")}</strong>
               <span>Service Tier</span><strong>${escapeHtml(event.service_tier || "-")}</strong>
               <span>Reasoning Effort</span><strong>${escapeHtml(event.reasoning_effort || "-")}</strong>
-              <span>Quota</span><strong>${escapeHtml(quota.used_percent == null ? "-" : quota.used_percent + "%")}</strong>
+              <span>Provider Quota</span><strong>${escapeHtml(quota.used_percent == null ? "-" : quota.used_percent + "%")}</strong>
+              <span>计入窗口</span><strong>${escapeHtml(included)}</strong>
+              <span>当前窗口剩余</span><strong>${escapeHtml(limitMoney(accounting.current_window_remaining_usd))}</strong>
+              <span>统计起点</span><strong>${escapeHtml(time(accounting.reset_at_ms || accounting.window_from_ms))}</strong>
             </div>
             <div>
               <div class="muted" style="margin-bottom:8px;">脱敏失败详情</div>

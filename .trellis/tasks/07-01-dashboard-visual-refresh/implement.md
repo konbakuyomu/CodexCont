@@ -332,3 +332,124 @@ Server rollout:
 - Public `https://cpa-usage.konbakuyomu.us/` returned `200` and contains the
   new selected-range UI code; public `https://cpa.konbakuyomu.us/cpa-usage/`
   returned `404`.
+
+## Follow-up: Price Correction And Local Quota Admin
+
+Planned implementation:
+
+1. Add `cpa_usage_portal.quota_state` as the single owner of local SQLite
+   metadata: 5H/month limits, reset watermarks, and audit log.
+2. Extend usage ranges to `5h`, `24h`, `7d`, and `month`.
+3. Apply reset watermarks by narrowing CPAMP analytics windows, without
+   deleting or mutating CPAMP source events.
+4. Expose safe local limits/reset points through user `/api/me`, `/api/usage`,
+   and `/api/events`.
+5. Add `/admin/*` routes guarded by a proxy-injected header, plus a static
+   CPAMP-style admin page for per-key limits and soft reset.
+6. Add a writable `/data/portal` mount to the portal deployment example.
+7. Correct production Key Policy and CPAMP price data after root-only backups.
+8. Route `cpa-admin.konbakuyomu.us/usage-admin/` through the existing admin
+   proxy, while keeping public usage/API domains from exposing admin routes.
+
+Local implementation evidence:
+
+- Added `cpa_usage_portal/quota_state.py` with SQLite tables for local limits,
+  reset watermarks, and audit log. SQLite connections are explicitly closed so
+  Windows temp-directory tests can clean up database files.
+- `cpa_usage_portal/cpamp.py` now supports `5h`, `24h`, `7d`, and calendar
+  `month` windows.
+- `cpa_usage_portal/app.py` now applies effective reset windows to CPAMP
+  analytics, returns safe quota projections, and exposes guarded admin APIs.
+- `cpa_usage_portal/static/dashboard.html` now lets users switch 5H/day/week/
+  month ranges and shows 5H/day/week/month limits plus selected-window
+  remaining quota.
+- Added `cpa_usage_portal/static/admin.html` as a no-build, dark operations
+  admin page for local quota editing and soft reset.
+- Updated `deploy/cpa-usage-portal/docker-compose.example.yaml` with the
+  writable `/data/portal` mount.
+- CPA, CPAMP, and CPA Key Policy source/images remain untouched by the local
+  implementation.
+
+Local validation on 2026-07-02:
+
+- `.venv\Scripts\python.exe tests\test_cpa_usage_portal.py` -> 65/65 checks
+  passed.
+- `.venv\Scripts\python.exe tests\test_middleware.py` -> 147/147 checks
+  passed.
+- `.venv\Scripts\python.exe -m compileall cpa_usage_portal run_usage_portal.py middleware run.py`
+  -> passed.
+- Node parsed inline scripts from
+  `cpa_usage_portal/static/dashboard.html`,
+  `cpa_usage_portal/static/admin.html`, and `middleware/dashboard.html`
+  successfully.
+
+Server rollout on SJC:
+
+- Preflight: `/` was 9.6G total, 8.8G used, about 738M available, 93% used.
+- Root-only backup path:
+  `/root/codex-backups/usage-quota-admin-20260702-002407/`.
+  Backup covered the usage portal stack, Key Policy state, CPAMP SQLite,
+  admin-proxy Caddyfile, and edge Caddyfile. Backup files were chmod `600`.
+- Uploaded only changed custom portal files into
+  `/opt/codex-stacks/cpa-usage-portal/app`.
+- Added the usage portal writable data mount:
+  `/opt/codex-stacks/cpa-usage-portal/data:/data/portal`.
+- Added admin proxy route:
+  `cpa-admin.konbakuyomu.us/usage-admin/* -> cpa-usage-portal /admin/*`
+  with `X-Usage-Admin: 1`.
+- Added public blocks for `/usage-admin*` on both `cpa.konbakuyomu.us` and
+  `cpa-usage.konbakuyomu.us`.
+- Corrected Key Policy model prices while `cpa` was stopped, then restarted
+  CPA so it did not overwrite the state file with the old in-memory prices.
+- Corrected CPAMP global `model_prices` rows and restarted CPAMP once so its
+  analytics reloaded the price book.
+- Rebuilt/restarted only `cpa-usage-portal`; restarted `cpa-admin-proxy` and
+  `caddy-edge` for Caddy route changes. CPA and CPAMP were restarted only for
+  price-state reload.
+
+Server validation:
+
+- Key Policy state now has all four enabled keys priced with:
+  `gpt-5.5 5/30/0.5`, `gpt-5.4 2.5/15/0.25`,
+  `gpt-5.4-mini 0.75/4.5/0.075`,
+  `gpt-5.3-codex-spark 1.75/14/0.175`, and
+  `codex-auto-review 5/30/0.5`.
+- CPAMP `model_prices` table has the same five text aliases. After CPAMP
+  restart, CPAMP monitoring returned nonzero 24h cost; the probe showed
+  `summary.total_cost = 4.144221850000001` and model-share costs for
+  `gpt-5.5` and `gpt-5.4`.
+- `cpa-usage-portal` health inside its container returned
+  `{"ok":true,"key_policy_state":true,"cpamp":true}`.
+- Admin proxy `http://127.0.0.1:8327/usage-admin/` returned `200` and contains
+  `CPA 用量管理`.
+- Admin API `http://127.0.0.1:8327/usage-admin/api/keys` returned `200`,
+  listed 4 keys, and exposed `5h`, `24h`, `7d`, and `month` windows with safe
+  previews only.
+- User API with a short-lived internal test session returned safe `/api/me`
+  limits/reset fields and nonzero Key Policy-derived usage for both `5h` and
+  `month` ranges. `/api/events?range=5h` returned safe accounting metadata
+  listing included windows.
+- Soft reset was tested on one 5H window: portal 5H usage went from
+  `0.9155539999999999` to `0.0` after writing the watermark. The test
+  watermark was then removed, and the 5H usage returned to
+  `0.9155539999999999`, proving CPAMP rows were not deleted.
+- Public `https://cpa.konbakuyomu.us/healthz` returned `200`.
+- Public `https://cpa-usage.konbakuyomu.us/` returned `200`.
+- `https://cpa-admin.konbakuyomu.us/usage-admin/` returned `302`, preserving
+  Cloudflare Access.
+- Public `https://cpa.konbakuyomu.us/admin/`,
+  `https://cpa.konbakuyomu.us/usage-admin/`, and
+  `https://cpa-usage.konbakuyomu.us/admin/` returned `404`.
+- Post-rollout disk remained tight: `/` was 9.6G total, 8.9G used, about 670M
+  available, 94% used. No Docker prune or broad filesystem cleanup was used.
+
+Known notes:
+
+- `docker compose up -d cpa` pulled the current `eceasy/cli-proxy-api:latest`
+  because of the existing compose/image policy. This consumed about 69M of
+  root disk. No prune or bulk cleanup was performed.
+- CPAMP global Model Prices affect CPAMP analytics after CPAMP reload. The
+  self-service portal still recomputes user-facing costs from Key Policy
+  prices as a safety overlay.
+- The first version only displays and soft-resets local quota windows. It does
+  not hard-block production CPA requests.

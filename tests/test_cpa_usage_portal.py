@@ -16,7 +16,9 @@ from starlette.testclient import TestClient
 from cpa_usage_portal.app import create_app
 from cpa_usage_portal.budget import suggest_equal_budget
 from cpa_usage_portal.config import PortalConfig
+from cpa_usage_portal.cpamp import range_window
 from cpa_usage_portal.key_policy import KeyPolicyState
+from cpa_usage_portal.quota_state import QuotaState
 from cpa_usage_portal.redaction import redact, safe_event
 from cpa_usage_portal.retention import enforce_usage_retention
 from cpa_usage_portal.security import (
@@ -95,7 +97,7 @@ class FakeCPAMP:
                     {
                         "event_hash": "evt-a",
                         "request_id": "req-a",
-                        "timestamp_ms": 1800000000000,
+                        "timestamp_ms": window.to_ms - 1000,
                         "api_key_hash": api_key_hash,
                         "model": "gpt-5.5",
                         "failed": False,
@@ -110,7 +112,7 @@ class FakeCPAMP:
                     {
                         "event_hash": "evt-b",
                         "request_id": "req-b",
-                        "timestamp_ms": 1800000001000,
+                        "timestamp_ms": window.to_ms - 500,
                         "api_key_hash": self.other_hash,
                         "model": "gpt-5.5",
                         "failed": True,
@@ -142,9 +144,9 @@ def write_state(path: Path, raw_key: str, disabled_key: str) -> tuple[str, str, 
                                 "alias": "gpt-5.5",
                                 "provider": "codex",
                                 "target_model": "gpt-5.5",
-                                "input_price_per_million": 125,
-                                "output_price_per_million": 750,
-                                "cache_read_price_per_million": 12.5,
+                                "input_price_per_million": 5,
+                                "output_price_per_million": 30,
+                                "cache_read_price_per_million": 0.5,
                             }
                         ],
                         "daily_limit_usd": 5,
@@ -159,9 +161,9 @@ def write_state(path: Path, raw_key: str, disabled_key: str) -> tuple[str, str, 
                         "models": [
                             {
                                 "alias": "gpt-5.5",
-                                "input_price_per_million": 125,
-                                "output_price_per_million": 750,
-                                "cache_read_price_per_million": 12.5,
+                                "input_price_per_million": 5,
+                                "output_price_per_million": 30,
+                                "cache_read_price_per_million": 0.5,
                             }
                         ],
                     },
@@ -203,9 +205,9 @@ def test_key_policy_and_budget(tmp: Path) -> None:
           str(record.models if record else None))
     check("key policy parses per-model prices",
           record is not None
-          and record.model_prices["gpt-5.5"].input_per_million == 125
-          and record.model_prices["gpt-5.5"].output_per_million == 750
-          and record.model_prices["gpt-5.5"].cache_read_per_million == 12.5,
+          and record.model_prices["gpt-5.5"].input_per_million == 5
+          and record.model_prices["gpt-5.5"].output_per_million == 30
+          and record.model_prices["gpt-5.5"].cache_read_per_million == 0.5,
           str(record.model_prices if record else None))
     check("key policy safe dict exposes limits",
           record is not None
@@ -307,11 +309,28 @@ def test_retention(tmp: Path) -> None:
     check("retention deletes old rows", result.deleted == 1 and count == 1, str(result))
 
 
+def test_quota_state(tmp: Path) -> None:
+    quota = QuotaState(tmp / "quota.sqlite")
+    limits = quota.get_limits("alice-key")
+    check("quota state defaults empty", limits.five_hour_usd is None and limits.monthly_usd is None)
+    updated = quota.set_limits("alice-key", five_hour_usd=1.5, monthly_usd=20, actor="tester")
+    check("quota state stores local limits", updated.five_hour_usd == 1.5 and updated.monthly_usd == 20)
+    points = quota.reset("alice-key", window="5h", actor="tester", reset_at_ms=1_800_000_000_000)
+    check("quota state stores reset watermark", points["5h"] == 1_800_000_000_000, str(points))
+    window, reset_at = quota.effective_window("alice-key", "5h", now_ms_value=1_800_000_100_000)
+    check("quota state applies reset watermark",
+          reset_at == 1_800_000_000_000 and window.from_ms == 1_800_000_000_000,
+          str((window, reset_at)))
+    month = range_window("month", now_ms_value=1_783_108_800_000)
+    check("range window supports month", month.from_ms < month.to_ms)
+
+
 def test_app_routes(tmp: Path) -> None:
     key_hash, cpamp_hash, other_raw_hash = write_state(tmp / "state.json", "cpa_live", "cpa_disabled")
     other_hash = sha256_hex("other-policy-id")
     cfg = PortalConfig(
         key_policy_state_path=str(tmp / "state.json"),
+        local_state_db_path=str(tmp / "quota.sqlite"),
         cpamp_admin_key="cpamp_test",
         session_secret="session_secret",
         cookie_secure=False,
@@ -324,6 +343,11 @@ def test_app_routes(tmp: Path) -> None:
         check("portal healthz ok", health.status_code == 200 and health.json().get("ok") is True)
         html = client.get("/")
         check("portal dashboard html ok", html.status_code == 200 and "CPA 用量自助页" in html.text)
+        admin_public = client.get("/admin/")
+        check("portal admin hidden without proxy header", admin_public.status_code == 404)
+        admin_html = client.get("/admin/", headers={"x-usage-admin": "1"})
+        check("portal admin dashboard html ok", admin_html.status_code == 200 and "CPA 用量管理" in admin_html.text)
+        check("portal admin supports usage-admin mount", "API_BASE" in admin_html.text and "/usage-admin" in admin_html.text)
         check("portal dashboard refresh reconnects stream", "startStream({ force: true })" in html.text)
         check("portal dashboard revives after background", "visibilitychange" in html.text)
         check("portal dashboard shows refresh animation", "is-loading" in html.text and "stream warn" in html.text)
@@ -333,6 +357,34 @@ def test_app_routes(tmp: Path) -> None:
         check("portal dashboard applies selected range to events",
               "api(`/api/events?range=${encodeURIComponent(range)}&limit=100`)" in html.text
               and "当前显示" in html.text)
+        check("portal dashboard supports 5h and month ranges",
+              '<option value="5h">5 小时</option>' in html.text
+              and '<option value="month">本月</option>' in html.text)
+
+        admin_keys = client.get("/admin/api/keys", headers={"x-usage-admin": "1"})
+        admin_body = admin_keys.json()
+        check("portal admin lists quota windows",
+              admin_keys.status_code == 200
+              and {"5h", "24h", "7d", "month"}.issubset(set(admin_body["keys"][0]["usage_windows"].keys())),
+              str(admin_body))
+        limits_update = client.put(
+            "/admin/api/keys/alice-key/limits",
+            headers={"x-usage-admin": "1"},
+            json={"five_hour_usd": 1.25, "monthly_usd": 20},
+        )
+        check("portal admin updates local limits",
+              limits_update.status_code == 200
+              and limits_update.json()["me"]["limits"]["five_hour_usd"] == 1.25
+              and limits_update.json()["me"]["limits"]["monthly_usd"] == 20,
+              limits_update.text)
+        reset = client.post(
+            "/admin/api/keys/alice-key/reset",
+            headers={"x-usage-admin": "1"},
+            json={"window": "5h"},
+        )
+        check("portal admin soft resets window", reset.status_code == 200 and reset.json()["reset_points"]["5h"], reset.text)
+        fake.seen_hashes.clear()
+        fake.seen_windows.clear()
 
         bad = client.post("/api/session", json={"api_key": "nope"})
         check("portal rejects unknown key", bad.status_code == 401)
@@ -345,6 +397,11 @@ def test_app_routes(tmp: Path) -> None:
 
         me = client.get("/api/me")
         check("portal me ok", me.status_code == 200 and me.json()["me"]["name"] == "Alice", me.text)
+        check("portal me exposes local limits and reset points",
+              me.json()["me"]["limits"]["five_hour_usd"] == 1.25
+              and me.json()["me"]["limits"]["monthly_usd"] == 20
+              and me.json()["me"]["reset_points"]["5h"],
+              me.text)
         usage = client.get("/api/usage?range=24h")
         usage_body = usage.json()
         check("portal usage ok", usage.status_code == 200 and usage_body["summary"]["total_calls"] == 2)
@@ -370,6 +427,14 @@ def test_app_routes(tmp: Path) -> None:
         check("portal events recompute cost from key policy prices",
               body["events"][0]["cost"] > 0 and body["events"][0]["cost_source"] == "key_policy",
               str(body))
+        check("portal events include accounting windows",
+              "accounting" in body["events"][0]
+              and "24h" in body["events"][0]["accounting"]["included_windows"],
+              str(body))
+        month_usage = client.get("/api/usage?range=month")
+        check("portal usage supports month range",
+              month_usage.status_code == 200 and month_usage.json()["range"] == "month",
+              month_usage.text)
         check("portal never returns full raw api hash", key_hash not in json.dumps(body), str(body))
         check("portal does not use disabled raw hash", other_raw_hash not in json.dumps(body), str(body))
         check("portal cpamp filter used policy-id hash",
@@ -383,6 +448,8 @@ def main() -> None:
     test_redaction_and_safe_event()
     with tempfile.TemporaryDirectory() as d:
         test_retention(Path(d))
+    with tempfile.TemporaryDirectory() as d:
+        test_quota_state(Path(d))
     with tempfile.TemporaryDirectory() as d:
         test_app_routes(Path(d))
 
