@@ -343,3 +343,36 @@ Diagnosed cpa-usage login loops caused by stale path-specific Key Policy Plus se
 ### Next Steps
 
 - None - task complete
+
+
+## Session 11: Retire Key Policy Plus session limits
+
+**Date**: 2026-07-03
+**Task**: Retire Key Policy Plus session limits
+**Branch**: `main`
+
+### Summary
+
+Retired Key Policy+ request concurrency and Codex active-window enforcement, added hard delete for keys, unified Usage/Governor chip styling, documented the RPM-only and hard-delete contracts, deployed to SJC, and cleaned disabled production keys.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `30fa42b` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

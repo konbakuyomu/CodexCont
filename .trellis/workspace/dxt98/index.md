@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 10
-- **Last Active**: 2026-07-02
+- **Total Sessions**: 11
+- **Last Active**: 2026-07-03
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~345 | Active |
+| `journal-1.md` | ~378 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 11 | 2026-07-03 | Retire Key Policy Plus session limits | `30fa42b` | `main` |
 | 10 | 2026-07-02 | Key Policy Plus session cookie hotfix | `793b4ae`, `a5ddecb` | `main` |
 | 9 | 2026-07-02 | CPA Key Policy Plus UX stability | `57aadff` | `main` |
 | 8 | 2026-07-02 | CPA Key Policy Plus admin fixes | `4c6613b` | `main` |
