@@ -405,6 +405,46 @@ func TestSessionInvalidatedWhenKeyHashChanges(t *testing.T) {
 	}
 }
 
+func TestSessionCookiePathCompatibility(t *testing.T) {
+	setupTestState(t)
+	raw, err := userSession(managementRequest{Headers: http.Header{"X-CPA-Key-Policy-Plus-Key": []string{"cpa_alice_secret"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var env envelope
+	if err := json.Unmarshal(raw, &env); err != nil {
+		t.Fatal(err)
+	}
+	var resp managementResponse
+	if err := json.Unmarshal(env.Result, &resp); err != nil {
+		t.Fatal(err)
+	}
+	cookies := resp.Headers.Values("Set-Cookie")
+	for _, want := range []string{
+		"Path=/;",
+		"Path=/v0/resource/plugins/cpa-key-policy-plus/user;",
+		"Path=/key-policy-plus-user;",
+	} {
+		if !strings.Contains(strings.Join(cookies, "\n"), want) {
+			t.Fatalf("session response should set compatible cookie path %s: %#v", want, cookies)
+		}
+	}
+	valid := ""
+	for _, rawCookie := range cookies {
+		if strings.Contains(rawCookie, "Path=/;") {
+			valid = strings.SplitN(rawCookie, ";", 2)[0]
+			break
+		}
+	}
+	if valid == "" {
+		t.Fatalf("root session cookie not found: %#v", cookies)
+	}
+	staleFirst := "cpa_key_policy_plus_session=stale-invalid-token; " + valid
+	if _, ok := keyFromSession(managementRequest{Headers: http.Header{"Cookie": []string{staleFirst}}}); !ok {
+		t.Fatal("fresh session should resolve even when a stale path-specific cookie is sent first")
+	}
+}
+
 func authOK(t *testing.T, req frontendAuthRequest) bool {
 	t.Helper()
 	rawReq, _ := json.Marshal(req)

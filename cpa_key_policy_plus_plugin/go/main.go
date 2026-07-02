@@ -21,7 +21,10 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const pluginID = "cpa-key-policy-plus"
+const (
+	pluginID              = "cpa-key-policy-plus"
+	plusSessionCookieName = "cpa_key_policy_plus_session"
+)
 
 //go:embed assets/admin.html
 var adminHTMLTemplate string
@@ -1515,11 +1518,31 @@ func userSession(req managementRequest) ([]byte, error) {
 		Headers: http.Header{
 			"Content-Type":  []string{"application/json; charset=utf-8"},
 			"Cache-Control": []string{"no-store"},
-			"Set-Cookie":    []string{fmt.Sprintf("cpa_key_policy_plus_session=%s; Path=/; HttpOnly; SameSite=Lax; Max-Age=86400", token)},
+			"Set-Cookie":    userSessionSetCookies(token),
 		},
 		Body: body,
 	}
 	return okEnvelope(resp)
+}
+
+func userSessionSetCookies(token string) []string {
+	paths := []string{
+		"/",
+		"/v0/resource/plugins/cpa-key-policy-plus/user",
+		"/key-policy-plus-user",
+	}
+	out := make([]string, 0, len(paths))
+	for _, path := range paths {
+		out = append(out, (&http.Cookie{
+			Name:     plusSessionCookieName,
+			Value:    token,
+			Path:     path,
+			HttpOnly: true,
+			SameSite: http.SameSiteLaxMode,
+			MaxAge:   int(policyplus.SessionTTL().Seconds()),
+		}).String())
+	}
+	return out
 }
 
 func userSubmittedKey(req managementRequest) string {
@@ -1905,21 +1928,33 @@ func forwardHostStream(targetStreamID string, sourceStreamID string) {
 
 func keyFromSession(req managementRequest) (policyplus.KeyRecord, bool) {
 	_ = refreshKeyPolicyState(false)
-	cookie := headerFirst(req.Headers, "Cookie")
-	token := ""
-	for _, part := range strings.Split(cookie, ";") {
-		part = strings.TrimSpace(part)
-		if strings.HasPrefix(part, "cpa_key_policy_plus_session=") {
-			token = strings.TrimPrefix(part, "cpa_key_policy_plus_session=")
-			break
-		}
-		if strings.HasPrefix(part, "cpa_governor_session=") {
-			token = strings.TrimPrefix(part, "cpa_governor_session=")
-			break
+	tokens := sessionTokensFromCookie(headerFirst(req.Headers, "Cookie"))
+	cfg := loadedConfig()
+	for _, token := range tokens {
+		if key, ok := keyFromSessionToken(token, cfg.SessionSecret); ok {
+			return key, true
 		}
 	}
-	cfg := loadedConfig()
-	payload, ok := policyplus.VerifySession(token, cfg.SessionSecret, time.Now())
+	return policyplus.KeyRecord{}, false
+}
+
+func sessionTokensFromCookie(cookie string) []string {
+	var tokens []string
+	for _, part := range strings.Split(cookie, ";") {
+		part = strings.TrimSpace(part)
+		if strings.HasPrefix(part, plusSessionCookieName+"=") {
+			tokens = append(tokens, strings.TrimPrefix(part, plusSessionCookieName+"="))
+			continue
+		}
+		if strings.HasPrefix(part, "cpa_governor_session=") {
+			tokens = append(tokens, strings.TrimPrefix(part, "cpa_governor_session="))
+		}
+	}
+	return tokens
+}
+
+func keyFromSessionToken(token string, secret string) (policyplus.KeyRecord, bool) {
+	payload, ok := policyplus.VerifySession(token, secret, time.Now())
 	if !ok {
 		return policyplus.KeyRecord{}, false
 	}
