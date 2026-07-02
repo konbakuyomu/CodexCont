@@ -276,3 +276,36 @@ Fixed Key Policy+ admin create/save/reset transport, added model discovery and s
 ### Next Steps
 
 - None - task complete
+
+
+## Session 9: CPA Key Policy Plus UX stability
+
+**Date**: 2026-07-02
+**Task**: CPA Key Policy Plus UX stability
+**Branch**: `main`
+
+### Summary
+
+Stabilized CPA Key Policy+ admin and user UX, added archive/restore lifecycle, improved user refresh error recovery, deployed the linux/amd64 plugin to SJC, and verified cpa-usage production login, refresh, tabs, and route boundaries.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `57aadff` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
