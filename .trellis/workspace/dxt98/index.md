@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 7
+- **Total Sessions**: 8
 - **Last Active**: 2026-07-02
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~245 | Active |
+| `journal-1.md` | ~278 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 8 | 2026-07-02 | CPA Key Policy Plus admin fixes | `4c6613b` | `main` |
 | 7 | 2026-07-02 | CPA Key Policy Plus cutover | `160af51` | `main` |
 | 6 | 2026-07-02 | CPA Governor and CodexCont engine rollout | `429bed5`, `d9047c8`, `50e77d0`, `69e429e` | `main` |
 | 5 | 2026-07-02 | CPA usage request detail closeout | `432ca38` | `main` |

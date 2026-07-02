@@ -243,3 +243,36 @@ Implemented and deployed cpa-key-policy-plus as the unified cpa_ key authority, 
 ### Next Steps
 
 - None - task complete
+
+
+## Session 8: CPA Key Policy Plus admin fixes
+
+**Date**: 2026-07-02
+**Task**: CPA Key Policy Plus admin fixes
+**Branch**: `main`
+
+### Summary
+
+Fixed Key Policy+ admin create/save/reset transport, added model discovery and structured model/price editing, deployed the linux/amd64 plugin to SJC, added admin proxy management alias, and verified local/server smoke tests.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `4c6613b` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
