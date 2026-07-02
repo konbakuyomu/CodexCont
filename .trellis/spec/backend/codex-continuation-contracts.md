@@ -458,6 +458,11 @@ credential, while CPAMP remains admin-only.
 - User route: `https://cpa-usage.konbakuyomu.us/`.
 - User API session creation is GET-only on CPA resource routes and sends the
   raw user key in `X-CPA-Key-Policy-Plus-Key`; do not put the key in the URL.
+- User session cookie name: `cpa_key_policy_plus_session`. Session creation
+  must refresh compatible cookies for `/`,
+  `/v0/resource/plugins/cpa-key-policy-plus/user`, and
+  `/key-policy-plus-user` so stale path-specific cookies from earlier routes
+  do not survive a successful login.
 
 ### 3. Contracts
 - Plus is the ordinary `cpa_...` key authority after cutover. The old
@@ -470,6 +475,11 @@ credential, while CPAMP remains admin-only.
 - Plus must never store or return raw API keys, Authorization headers, full key
   hashes, cookies, request bodies, response bodies, OAuth tokens, or encrypted
   reasoning content.
+- User session validation must tolerate multiple cookies with the same
+  `cpa_key_policy_plus_session` name. Browsers may send both a stale
+  path-specific cookie and a fresh root cookie for plugin resource API paths;
+  the backend must try every candidate session token and accept the first valid
+  one instead of failing on the first invalid token.
 - CPA plugin `ResourceRoute` is GET-only in the current host. The Plus admin
   HTML may be served from a resource route, but create/save/reset mutations
   must go through `/key-policy-plus/api/*` -> CPA management routes. Do not
@@ -513,6 +523,9 @@ credential, while CPAMP remains admin-only.
 - Old Key Policy enabled alongside Plus exclusive auth -> ordinary key
   authority is ambiguous; disable old Key Policy before accepting cutover.
 - Valid full `cpa_...` key -> `/v1/models` and user session login succeed.
+- Valid full `cpa_...` key plus a stale same-name path-specific session cookie
+  -> user session login and `/user/api/me` still succeed; stale cookies must
+  not create a persistent `not_authenticated` loop after a successful login.
 - Shortened key preview or rotated full key -> login fails; only the full key
   shown at create/rotation can match the stored hash.
 - Disabled/disallowed/over-RPM/over-concurrency/over-quota request -> CPA
@@ -538,6 +551,10 @@ credential, while CPAMP remains admin-only.
 - Good: CPA logs show Governor plus `cpa-key-policy-plus` loaded, Plus DB has
   imported keys, `cpa-usage` login works with a current full key, and
   `/v1/responses` still succeeds through the known-good CodexCont sidecar.
+- Good: A browser with an old
+  `Path=/v0/resource/plugins/cpa-key-policy-plus/user` session cookie can log
+  in again; the new response refreshes all compatible paths and `/api/me`
+  accepts the fresh token even if the stale token is sent first.
 - Base: A key has no usage yet. User login still shows key metadata, configured
   models, prices, and empty usage tables.
 - Good: The admin page is a resource HTML page, while its mutations use
@@ -559,6 +576,10 @@ credential, while CPAMP remains admin-only.
   audit, rolling/natural-month quota windows, soft reset, and cost projection.
 - Go unit: admin/user HTML resources are `no-store`, user login uses
   `X-CPA-Key-Policy-Plus-Key`, and responses do not leak raw keys/full hashes.
+- Go unit: user session creation sets `cpa_key_policy_plus_session` cookies on
+  the root path and known user-resource aliases, and session lookup succeeds
+  when a stale same-name cookie appears before a fresh valid cookie in the
+  `Cookie` header.
 - Go unit: user events and CodexCont summaries are filtered to the current key.
 - Go unit: admin HTML points mutations at `/key-policy-plus/api`, model
   normalization preserves unknown configured models, and create/save/reset
@@ -608,6 +629,25 @@ admin proxy -> /v0/management/plugins/cpa-key-policy-plus/keys/create
 
 The admin proxy injects the CPA management key from a mounted secret or process
 environment, and the public API host still blocks `/key-policy-plus*`.
+
+#### Wrong
+```text
+Cookie: cpa_key_policy_plus_session=stale-path-token; cpa_key_policy_plus_session=fresh-root-token
+backend -> verify only the first same-name cookie -> 401 not_authenticated
+```
+
+Browser cookie path precedence can put an older path-specific cookie before the
+fresh root cookie on plugin resource API requests, causing a login loop even
+after session creation succeeds.
+
+#### Correct
+```text
+session creation -> Set-Cookie for root and known plugin/user aliases
+session lookup -> collect all same-name session cookies -> accept first valid token
+```
+
+The backend must treat same-name cookies as a compatibility set, not as a
+single trusted value.
 
 Separate the key authority migration from the continuation-owner migration.
 
