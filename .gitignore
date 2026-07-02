@@ -26,3 +26,5 @@ legacy/
 artifacts/
 cpa_governor_plugin/dist/
 cpa_governor_plugin/go/*.sqlite*
+cpa_key_policy_plus_plugin/dist/
+cpa_key_policy_plus_plugin/go/*.sqlite*

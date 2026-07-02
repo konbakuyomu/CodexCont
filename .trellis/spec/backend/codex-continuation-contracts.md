@@ -418,6 +418,134 @@ admin -> Key Policy creates cpa_... key -> user uses cpa_... for Codex and usage
 The `cpa_...` key is both the request credential and the self-service usage
 credential, while CPAMP remains admin-only.
 
+## Scenario: CPA Key Policy Plus unified key authority
+
+### 1. Scope / Trigger
+- Trigger this spec whenever work touches `cpa_key_policy_plus_plugin/`, the
+  `cpa-key-policy-plus` CPA plugin config, `cpa-usage.konbakuyomu.us`, per-key
+  quota windows, active Codex window limits, or migration from the old
+  `cpa-key-policy` plugin.
+- This is cross-layer work: CPA dynamic plugin loading, old Key Policy JSON
+  import, Plus SQLite state, Caddy public/admin routing, user cookies, and
+  CodexCont/Governor deployment boundaries must agree.
+
+### 2. Signatures
+- CPA plugin artifact:
+  `/CLIProxyAPI/plugins/linux/amd64/cpa-key-policy-plus.so`.
+- CPA plugin config:
+  `plugins.configs.cpa-key-policy-plus` with `enabled`, `priority`,
+  `exclusive_auth`, `state_db_path`, `key_policy_state_path`,
+  `legacy_quota_db_path`, `governor_state_db_path`, `session_secret`,
+  `codexcont_enabled`, `codexcont_route`, `codexcont_url`, and `fail_mode`.
+- SQLite tables owned by Plus: `keys`, `usage_events`, `reset_watermarks`,
+  `active_requests`, `active_sessions`, `audit_log`, `codexcont_summaries`,
+  and `settings`.
+- Admin resource: `GET /v0/resource/plugins/cpa-key-policy-plus/admin`.
+- User resource: `GET /v0/resource/plugins/cpa-key-policy-plus/user`.
+- Admin convenience route:
+  `https://cpa-admin.konbakuyomu.us/key-policy-plus/`.
+- User route: `https://cpa-usage.konbakuyomu.us/`.
+- User API session creation is GET-only on CPA resource routes and sends the
+  raw user key in `X-CPA-Key-Policy-Plus-Key`; do not put the key in the URL.
+
+### 3. Contracts
+- Plus is the ordinary `cpa_...` key authority after cutover. The old
+  `cpa-key-policy` plugin must be disabled in config; old state is imported by
+  hash/name/preview/model/RPM/limit/price fields so current full keys continue
+  to work.
+- Plus may load old Key Policy JSON and legacy Governor/usage-admin SQLite
+  watermarks, but after cutover it owns all per-key limits, prices, resets,
+  user sessions, and user usage projections.
+- Plus must never store or return raw API keys, Authorization headers, full key
+  hashes, cookies, request bodies, response bodies, OAuth tokens, or encrypted
+  reasoning content.
+- `5h`, `24h`, and `7d` are rolling USD windows. `month` is the current
+  Asia/Shanghai calendar month. Reset writes a soft watermark and does not
+  delete historical `usage_events`.
+- `max_active_sessions` limits active Codex windows, not request frequency.
+  Session identity priority is `X-Codex-Window-Id`,
+  `client_metadata.x-codex-window-id`,
+  `X-Codex-Turn-Metadata.window_id/prompt_cache_key`, body
+  `prompt_cache_key`, `Session_id` / `X-Session-ID`, then
+  `conversation_id`. Sessions expire after 30 idle minutes.
+- Missing session identity is allowed in v1 and audited; do not reject it
+  because that would incorrectly block clients that do not expose a stable
+  window id.
+- `exclusive_auth: true` lets Plus participate in CPA frontend auth. In the
+  current CPA host, policy rejection may be surfaced as CPA's generic `401`
+  `Missing API key` response because `frontendAuth` returns unauthenticated.
+  Treat that as an expected wrapper unless CPA adds typed auth-denial payloads.
+- Keep the public `/v1/responses -> CodexCont sidecar -> CPA` route until
+  Governor has a verified executor-level continuation supervisor. Enabling Plus
+  is not by itself approval to route public `/v1/responses` directly to CPA.
+- `cpa-admin.konbakuyomu.us/usage-admin/` must no longer serve stale local
+  limit controls after Plus cutover; return `404` or redirect to the Plus admin
+  page.
+
+### 4. Validation & Error Matrix
+- Plus plugin missing/wrong architecture -> CPA logs do not show
+  `plugin loaded plugin_id=cpa-key-policy-plus`; deployment is not accepted.
+- Old Key Policy enabled alongside Plus exclusive auth -> ordinary key
+  authority is ambiguous; disable old Key Policy before accepting cutover.
+- Valid full `cpa_...` key -> `/v1/models` and user session login succeed.
+- Shortened key preview or rotated full key -> login fails; only the full key
+  shown at create/rotation can match the stored hash.
+- Disabled/disallowed/over-RPM/over-concurrency/over-quota request -> CPA
+  rejects before upstream execution. The public sidecar route may still touch
+  CodexCont during migration, but CPA must not execute the upstream provider.
+- Missing session id -> request is allowed and `missing_session_identity` is
+  recorded in audit.
+- `cpa-usage.konbakuyomu.us` exposes only the user resource and user APIs.
+- Public `cpa.konbakuyomu.us/v0/resource/plugins/*`, `/usage-admin*`,
+  `/codexcont*`, `/governor*`, `/management*`, and `/admin*` -> `404`.
+
+### 5. Good/Base/Bad Cases
+- Good: CPA logs show Governor plus `cpa-key-policy-plus` loaded, Plus DB has
+  imported keys, `cpa-usage` login works with a current full key, and
+  `/v1/responses` still succeeds through the known-good CodexCont sidecar.
+- Base: A key has no usage yet. User login still shows key metadata, configured
+  models, prices, and empty usage tables.
+- Bad: `cpa-usage` still reads `cpa_usage_portal` SQLite as the authority after
+  Plus is enabled. That preserves the split-brain limit problem.
+- Bad: Caddy is changed to route public `/v1/responses` directly to CPA before
+  executor-level folding exists. That bypasses the current 516/518n-2
+  mitigation.
+
+### 6. Tests Required
+- Go unit: old state import, Plus-native key preservation, raw-key hash login,
+  rotation invalidation, negative value validation, model allowlist, RPM,
+  request concurrency, active-session limits, 30-minute expiry, missing-session
+  audit, rolling/natural-month quota windows, soft reset, and cost projection.
+- Go unit: admin/user HTML resources are `no-store`, user login uses
+  `X-CPA-Key-Policy-Plus-Key`, and responses do not leak raw keys/full hashes.
+- Go unit: user events and CodexCont summaries are filtered to the current key.
+- Production smoke: plugin SHA256 matches the built artifact, CPA logs show
+  Plus loaded, Plus DB key count is nonzero, `cpa-usage` login works, admin
+  backend `/key-policy-plus/` works, `usage-admin` backend returns `404`, and
+  public blocked paths return `404`.
+- Production smoke: a tiny authenticated `/v1/responses` request succeeds
+  through the current sidecar route; do not claim CPA-first public routing until
+  a separate executor-level continuation test passes.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+```text
+Plus enabled -> immediately route public /v1/responses to CPA -> Governor
+```
+
+This treats key-policy cutover as continuation-engine cutover and can bypass
+the verified Python folding path.
+
+#### Correct
+```text
+Plus enabled as key/quota authority
+public /v1/responses -> CodexCont sidecar -> CPA
+future executor-level folding task -> then consider CPA-first public routing
+```
+
+Separate the key authority migration from the continuation-owner migration.
+
 ## Scenario: CPA Governor plugin and CodexCont Engine rollout
 
 ### 1. Scope / Trigger

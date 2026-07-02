@@ -1,0 +1,245 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>CPA Key Policy+</title>
+  <style>{{CSS}}</style>
+</head>
+<body>
+  <div class="shell">
+    <header class="topbar">
+      <div>
+        <h1>CPA Key Policy+</h1>
+        <p class="subtitle">统一管理用户 Key、模型权限、用量限额、并发和 Codex 窗口数</p>
+      </div>
+      <div class="toolbar">
+        <span id="sync" class="chip chip-muted"><span class="dot"></span>准备同步</span>
+        <button id="create" class="btn">新建 Key</button>
+        <button id="save" class="btn primary">保存全部</button>
+        <button id="refresh" class="btn">刷新</button>
+      </div>
+    </header>
+
+    <section class="metrics" id="metrics"></section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <div>
+          <h2>Key 策略</h2>
+          <p>5H/24H/7D 是滚动窗口，月限额按 Asia/Shanghai 自然月；清零是 soft reset，不删除历史明细。</p>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table class="data-table" id="keys-table">
+          <thead>
+            <tr>
+              <th>用户/Key</th>
+              <th>状态</th>
+              <th>RPM</th>
+              <th>请求并发</th>
+              <th>Codex窗口</th>
+              <th>5H</th>
+              <th>24H</th>
+              <th>7D</th>
+              <th>月</th>
+              <th>模型</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody id="keys-body">
+            <tr><td colspan="11" class="empty">加载中...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <div>
+          <h2>审计提示</h2>
+          <p>窗口数限制优先使用 Codex window/session 信号；缺失信号时 v1 放行并记录告警，避免误封。</p>
+        </div>
+      </div>
+      <pre id="raw" class="logbox"></pre>
+    </section>
+  </div>
+
+<script>
+const API = location.pathname.startsWith("/key-policy-plus")
+  ? "/key-policy-plus/api"
+  : "/v0/resource/plugins/cpa-key-policy-plus/admin/api";
+const state = {keys: [], dirty: false};
+const $ = id => document.getElementById(id);
+
+function setSync(text, cls="info"){
+  $("sync").className = "chip " + cls;
+  $("sync").innerHTML = `<span class="dot"></span>${text}`;
+}
+async function api(path, opts={}){
+  const r = await fetch(API + path, {cache:"no-store", credentials:"same-origin", ...opts});
+  const d = await r.json();
+  if (!d.ok) throw new Error(d.message || d.error || "request_failed");
+  return d;
+}
+function money(v){
+  if (v === null || v === undefined || v === "") return "";
+  const n = Number(v);
+  return Number.isFinite(n) && n > 0 ? n.toFixed(3) : "";
+}
+function num(v){ const n = Number(v || 0); return Number.isFinite(n) ? n : 0; }
+function limit(k, name){
+  const l = k.limits || {};
+  if (name === "5h") return l.five_hour_usd;
+  if (name === "24h") return l.daily_usd;
+  if (name === "7d") return l.weekly_usd;
+  return l.monthly_usd;
+}
+function modelsText(k){ return (k.models || []).join(", "); }
+function pricesJSON(k){
+  const prices = k.pricing && k.pricing.models ? k.pricing.models : {};
+  return JSON.stringify(prices, null, 0);
+}
+function renderMetrics(){
+  const total = state.keys.length;
+  const enabled = state.keys.filter(k => k.enabled).length;
+  const limited = state.keys.filter(k => num(k.max_active_sessions) > 0).length;
+  const cost = state.keys.reduce((s,k) => s + Number(k.usage?.["24h"] || 0), 0);
+  $("metrics").innerHTML = `
+    <article class="metric"><div class="label">Key 总数</div><div class="value">${total}</div><div class="hint">已启用 ${enabled}</div></article>
+    <article class="metric"><div class="label">窗口限制</div><div class="value">${limited}</div><div class="hint">30 分钟空闲释放</div></article>
+    <article class="metric"><div class="label">24H 费用</div><div class="value">$${cost.toFixed(3)}</div><div class="hint">按当前价格估算</div></article>
+    <article class="metric"><div class="label">清零策略</div><div class="value">Soft</div><div class="hint">不删除历史事件</div></article>`;
+}
+function render(){
+  renderMetrics();
+  const body = $("keys-body");
+  if (!state.keys.length) {
+    body.innerHTML = `<tr><td colspan="11" class="empty">暂无 Key</td></tr>`;
+    return;
+  }
+  body.innerHTML = state.keys.map(k => `
+    <tr data-id="${k.id}">
+      <td class="key-cell">
+        <input data-field="name" value="${escapeHTML(k.name || "")}">
+        <div class="muted">${escapeHTML(k.preview || k.id || "")}</div>
+      </td>
+      <td><label class="check"><input data-field="enabled" type="checkbox" ${k.enabled ? "checked" : ""}>启用</label></td>
+      <td><input class="narrow" data-field="rpm" type="number" min="0" value="${num(k.rpm)}"></td>
+      <td><input class="narrow" data-field="concurrency" type="number" min="0" value="${num(k.concurrency)}"></td>
+      <td><input class="narrow" data-field="max_active_sessions" type="number" min="0" value="${num(k.max_active_sessions)}"></td>
+      <td><input class="narrow" data-limit="five_hour_usd" type="number" min="0" step="0.001" value="${money(limit(k,"5h"))}"></td>
+      <td><input class="narrow" data-limit="daily_usd" type="number" min="0" step="0.001" value="${money(limit(k,"24h"))}"></td>
+      <td><input class="narrow" data-limit="weekly_usd" type="number" min="0" step="0.001" value="${money(limit(k,"7d"))}"></td>
+      <td><input class="narrow" data-limit="monthly_usd" type="number" min="0" step="0.001" value="${money(limit(k,"month"))}"></td>
+      <td><textarea data-field="models">${escapeHTML(modelsText(k))}</textarea><textarea data-field="prices">${escapeHTML(pricesJSON(k))}</textarea></td>
+      <td class="actions">
+        <button class="btn mini" data-reset="5h">清5H</button>
+        <button class="btn mini" data-reset="24h">清24H</button>
+        <button class="btn mini" data-reset="7d">清7D</button>
+        <button class="btn mini" data-reset="month">清月</button>
+      </td>
+    </tr>`).join("");
+}
+function escapeHTML(s){
+  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+function readRows(){
+  return [...document.querySelectorAll("tr[data-id]")].map(row => {
+    const id = row.dataset.id;
+    const field = name => row.querySelector(`[data-field="${name}"]`);
+    const lim = name => row.querySelector(`[data-limit="${name}"]`);
+    let prices = {};
+    const rawPrices = field("prices").value.trim();
+    if (rawPrices) prices = JSON.parse(rawPrices);
+    const numberOrNull = el => {
+      const raw = el.value.trim();
+      if (raw === "") return null;
+      const n = Number(raw);
+      if (!Number.isFinite(n) || n < 0) throw new Error("限额/数字字段不能为负或非法");
+      return n;
+    };
+    return {
+      id,
+      name: field("name").value.trim(),
+      enabled: field("enabled").checked,
+      rpm: Number(field("rpm").value || 0),
+      concurrency: Number(field("concurrency").value || 0),
+      max_active_sessions: Number(field("max_active_sessions").value || 0),
+      models: field("models").value.split(",").map(s => s.trim()).filter(Boolean),
+      prices,
+      five_hour_usd: numberOrNull(lim("five_hour_usd")),
+      daily_usd: numberOrNull(lim("daily_usd")),
+      weekly_usd: numberOrNull(lim("weekly_usd")),
+      monthly_usd: numberOrNull(lim("monthly_usd"))
+    };
+  });
+}
+async function refresh(){
+  try {
+    setSync("同步中", "warn");
+    const data = await api("/keys?ts=" + Date.now());
+    state.keys = data.keys || [];
+    $("raw").textContent = JSON.stringify({keys: state.keys.map(k => ({id:k.id, preview:k.preview, usage:k.usage}))}, null, 2);
+    render();
+    state.dirty = false;
+    setSync("刚刚更新", "ok");
+  } catch (e) {
+    setSync("同步失败", "bad");
+    $("raw").textContent = e.message;
+  }
+}
+async function saveAll(){
+  try {
+    setSync("保存中", "warn");
+    const keys = readRows();
+    const data = await api("/keys/save", {
+      method: "PUT",
+      headers: {"Content-Type":"application/json"},
+      body: JSON.stringify({keys})
+    });
+    state.keys = data.keys || [];
+    render();
+    setSync("已保存", "ok");
+  } catch (e) {
+    setSync("保存失败", "bad");
+    alert(e.message);
+  }
+}
+async function createKey(){
+  const name = prompt("新 Key 名称");
+  if (name === null) return;
+  const data = await api("/keys/create", {
+    method: "POST",
+    headers: {"Content-Type":"application/json"},
+    body: JSON.stringify({name})
+  });
+  await refresh();
+  alert("请立即保存这个完整 Key，关闭后无法找回：\n\n" + data.raw_key);
+}
+async function resetKey(id, windowName){
+  if (!confirm(`确认清零 ${id} 的 ${windowName} 统计？`)) return;
+  await api("/keys/reset", {
+    method: "POST",
+    headers: {"Content-Type":"application/json"},
+    body: JSON.stringify({id, window: windowName})
+  });
+  await refresh();
+}
+document.addEventListener("input", e => {
+  if (e.target.matches("input,textarea")) {
+    state.dirty = true;
+    setSync("有未保存更改", "warn");
+  }
+});
+document.addEventListener("click", e => {
+  const reset = e.target.dataset.reset;
+  if (reset) resetKey(e.target.closest("tr").dataset.id, reset);
+});
+$("refresh").onclick = refresh;
+$("save").onclick = saveAll;
+$("create").onclick = createKey;
+refresh();
+</script>
+</body>
+</html>
