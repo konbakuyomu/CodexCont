@@ -309,3 +309,37 @@ Stabilized CPA Key Policy+ admin and user UX, added archive/restore lifecycle, i
 ### Next Steps
 
 - None - task complete
+
+
+## Session 10: Key Policy Plus session cookie hotfix
+
+**Date**: 2026-07-02
+**Task**: Key Policy Plus session cookie hotfix
+**Branch**: `main`
+
+### Summary
+
+Diagnosed cpa-usage login loops caused by stale path-specific Key Policy Plus session cookies; deployed a plugin hotfix that refreshes compatible cookie paths and accepts the first valid same-name session token; captured the cookie-path contract in backend spec.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `793b4ae` | (see git log) |
+| `a5ddecb` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
