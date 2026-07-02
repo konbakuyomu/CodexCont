@@ -210,3 +210,36 @@ Built and deployed the CPA Governor plugin in passive mode, added the CodexCont 
 ### Next Steps
 
 - None - task complete
+
+
+## Session 7: CPA Key Policy Plus cutover
+
+**Date**: 2026-07-02
+**Task**: CPA Key Policy Plus cutover
+**Branch**: `main`
+
+### Summary
+
+Implemented and deployed cpa-key-policy-plus as the unified cpa_ key authority, migrated limits/state, retired usage-admin backend, verified cpa-usage login/API/UI, and kept public /v1/responses on the known-good CodexCont sidecar until executor-level folding is ready.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `160af51` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
