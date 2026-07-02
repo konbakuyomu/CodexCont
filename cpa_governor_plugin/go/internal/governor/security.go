@@ -7,13 +7,46 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"regexp"
 	"strings"
 	"time"
 )
 
 func SHA256Hex(value string) string {
-	sum := sha256.Sum256([]byte(strings.TrimSpace(value)))
+	sum := sha256.Sum256([]byte(NormalizeSubmittedKey(value)))
 	return hex.EncodeToString(sum[:])
+}
+
+var bearerPrefixPattern = regexp.MustCompile(`(?i)^\s*(authorization\s*:\s*)?(bearer\s+)+`)
+
+// NormalizeSubmittedKey accepts the common clipboard shapes users paste into
+// the self-service portal, while keeping hashing deterministic.
+func NormalizeSubmittedKey(value string) string {
+	text := strings.TrimSpace(value)
+	text = bearerPrefixPattern.ReplaceAllString(text, "")
+	return strings.TrimSpace(text)
+}
+
+type SubmittedKeyHint struct {
+	Error   string
+	Message string
+}
+
+func ExplainUnmatchedSubmittedKey(value string) SubmittedKeyHint {
+	key := NormalizeSubmittedKey(value)
+	lower := strings.ToLower(key)
+	switch {
+	case key == "":
+		return SubmittedKeyHint{Error: "missing_api_key", Message: "请粘贴完整的 cpa_ 开头用户 Key。"}
+	case strings.HasPrefix(lower, "sk-") || strings.HasPrefix(lower, "sk_"):
+		return SubmittedKeyHint{Error: "native_cpa_key_not_supported", Message: "这是 CPA 原生 sk Key，不能登录用量自助页。请使用 Key Policy 创建时弹窗里的完整 cpa_ 用户 Key。"}
+	case strings.Contains(key, "...") || strings.Contains(key, "…"):
+		return SubmittedKeyHint{Error: "key_preview_not_usable", Message: "你粘贴的是缩略预览，不是完整 Key。Key Policy 创建或轮换时弹窗里的完整 cpa_ Key 才能登录。"}
+	case !strings.HasPrefix(lower, "cpa_"):
+		return SubmittedKeyHint{Error: "unsupported_key_format", Message: "用量自助页只接受 Key Policy 的完整 cpa_ 用户 Key。"}
+	default:
+		return SubmittedKeyHint{Error: "invalid_api_key", Message: "这个 cpa_ Key 没有匹配到当前 Key Policy 记录。请确认粘贴的是创建时弹窗里的完整 Key，且该 Key 未被轮换。"}
+	}
 }
 
 func NormalizeHash(value string) (string, error) {

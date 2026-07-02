@@ -438,10 +438,19 @@ credential, while CPAMP remains admin-only.
 - `cpa-usage.konbakuyomu.us` may expose only the Governor user page and
   `.../user/api/*`; it must return 404 for Governor admin resources and other
   management paths.
+- CPA plugin `ResourceRoute` dispatch is GET-only in the current CPA host.
+  User self-service APIs under `/v0/resource/plugins/cpa-governor/user/api/*`
+  must therefore use GET requests, including session creation with the raw key
+  passed in the `Authorization` header. Do not put the key in the URL, and do
+  not implement user-resource mutations as POST unless they move behind a
+  management route or another authenticated proxy surface.
 - `cpa-admin.konbakuyomu.us/governor/` is protected by Cloudflare Access and
   may route through the local admin proxy to CPA's plugin resource endpoint.
 - Do not put CPA management keys, API keys, OAuth tokens, cookies, or
   encrypted reasoning into Caddy rewrites, browser URLs, Trellis docs, or git.
+- The Governor user portal must explain key identity clearly: Key Policy
+  `cpa_...` full keys are accepted, native CPA `sk...` keys and shortened
+  previews are rejected with human-readable messages.
 - When updating the plugin binary, record the SHA256 and verify CPA logs show
   the plugin loaded and registered from the platform directory.
 - Dense admin/user tables on mobile must keep a stable minimum table width
@@ -464,6 +473,14 @@ credential, while CPAMP remains admin-only.
   returns 200 -> rollback user-host route before accepting the rollout.
 - User API without session -> `401`; invalid CPA user key -> `401
   invalid_api_key`.
+- User session with a native `sk...` key -> `401
+  native_cpa_key_not_supported` and a message telling the user to use the full
+  Key Policy `cpa_...` key.
+- User session with a shortened `cpa_...` preview -> `401
+  key_preview_not_usable` and a message telling the user to use the full key
+  shown at create/rotation time.
+- `POST` to a user resource API -> CPA returns `404` before the plugin; the
+  browser UI must call these resource APIs with GET.
 - Mobile Playwright snapshot shows table columns narrower than practical text
   width or vertical labels -> add panel overflow/min-width and revalidate.
 

@@ -866,16 +866,18 @@ func adminCodexCont(req managementRequest) ([]byte, error) {
 }
 
 func userSession(req managementRequest) ([]byte, error) {
-	key := bearer(req.Headers.Get("Authorization"))
+	key := governor.NormalizeSubmittedKey(bearer(req.Headers.Get("Authorization")))
 	if key == "" {
-		return jsonResponse(http.StatusUnauthorized, map[string]any{"ok": false, "error": "missing_api_key"})
+		hint := governor.ExplainUnmatchedSubmittedKey(key)
+		return jsonResponse(http.StatusUnauthorized, map[string]any{"ok": false, "error": hint.Error, "message": hint.Message})
 	}
 	record, ok := findKeyByRaw(key)
 	if !ok {
-		return jsonResponse(http.StatusUnauthorized, map[string]any{"ok": false, "error": "invalid_api_key"})
+		hint := governor.ExplainUnmatchedSubmittedKey(key)
+		return jsonResponse(http.StatusUnauthorized, map[string]any{"ok": false, "error": hint.Error, "message": hint.Message})
 	}
 	if !record.Enabled {
-		return jsonResponse(http.StatusForbidden, map[string]any{"ok": false, "error": "api_key_disabled"})
+		return jsonResponse(http.StatusForbidden, map[string]any{"ok": false, "error": "api_key_disabled", "message": "这个 Key 当前已禁用，请联系管理员。"})
 	}
 	cfg := loadedConfig()
 	token, err := governor.SignSession(governor.SessionPayload{
@@ -893,8 +895,8 @@ func userSession(req managementRequest) ([]byte, error) {
 	resp := managementResponse{
 		StatusCode: http.StatusOK,
 		Headers: http.Header{
-			"content-type": []string{"application/json; charset=utf-8"},
-			"set-cookie":   []string{fmt.Sprintf("cpa_governor_session=%s; Path=/; HttpOnly; SameSite=Lax; Max-Age=86400", token)},
+			"Content-Type": []string{"application/json; charset=utf-8"},
+			"Set-Cookie":   []string{fmt.Sprintf("cpa_governor_session=%s; Path=/; HttpOnly; SameSite=Lax; Max-Age=86400", token)},
 		},
 		Body: body,
 	}
@@ -1175,7 +1177,7 @@ func callHost(method string, payload any) (json.RawMessage, error) {
 }
 
 func adminHTML() string {
-	return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>CPA Governor</title><style>` + sharedCSS() + `</style></head><body><main class="shell"><header class="top"><div><h1>CPA Governor 管理</h1><p>统一管理 Key、限额、请求明细与 CodexCont 状态</p></div><div class="toolbar"><span id="live" class="pulse">实时轮询</span><button id="refresh">刷新</button></div></header><section class="grid" id="cards"></section><section class="panel"><div class="tabs"><button data-tab="keys" class="active">Key 管理</button><button data-tab="events">请求明细</button><button data-tab="codex">CodexCont</button></div><div id="content">加载中...</div></section></main><script>
+	return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>CPA Governor</title><style>` + sharedCSS() + `</style></head><body><main class="shell"><header class="top"><div><h1>CPA Governor 管理</h1><p>这是 CPA 插件里的同一个管理页；CPAMP 左侧的 CPA Governor 与 /governor/ 入口显示的是同一套数据。</p></div><div class="toolbar"><span id="live" class="pulse">实时轮询</span><button id="refresh">刷新</button></div></header><section class="panel notice">建议日常从 CPAMP 左侧菜单进入；/governor/ 只是给管理员排障用的直达入口，不是另一套系统。</section><section class="grid" id="cards"></section><section class="panel"><div class="tabs"><button data-tab="keys" class="active">Key 管理</button><button data-tab="events">请求明细</button><button data-tab="codex">CodexCont</button></div><div id="content">加载中...</div></section></main><script>
 const API=location.pathname.startsWith('/governor')?'/governor/api':'/v0/resource/plugins/cpa-governor/admin/api';
 let tab='keys', snapshot={keys:[],codexcont:{}};
 async function j(path, opts={}){const r=await fetch(API+path,{cache:'no-store',...opts});return r.json();}
@@ -1193,11 +1195,12 @@ refresh.onclick=load; load(); setInterval(load, 2000);
 }
 
 func userHTML() string {
-	return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>CPA 用量</title><style>` + sharedCSS() + `</style></head><body><main class="shell"><header class="top"><div><h1>CPA 用量自助页</h1><p>查看自己的额度、请求明细和思维链保护状态</p></div><div class="toolbar"><span class="pulse">实时轮询</span><button id="refresh" hidden>刷新</button></div></header><section class="panel" id="login"><input id="key" type="password" placeholder="粘贴你的 CPA Key"><button id="loginBtn">登录</button><p id="err"></p></section><section class="grid" id="cards" hidden></section><section class="panel" id="main" hidden><div class="tabs"><button data-tab="usage" class="active">额度与用量</button><button data-tab="codex">思维链保护</button><button data-tab="events">请求明细</button></div><div id="content"></div></section></main><script>
+	return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>CPA 用量</title><style>` + sharedCSS() + `</style></head><body><main class="shell"><header class="top"><div><h1>CPA 用量自助页</h1><p>查看自己的额度、请求明细和思维链保护状态</p></div><div class="toolbar"><span class="pulse">实时轮询</span><button id="refresh" hidden>刷新</button></div></header><section class="panel" id="login"><input id="key" type="password" autocomplete="off" spellcheck="false" placeholder="粘贴完整 cpa_ 用户 Key"><button id="loginBtn">登录</button><p class="hint">请使用 Key Policy 创建时弹窗里的完整 cpa_ Key；不是 CPA 原生 sk Key，也不是列表里的缩略预览。</p><p id="err"></p></section><section class="grid" id="cards" hidden></section><section class="panel" id="main" hidden><div class="tabs"><button data-tab="usage" class="active">额度与用量</button><button data-tab="codex">思维链保护</button><button data-tab="events">请求明细</button></div><div id="content"></div></section></main><script>
 const BASE=location.pathname.startsWith('/governor-user')?'/governor-user':'/v0/resource/plugins/cpa-governor';
 let tab='usage', me=null, events=[];
 async function api(path,opts={}){const r=await fetch(BASE+path,{cache:'no-store',...opts});return r.json();}
-loginBtn.onclick=async()=>{const r=await fetch(BASE+'/user/api/session',{headers:{Authorization:'Bearer '+key.value},cache:'no-store'});const d=await r.json(); if(!d.ok){err.textContent='登录失败：'+d.error;return} login.hidden=true; cards.hidden=false; main.hidden=false; refresh.hidden=false; load();}
+function enteredKey(){return key.value.trim().replace(/^authorization\s*:\s*/i,'').replace(/^(bearer\s+)+/i,'').trim()}
+loginBtn.onclick=async()=>{err.textContent='';const r=await fetch(BASE+'/user/api/session',{headers:{Authorization:'Bearer '+enteredKey()},cache:'no-store'});const d=await r.json(); if(!d.ok){err.textContent='登录失败：'+(d.message||d.error);return} login.hidden=true; cards.hidden=false; main.hidden=false; refresh.hidden=false; load();}
 function money(v){return v==null?'未设':('$'+Number(v).toFixed(3))}
 function num(v){return Number(v||0).toLocaleString()}
 function renderCards(k){cards.innerHTML='<article><b>'+k.name+'</b><span>'+k.preview+'</span></article><article><b>'+money(k.limits.five_hour_usd)+'</b><span>5H 限额</span></article><article><b>'+money(k.limits.daily_usd)+'</b><span>日限</span></article><article><b>'+money(k.limits.weekly_usd)+'</b><span>周限</span></article><article><b>'+money(k.limits.monthly_usd)+'</b><span>月限</span></article>'}
@@ -1211,5 +1214,5 @@ refresh.onclick=load; setInterval(()=>{if(!main.hidden)load()},2000);
 }
 
 func sharedCSS() string {
-	return `:root{color-scheme:dark;--bg:#0b1020;--panel:#111827;--panel2:#0f172a;--line:#243047;--text:#e5e7eb;--muted:#94a3b8;--brand:#38bdf8;--ok:#22c55e;--bad:#fb7185;--warn:#fbbf24}*{box-sizing:border-box}body{margin:0;background:linear-gradient(180deg,#0b1020,#111827);color:var(--text);font:14px/1.5 ui-sans-serif,system-ui,Segoe UI,Arial}.shell{max-width:1180px;margin:0 auto;padding:24px}.top{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:18px}.top h1{margin:0;font-size:24px}.top p{margin:4px 0 0;color:var(--muted)}.toolbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap}button{border:1px solid var(--line);background:#172033;color:var(--text);border-radius:8px;padding:9px 13px;cursor:pointer}button:hover{border-color:var(--brand)}.spin{animation:spin .8s linear infinite}.pulse{color:var(--ok);animation:pulse 1.4s ease-in-out infinite}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:14px}.grid article,.panel{background:rgba(17,24,39,.92);border:1px solid var(--line);border-radius:10px;box-shadow:0 12px 32px rgba(0,0,0,.25)}.grid article{padding:14px}.grid b{display:block;font-size:22px}.grid span,small{display:block;color:var(--muted);overflow-wrap:anywhere}.panel{padding:16px}.tabs{display:flex;gap:8px;margin-bottom:14px}.tabs .active{background:#0e7490;border-color:#38bdf8}table{width:100%;border-collapse:collapse;table-layout:fixed}th,td{border-bottom:1px solid var(--line);padding:10px;text-align:left;vertical-align:top;white-space:normal;overflow-wrap:break-word}th{color:#cbd5e1;font-size:12px;text-transform:uppercase}.chip{display:inline-block;border-radius:999px;padding:2px 8px;background:#334155}.chip.ok{color:#86efac}.chip.bad{color:#fecdd3}.chip.warn{color:#fde68a}.detail{background:#0f172a;border:1px solid var(--line);border-radius:8px;padding:14px}.detail h2{font-size:18px;margin:0 0 10px}.detail dl{display:grid;grid-template-columns:140px 1fr;gap:8px 12px}.detail dt{color:#94a3b8}.detail dd{margin:0;overflow-wrap:anywhere}input{width:min(520px,100%);padding:11px;border-radius:8px;border:1px solid var(--line);background:#0b1220;color:var(--text);margin-right:8px}@keyframes spin{to{transform:rotate(360deg)}}@keyframes pulse{0%,100%{opacity:.55}50%{opacity:1}}@media(max-width:620px){.shell{padding:14px}.top{align-items:flex-start;flex-direction:column}.panel{overflow-x:auto}table{min-width:860px;font-size:12px}th,td{padding:8px;white-space:normal;overflow-wrap:break-word}.tabs{min-width:max-content;overflow:auto}.detail dl{grid-template-columns:1fr}}`
+	return `:root{color-scheme:dark;--bg:#0b1020;--panel:#111827;--panel2:#0f172a;--line:#243047;--text:#e5e7eb;--muted:#94a3b8;--brand:#38bdf8;--ok:#22c55e;--bad:#fb7185;--warn:#fbbf24}*{box-sizing:border-box}body{margin:0;background:linear-gradient(180deg,#0b1020,#111827);color:var(--text);font:14px/1.5 ui-sans-serif,system-ui,Segoe UI,Arial}.shell{max-width:1180px;margin:0 auto;padding:24px}.top{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:18px}.top h1{margin:0;font-size:24px}.top p{margin:4px 0 0;color:var(--muted)}.toolbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap}button{border:1px solid var(--line);background:#172033;color:var(--text);border-radius:8px;padding:9px 13px;cursor:pointer}button:hover{border-color:var(--brand)}.spin{animation:spin .8s linear infinite}.pulse{color:var(--ok);animation:pulse 1.4s ease-in-out infinite}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:14px}.grid article,.panel{background:rgba(17,24,39,.92);border:1px solid var(--line);border-radius:10px;box-shadow:0 12px 32px rgba(0,0,0,.25)}.grid article{padding:14px}.grid b{display:block;font-size:22px}.grid span,small{display:block;color:var(--muted);overflow-wrap:anywhere}.panel{padding:16px}.notice{margin-bottom:14px;color:#cbd5e1;background:rgba(15,23,42,.96)}.hint{margin:10px 0 0;color:var(--muted)}#err{color:#fecdd3}.tabs{display:flex;gap:8px;margin-bottom:14px}.tabs .active{background:#0e7490;border-color:#38bdf8}table{width:100%;border-collapse:collapse;table-layout:fixed}th,td{border-bottom:1px solid var(--line);padding:10px;text-align:left;vertical-align:top;white-space:normal;overflow-wrap:break-word}th{color:#cbd5e1;font-size:12px;text-transform:uppercase}.chip{display:inline-block;border-radius:999px;padding:2px 8px;background:#334155}.chip.ok{color:#86efac}.chip.bad{color:#fecdd3}.chip.warn{color:#fde68a}.detail{background:#0f172a;border:1px solid var(--line);border-radius:8px;padding:14px}.detail h2{font-size:18px;margin:0 0 10px}.detail dl{display:grid;grid-template-columns:140px 1fr;gap:8px 12px}.detail dt{color:#94a3b8}.detail dd{margin:0;overflow-wrap:anywhere}input{width:min(520px,100%);padding:11px;border-radius:8px;border:1px solid var(--line);background:#0b1220;color:var(--text);margin-right:8px}@keyframes spin{to{transform:rotate(360deg)}}@keyframes pulse{0%,100%{opacity:.55}50%{opacity:1}}@media(max-width:620px){.shell{padding:14px}.top{align-items:flex-start;flex-direction:column}.panel{overflow-x:auto}table{min-width:860px;font-size:12px}th,td{padding:8px;white-space:normal;overflow-wrap:break-word}.tabs{min-width:max-content;overflow:auto}.detail dl{grid-template-columns:1fr}}`
 }

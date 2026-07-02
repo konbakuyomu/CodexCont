@@ -160,6 +160,9 @@ func TestSecurityAndRedaction(t *testing.T) {
 	if hash != SHA256Hex(strings.TrimSpace(raw)) {
 		t.Fatal("SHA256Hex should trim raw keys")
 	}
+	if hash != SHA256Hex("Bearer cpa_live") || hash != SHA256Hex("Authorization: Bearer cpa_live") {
+		t.Fatal("SHA256Hex should normalize pasted bearer prefixes")
+	}
 	token, err := SignSession(SessionPayload{KeyID: "alice", KeyHash: "sha256:" + hash, ExpiresAt: time.Now().Add(time.Hour).Unix()}, "secret")
 	if err != nil {
 		t.Fatal(err)
@@ -174,5 +177,30 @@ func TestSecurityAndRedaction(t *testing.T) {
 	brief := Brief("Authorization: Bearer secret and api_key=abc", 200)
 	if strings.Contains(brief, "secret") || strings.Contains(brief, "abc") {
 		t.Fatalf("secret leaked in brief: %s", brief)
+	}
+}
+
+func TestSubmittedKeyHints(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		code string
+	}{
+		{name: "missing", in: " ", code: "missing_api_key"},
+		{name: "native", in: "sk-abc", code: "native_cpa_key_not_supported"},
+		{name: "preview", in: "cpa_abcd...efgh", code: "key_preview_not_usable"},
+		{name: "unsupported", in: "abc", code: "unsupported_key_format"},
+		{name: "full cpa", in: "Bearer cpa_live", code: "invalid_api_key"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			hint := ExplainUnmatchedSubmittedKey(tc.in)
+			if hint.Error != tc.code || hint.Message == "" {
+				t.Fatalf("hint = %#v", hint)
+			}
+		})
+	}
+	if got := NormalizeSubmittedKey("Authorization: Bearer Bearer cpa_live "); got != "cpa_live" {
+		t.Fatalf("normalized key = %q", got)
 	}
 }

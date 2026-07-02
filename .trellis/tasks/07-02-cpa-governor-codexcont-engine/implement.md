@@ -66,6 +66,16 @@
   - Local SSH tunnel to admin proxy showed Governor admin page, Key management, request details, and CodexCont tabs render.
   - Mobile 390px viewport initially exposed compressed table columns; fixed by giving tables a mobile minimum width inside an overflowed panel.
   - Re-validated mobile: Key table no longer collapses into vertical text; user page opens on `https://cpa-usage.konbakuyomu.us/`.
+- Follow-up fix on 2026-07-02:
+  - User report: `cpa-usage.konbakuyomu.us` returned `invalid_api_key` for native `sk...` / newly created keys, and `cpa-admin.konbakuyomu.us/governor/` looked like a duplicate of the CPAMP sidebar `CPA Governor`.
+  - Evidence: Key Policy state on SJC updated and Governor saw 4 keys through `127.0.0.1:8327/governor/api/keys`, so the main issue was not missing state sync. Native CPA `sk...` keys are not valid user-portal credentials; the portal expects the full Key Policy `cpa_...` key.
+  - Root cause found during smoke: CPA plugin `ResourceRoute` dispatch is GET-only. `GET /v0/resource/plugins/cpa-governor/user/api/session` entered the plugin and returned the new Chinese error body, while `POST` returned `404` before the plugin. The frontend now uses GET plus `Authorization` header; keys are not placed in URLs.
+  - UX fix: user portal now normalizes pasted `Authorization: Bearer ...` / `Bearer ...` shapes and returns clear Chinese messages for native `sk...` keys, shortened previews, unsupported formats, disabled keys, and unmatched full `cpa_...` keys.
+  - UX fix: Governor admin page now states that CPAMP sidebar `CPA Governor` and `/governor/` are the same plugin page; `/governor/` is only a direct/debug entrypoint.
+  - Built linux/amd64 plugin SHA256 `103c63a4f151c47cda932855cee2b5d4d6fe8bbe203460be0b20cbef9cd6351d`; backed up previous plugin to `/root/cpa-governor-plugin-backup-20260702-093207`; uploaded only the `.so` and restarted only `cpa`.
+  - SJC verification: CPA loaded and registered Governor from `/CLIProxyAPI/plugins/linux/amd64/cpa-governor.so`; `https://cpa.konbakuyomu.us/healthz` returned `200`; authenticated `/v1/models` returned `200`; Governor API returned `ok=true`, `keys=4`, `codexcont.health_ok=true`, `route=false`; public API admin/plugin paths still returned `404`; root disk remained tight at about `629M` free.
+  - Playwright verification: `https://cpa-usage.konbakuyomu.us/` displayed the new full-`cpa_` helper text; clicking login with `sk-test` issued `GET /v0/resource/plugins/cpa-governor/user/api/session` and rendered `登录失败：这是 CPA 原生 sk Key，不能登录用量自助页。请使用 Key Policy 创建时弹窗里的完整 cpa_ 用户 Key。`
+  - Local checks after fix: `go test ./...` in `cpa_governor_plugin/go`; `.venv\Scripts\python.exe -m compileall middleware cpa_usage_portal run.py run_usage_portal.py`; scoped `git diff --check`.
 
 ## Residual risk / next cutover gate
 

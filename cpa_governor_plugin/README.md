@@ -78,3 +78,18 @@ The first SJC rollout uses the plugin as the unified UI and usage surface:
 The public API host must keep plugin/admin paths blocked. The user host should
 only expose the Governor user resource and user APIs; the admin resource must
 return 404 there.
+
+## User Key Login
+
+The user page accepts the full Key Policy `cpa_...` key. Native CPA `sk...`
+keys and shortened previews are rejected with explanatory messages because they
+are not the quota-managed user identity in this deployment.
+
+CPA plugin resource routes are GET-only in the current host. The user login
+request therefore calls `/user/api/session` with `GET` and passes the key only
+through the `Authorization` header. Do not put user keys in query strings.
+
+The CPAMP sidebar entry named `CPA Governor` and the direct
+`https://cpa-admin.konbakuyomu.us/governor/` route are the same admin page.
+Prefer the CPAMP sidebar for normal administration; the direct route is a
+convenience/debug entrypoint, not a second system.

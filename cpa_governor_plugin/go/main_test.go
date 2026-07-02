@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -70,6 +71,13 @@ func unwrapEnvelope(t *testing.T, raw []byte, out any) {
 	if err := json.Unmarshal(env.Result, out); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func unwrapManagementResponse(t *testing.T, raw []byte) managementResponse {
+	t.Helper()
+	var resp managementResponse
+	unwrapEnvelope(t, raw, &resp)
+	return resp
 }
 
 func TestPluginRegistrationUsesLocalABI(t *testing.T) {
@@ -163,6 +171,73 @@ func TestFrontendAuthAcceptsManagedKeyAndRejectsDisallowedModel(t *testing.T) {
 	unwrapEnvelope(t, raw, &resp)
 	if resp.Authenticated {
 		t.Fatalf("disallowed model authenticated: %#v", resp)
+	}
+}
+
+func TestUserSessionNormalizesPastedBearerKey(t *testing.T) {
+	configureTestState(t)
+	raw, err := userSession(managementRequest{
+		Headers: http.Header{"Authorization": []string{"Bearer Authorization: Bearer Bearer cpa_live "}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp := unwrapManagementResponse(t, raw)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d body=%s", resp.StatusCode, string(resp.Body))
+	}
+	if got := resp.Headers.Get("set-cookie"); got == "" {
+		t.Fatal("session cookie was not set")
+	}
+	var body map[string]any
+	if err := json.Unmarshal(resp.Body, &body); err != nil {
+		t.Fatal(err)
+	}
+	if body["ok"] != true {
+		t.Fatalf("body = %#v", body)
+	}
+}
+
+func TestUserSessionExplainsNativeAndPreviewKeys(t *testing.T) {
+	configureTestState(t)
+	cases := []struct {
+		name string
+		key  string
+		code string
+	}{
+		{name: "native sk", key: "sk-test", code: "native_cpa_key_not_supported"},
+		{name: "preview", key: "cpa_abcd...efgh", code: "key_preview_not_usable"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			raw, err := userSession(managementRequest{
+				Headers: http.Header{"Authorization": []string{"Bearer " + tc.key}},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			resp := unwrapManagementResponse(t, raw)
+			if resp.StatusCode != http.StatusUnauthorized {
+				t.Fatalf("status = %d body=%s", resp.StatusCode, string(resp.Body))
+			}
+			var body map[string]any
+			if err := json.Unmarshal(resp.Body, &body); err != nil {
+				t.Fatal(err)
+			}
+			if body["error"] != tc.code || body["message"] == "" {
+				t.Fatalf("body = %#v", body)
+			}
+		})
+	}
+}
+
+func TestUserHTMLSessionUsesGETResourceRoute(t *testing.T) {
+	html := userHTML()
+	if !strings.Contains(html, "fetch(BASE+'/user/api/session',{headers:") {
+		t.Fatal("user login should call the GET-only resource route without a POST method")
+	}
+	if strings.Contains(strings.ToLower(html), "method:'post'") || strings.Contains(strings.ToLower(html), `method:"post"`) {
+		t.Fatal("CPA resource routes are GET-only; user login must not use POST")
 	}
 }
 
