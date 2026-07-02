@@ -84,6 +84,10 @@
   - Tests: added Go regression coverage for dedicated-header precedence over `Authorization`, case-insensitive header lookup, and no-store session responses. `go test ./...` passed in `cpa_governor_plugin/go`; scoped `git diff --check` passed.
   - Built linux/amd64 plugin SHA256 `efa1133a896b0cac58777b0477f2cc6bd38ccc65a3c58b95ca9bdb9babb78ea6`; backed up previous plugin to `/root/cpa-governor-nostore-hotfix-20260702-114432`; uploaded only the `.so` and restarted only `cpa`.
   - SJC verification: CPA loaded and registered Governor after restart; `https://cpa.konbakuyomu.us/healthz` returned `200`; `https://cpa-usage.konbakuyomu.us/` returned `200` with `Cache-Control: no-store`; public API plugin path and user-host admin path returned `404`; unauthenticated user API returned `401`; valid current key login via both user host and admin proxy returned `200`; stale QQ key returned `401 invalid_api_key`. Root disk remained tight at about `515M` free.
+- Final closeout on 2026-07-02:
+  - User confirmed the previously reported Governor / CPA Usage login problems were fixed.
+  - Experience retained in code-spec: CPAMP embedded plugin pages must not rely on `Authorization` for user-key login because admin shells may own that header; Key Policy rotation means only the newly generated full `cpa_...` key can match the current `key_hash`, while old full keys and list previews must fail safely.
+  - Task accepted as complete in passive Governor mode. Remaining executor-level CodexCont cutover stays explicitly documented as a future gate, not part of this closeout.
 
 ## Residual risk / next cutover gate
 
