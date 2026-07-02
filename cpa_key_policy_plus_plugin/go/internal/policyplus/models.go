@@ -17,6 +17,15 @@ type ModelPrice struct {
 	CacheCreationPerMillion float64 `json:"cache_creation_per_million"`
 }
 
+type ModelOption struct {
+	ID          string `json:"id"`
+	DisplayName string `json:"display_name,omitempty"`
+	Type        string `json:"type,omitempty"`
+	OwnedBy     string `json:"owned_by,omitempty"`
+	Source      string `json:"source,omitempty"`
+	Known       bool   `json:"known"`
+}
+
 type KeyRecord struct {
 	ID                string                `json:"id"`
 	Name              string                `json:"name"`
@@ -213,6 +222,182 @@ func parseModels(items []any) []string {
 		}
 	}
 	return out
+}
+
+func ModelOptionsFromIDs(ids []string, source string, known bool) []ModelOption {
+	out := make([]ModelOption, 0, len(ids))
+	seen := map[string]bool{}
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		key := strings.ToLower(id)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, ModelOption{ID: id, DisplayName: id, Source: source, Known: known})
+	}
+	return out
+}
+
+func NormalizeModelOptions(data any, source string) []ModelOption {
+	items := modelOptionItems(data)
+	out := make([]ModelOption, 0, len(items))
+	seen := map[string]bool{}
+	for _, item := range items {
+		option, ok := parseModelOption(item, source)
+		if !ok {
+			continue
+		}
+		key := strings.ToLower(option.ID)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, option)
+	}
+	return out
+}
+
+func MergeModelOptions(groups ...[]ModelOption) []ModelOption {
+	out := []ModelOption{}
+	byID := map[string]int{}
+	for _, group := range groups {
+		for _, item := range group {
+			item.ID = strings.TrimSpace(item.ID)
+			if item.ID == "" {
+				continue
+			}
+			if strings.TrimSpace(item.DisplayName) == "" {
+				item.DisplayName = item.ID
+			}
+			key := strings.ToLower(item.ID)
+			if idx, ok := byID[key]; ok {
+				existing := out[idx]
+				if existing.DisplayName == existing.ID && item.DisplayName != "" {
+					existing.DisplayName = item.DisplayName
+				}
+				if existing.Type == "" {
+					existing.Type = item.Type
+				}
+				if existing.OwnedBy == "" {
+					existing.OwnedBy = item.OwnedBy
+				}
+				if existing.Source == "" {
+					existing.Source = item.Source
+				}
+				existing.Known = existing.Known || item.Known
+				out[idx] = existing
+				continue
+			}
+			byID[key] = len(out)
+			out = append(out, item)
+		}
+	}
+	return out
+}
+
+func modelOptionItems(data any) []any {
+	switch v := data.(type) {
+	case nil:
+		return nil
+	case []any:
+		return v
+	case []string:
+		out := make([]any, len(v))
+		for i := range v {
+			out[i] = v[i]
+		}
+		return out
+	case []ModelOption:
+		out := make([]any, len(v))
+		for i := range v {
+			out[i] = v[i]
+		}
+		return out
+	case map[string]any:
+		for _, name := range []string{"models", "data", "items", "result"} {
+			if raw, ok := v[name]; ok {
+				if items := modelOptionItems(raw); len(items) > 0 {
+					return items
+				}
+			}
+		}
+		out := make([]any, 0, len(v))
+		for id, raw := range v {
+			if m, ok := raw.(map[string]any); ok {
+				if _, hasID := m["id"]; !hasID {
+					m["id"] = id
+				}
+				out = append(out, m)
+				continue
+			}
+			out = append(out, id)
+		}
+		return out
+	default:
+		text := strings.TrimSpace(toString(v))
+		if text == "" {
+			return nil
+		}
+		return []any{text}
+	}
+}
+
+func parseModelOption(item any, source string) (ModelOption, bool) {
+	switch v := item.(type) {
+	case ModelOption:
+		v.ID = strings.TrimSpace(v.ID)
+		if v.ID == "" {
+			return ModelOption{}, false
+		}
+		if strings.TrimSpace(v.DisplayName) == "" {
+			v.DisplayName = v.ID
+		}
+		if v.Source == "" {
+			v.Source = source
+		}
+		return v, true
+	case string:
+		id := strings.TrimSpace(v)
+		if id == "" {
+			return ModelOption{}, false
+		}
+		return ModelOption{ID: id, DisplayName: id, Source: source, Known: true}, true
+	case map[string]any:
+		id := modelName(v)
+		if id == "" {
+			return ModelOption{}, false
+		}
+		display := firstString(v, "display_name", "displayName", "label", "name")
+		if display == "" {
+			display = id
+		}
+		known, hasKnown := firstBool(v, "known")
+		if !hasKnown {
+			known = true
+		}
+		src := firstString(v, "source")
+		if src == "" {
+			src = source
+		}
+		return ModelOption{
+			ID:          id,
+			DisplayName: display,
+			Type:        firstString(v, "type", "object"),
+			OwnedBy:     firstString(v, "owned_by", "ownedBy", "provider"),
+			Source:      src,
+			Known:       known,
+		}, true
+	default:
+		id := strings.TrimSpace(toString(v))
+		if id == "" {
+			return ModelOption{}, false
+		}
+		return ModelOption{ID: id, DisplayName: id, Source: source, Known: true}, true
+	}
 }
 
 func parsePrices(raw map[string]any, modelItems []any) map[string]ModelPrice {

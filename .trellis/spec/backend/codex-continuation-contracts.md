@@ -441,9 +441,20 @@ credential, while CPAMP remains admin-only.
   `active_requests`, `active_sessions`, `audit_log`, `codexcont_summaries`,
   and `settings`.
 - Admin resource: `GET /v0/resource/plugins/cpa-key-policy-plus/admin`.
+- Admin management routes:
+  - `GET /v0/management/plugins/cpa-key-policy-plus/keys`
+  - `GET /v0/management/plugins/cpa-key-policy-plus/models`
+  - `POST /v0/management/plugins/cpa-key-policy-plus/keys/create`
+  - `PUT /v0/management/plugins/cpa-key-policy-plus/keys/save`
+  - `PUT /v0/management/plugins/cpa-key-policy-plus/keys/limits`
+  - `POST /v0/management/plugins/cpa-key-policy-plus/keys/reset`
 - User resource: `GET /v0/resource/plugins/cpa-key-policy-plus/user`.
 - Admin convenience route:
   `https://cpa-admin.konbakuyomu.us/key-policy-plus/`.
+- Admin API alias:
+  `https://cpa-admin.konbakuyomu.us/key-policy-plus/api/*` rewrites to the
+  corresponding Plus management route. This alias is admin-host only and must
+  not exist on `cpa.konbakuyomu.us`.
 - User route: `https://cpa-usage.konbakuyomu.us/`.
 - User API session creation is GET-only on CPA resource routes and sends the
   raw user key in `X-CPA-Key-Policy-Plus-Key`; do not put the key in the URL.
@@ -459,6 +470,20 @@ credential, while CPAMP remains admin-only.
 - Plus must never store or return raw API keys, Authorization headers, full key
   hashes, cookies, request bodies, response bodies, OAuth tokens, or encrypted
   reasoning content.
+- CPA plugin `ResourceRoute` is GET-only in the current host. The Plus admin
+  HTML may be served from a resource route, but create/save/reset mutations
+  must go through `/key-policy-plus/api/*` -> CPA management routes. Do not
+  send `POST` or `PUT` to `/v0/resource/plugins/cpa-key-policy-plus/admin/api/*`.
+- The admin proxy route for `/key-policy-plus/api/*` must inject the CPA
+  management key from a mounted secret or equivalent process environment; do
+  not commit the raw key to Caddyfile, Trellis docs, or git. CPAMP iframe
+  context must not be relied on to add an Authorization header for embedded
+  plugin HTML, because the plugin page owns its own `fetch()` calls.
+- The model catalog endpoint returns safe `ModelOption` projections only:
+  `id`, optional display metadata, `source`, and `known`. It may merge CPA host
+  model hints with already configured Plus models, but it must preserve unknown
+  configured models instead of deleting them when online discovery is empty or
+  stale.
 - `5h`, `24h`, and `7d` are rolling USD windows. `month` is the current
   Asia/Shanghai calendar month. Reset writes a soft watermark and does not
   delete historical `usage_events`.
@@ -495,9 +520,19 @@ credential, while CPAMP remains admin-only.
   CodexCont during migration, but CPA must not execute the upstream provider.
 - Missing session id -> request is allowed and `missing_session_identity` is
   recorded in audit.
+- `POST/PUT /v0/resource/plugins/cpa-key-policy-plus/admin/api/*` -> fails
+  before reaching plugin logic; this is a deployment/config bug if the admin
+  page depends on it.
+- `/key-policy-plus/api/*` without a working CPA management-key injection ->
+  `401 missing management key` or `invalid_admin_key`; deployment is not
+  accepted until the alias returns safe Plus JSON and create/save/reset work.
+- CPA/host model discovery unavailable -> `/models` still returns the union of
+  currently configured Plus model names and prices, with a warning instead of
+  stripping key allowlists.
 - `cpa-usage.konbakuyomu.us` exposes only the user resource and user APIs.
 - Public `cpa.konbakuyomu.us/v0/resource/plugins/*`, `/usage-admin*`,
-  `/codexcont*`, `/governor*`, `/management*`, and `/admin*` -> `404`.
+  `/codexcont*`, `/governor*`, `/management*`, `/key-policy-plus*`, and
+  `/admin*` -> `404`.
 
 ### 5. Good/Base/Bad Cases
 - Good: CPA logs show Governor plus `cpa-key-policy-plus` loaded, Plus DB has
@@ -505,8 +540,14 @@ credential, while CPAMP remains admin-only.
   `/v1/responses` still succeeds through the known-good CodexCont sidecar.
 - Base: A key has no usage yet. User login still shows key metadata, configured
   models, prices, and empty usage tables.
+- Good: The admin page is a resource HTML page, while its mutations use
+  `/key-policy-plus/api/*` and reach Plus management handlers with the CPA
+  management key injected by the admin proxy.
 - Bad: `cpa-usage` still reads `cpa_usage_portal` SQLite as the authority after
   Plus is enabled. That preserves the split-brain limit problem.
+- Bad: The Plus admin page tries to create keys through
+  `/v0/resource/plugins/cpa-key-policy-plus/admin/api/keys/create`. The current
+  CPA host treats ResourceRoute as GET-only, so writes fail before plugin code.
 - Bad: Caddy is changed to route public `/v1/responses` directly to CPA before
   executor-level folding exists. That bypasses the current 516/518n-2
   mitigation.
@@ -519,10 +560,17 @@ credential, while CPAMP remains admin-only.
 - Go unit: admin/user HTML resources are `no-store`, user login uses
   `X-CPA-Key-Policy-Plus-Key`, and responses do not leak raw keys/full hashes.
 - Go unit: user events and CodexCont summaries are filtered to the current key.
+- Go unit: admin HTML points mutations at `/key-policy-plus/api`, model
+  normalization preserves unknown configured models, and create/save/reset
+  through the admin alias persist settings.
+- Frontend/Playwright: Plus admin can create a key, select discovered models,
+  edit per-model prices, save, reload, and keep dense tables horizontally
+  scrollable on 390px without page-level overflow.
 - Production smoke: plugin SHA256 matches the built artifact, CPA logs show
   Plus loaded, Plus DB key count is nonzero, `cpa-usage` login works, admin
-  backend `/key-policy-plus/` works, `usage-admin` backend returns `404`, and
-  public blocked paths return `404`.
+  backend `/key-policy-plus/` and `/key-policy-plus/api/models` work, a
+  disabled smoke key can be created through `/key-policy-plus/api/keys/create`,
+  `usage-admin` backend returns `404`, and public blocked paths return `404`.
 - Production smoke: a tiny authenticated `/v1/responses` request succeeds
   through the current sidecar route; do not claim CPA-first public routing until
   a separate executor-level continuation test passes.
@@ -543,6 +591,23 @@ Plus enabled as key/quota authority
 public /v1/responses -> CodexCont sidecar -> CPA
 future executor-level folding task -> then consider CPA-first public routing
 ```
+
+#### Wrong
+```text
+admin HTML -> POST /v0/resource/plugins/cpa-key-policy-plus/admin/api/keys/create
+```
+
+This depends on a mutating ResourceRoute, but the current CPA host dispatches
+resource plugin routes as GET-only browser resources.
+
+#### Correct
+```text
+admin HTML -> /key-policy-plus/api/keys/create
+admin proxy -> /v0/management/plugins/cpa-key-policy-plus/keys/create
+```
+
+The admin proxy injects the CPA management key from a mounted secret or process
+environment, and the public API host still blocks `/key-policy-plus*`.
 
 Separate the key authority migration from the continuation-owner migration.
 

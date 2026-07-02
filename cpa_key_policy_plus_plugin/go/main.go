@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -296,11 +297,13 @@ func runPreviewIfRequested() {
 		w.WriteHeader(http.StatusNoContent)
 	})
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
 		rawReq, _ := json.Marshal(managementRequest{
 			Method:  r.Method,
 			Path:    r.URL.Path,
 			Headers: r.Header,
 			Query:   r.URL.Query(),
+			Body:    body,
 		})
 		rawResp, _ := managementHandle(rawReq)
 		var env envelope
@@ -920,6 +923,7 @@ func managementRegister() ([]byte, error) {
 	resp := managementRegistrationResponse{
 		Routes: []managementRoute{
 			{Method: http.MethodGet, Path: "/plugins/cpa-key-policy-plus/keys"},
+			{Method: http.MethodGet, Path: "/plugins/cpa-key-policy-plus/models"},
 			{Method: http.MethodPost, Path: "/plugins/cpa-key-policy-plus/keys/create"},
 			{Method: http.MethodPut, Path: "/plugins/cpa-key-policy-plus/keys/save"},
 			{Method: http.MethodPut, Path: "/plugins/cpa-key-policy-plus/keys/limits"},
@@ -931,6 +935,7 @@ func managementRegister() ([]byte, error) {
 		Resources: []resourceRoute{
 			{Path: "/admin", Menu: "CPA Key Policy+", Description: "Unified user key policy dashboard"},
 			{Path: "/admin/api/keys"},
+			{Path: "/admin/api/models"},
 			{Path: "/admin/api/keys/create"},
 			{Path: "/admin/api/keys/save"},
 			{Path: "/admin/api/keys/limits"},
@@ -961,6 +966,8 @@ func managementHandle(raw []byte) ([]byte, error) {
 		return managementHTML(userHTML())
 	case strings.HasSuffix(path, "/admin/api/keys"):
 		return adminKeys(req)
+	case strings.HasSuffix(path, "/admin/api/models"):
+		return adminModels(req)
 	case strings.HasSuffix(path, "/admin/api/keys/create"):
 		return adminCreateKey(req)
 	case strings.HasSuffix(path, "/admin/api/keys/save"):
@@ -985,6 +992,8 @@ func managementHandle(raw []byte) ([]byte, error) {
 		return userCodexCont(req)
 	case strings.HasSuffix(path, "/plugins/cpa-key-policy-plus/keys"):
 		return adminKeys(req)
+	case strings.HasSuffix(path, "/plugins/cpa-key-policy-plus/models"):
+		return adminModels(req)
 	case strings.HasSuffix(path, "/plugins/cpa-key-policy-plus/keys/create"):
 		return adminCreateKey(req)
 	case strings.HasSuffix(path, "/plugins/cpa-key-policy-plus/keys/save"):
@@ -996,6 +1005,22 @@ func managementHandle(raw []byte) ([]byte, error) {
 	case strings.HasSuffix(path, "/plugins/cpa-key-policy-plus/events"):
 		return adminEvents(req)
 	case strings.HasSuffix(path, "/plugins/cpa-key-policy-plus/codexcont"):
+		return adminCodexCont(req)
+	case strings.HasSuffix(path, "/key-policy-plus/api/keys"):
+		return adminKeys(req)
+	case strings.HasSuffix(path, "/key-policy-plus/api/models"):
+		return adminModels(req)
+	case strings.HasSuffix(path, "/key-policy-plus/api/keys/create"):
+		return adminCreateKey(req)
+	case strings.HasSuffix(path, "/key-policy-plus/api/keys/save"):
+		return adminSaveKeys(req)
+	case strings.HasSuffix(path, "/key-policy-plus/api/keys/limits"):
+		return adminSetLimits(req)
+	case strings.HasSuffix(path, "/key-policy-plus/api/keys/reset"):
+		return adminReset(req)
+	case strings.HasSuffix(path, "/key-policy-plus/api/events"):
+		return adminEvents(req)
+	case strings.HasSuffix(path, "/key-policy-plus/api/codexcont"):
 		return adminCodexCont(req)
 	default:
 		return jsonResponse(http.StatusNotFound, map[string]any{"ok": false, "error": "not_found"})
@@ -1025,11 +1050,96 @@ func adminKeys(_ managementRequest) ([]byte, error) {
 	return jsonResponse(http.StatusOK, map[string]any{"ok": true, "keys": safe, "codexcont": codexcontStatus()})
 }
 
+func adminModels(_ managementRequest) ([]byte, error) {
+	models, warnings := adminModelCatalog()
+	return jsonResponse(http.StatusOK, map[string]any{"ok": true, "models": models, "warnings": warnings})
+}
+
+func adminModelCatalog() ([]policyplus.ModelOption, []string) {
+	warnings := []string{}
+	hostModels, hostWarnings := hostAuthModelHints()
+	warnings = append(warnings, hostWarnings...)
+	configured := configuredModelOptions()
+	models := policyplus.MergeModelOptions(hostModels, configured)
+	if len(models) == 0 {
+		warnings = append(warnings, "当前没有从 CPA 或 Plus 配置中发现模型；可以先创建允许全部模型的 Key，或在编辑模型时手动输入模型名。")
+	}
+	sort.SliceStable(models, func(i, j int) bool {
+		if models[i].Known != models[j].Known {
+			return models[i].Known
+		}
+		return strings.ToLower(models[i].ID) < strings.ToLower(models[j].ID)
+	})
+	return models, warnings
+}
+
+func configuredModelOptions() []policyplus.ModelOption {
+	store := loadedStore()
+	if store == nil {
+		return nil
+	}
+	keys, err := store.ListKeys(context.Background())
+	if err != nil {
+		return nil
+	}
+	ids := []string{}
+	for _, key := range keys {
+		ids = append(ids, key.Models...)
+		for model := range key.Prices {
+			ids = append(ids, model)
+		}
+	}
+	return policyplus.ModelOptionsFromIDs(cleanStrings(ids), "plus_configured", false)
+}
+
+func hostAuthModelHints() ([]policyplus.ModelOption, []string) {
+	result, err := callHost(methodHostAuthList, map[string]any{})
+	if err != nil {
+		return nil, []string{"宿主 auth 列表不可用，已使用 Plus 当前配置模型兜底。"}
+	}
+	var body struct {
+		Files []map[string]any `json:"files"`
+	}
+	if err := json.Unmarshal(result, &body); err != nil {
+		return nil, []string{"宿主 auth 列表格式无法解析，已使用 Plus 当前配置模型兜底。"}
+	}
+	ids := []string{}
+	for _, file := range body.Files {
+		for _, field := range []string{"models", "available_models", "model_aliases"} {
+			ids = append(ids, modelIDsFromAny(file[field])...)
+		}
+	}
+	return policyplus.ModelOptionsFromIDs(cleanStrings(ids), "host_auth", true), nil
+}
+
+func modelIDsFromAny(raw any) []string {
+	options := policyplus.NormalizeModelOptions(raw, "host_auth")
+	out := make([]string, 0, len(options))
+	for _, option := range options {
+		out = append(out, option.ID)
+	}
+	return out
+}
+
 func adminCreateKey(req managementRequest) ([]byte, error) {
 	var body struct {
-		Name string `json:"name"`
+		Name              string                           `json:"name"`
+		Enabled           *bool                            `json:"enabled"`
+		RPM               int                              `json:"rpm"`
+		Concurrency       int                              `json:"concurrency"`
+		MaxActiveSessions int                              `json:"max_active_sessions"`
+		Models            []string                         `json:"models"`
+		Prices            map[string]policyplus.ModelPrice `json:"prices"`
+		FiveHourUSD       *float64                         `json:"five_hour_usd"`
+		DailyUSD          *float64                         `json:"daily_usd"`
+		WeeklyUSD         *float64                         `json:"weekly_usd"`
+		MonthlyUSD        *float64                         `json:"monthly_usd"`
 	}
-	_ = json.Unmarshal(req.Body, &body)
+	if len(req.Body) > 0 {
+		if err := json.Unmarshal(req.Body, &body); err != nil {
+			return jsonResponse(http.StatusBadRequest, map[string]any{"ok": false, "error": "invalid_json"})
+		}
+	}
 	rawKey, err := generateCPAKey()
 	if err != nil {
 		return jsonResponse(http.StatusInternalServerError, map[string]any{"ok": false, "error": "key_generation_failed"})
@@ -1039,6 +1149,22 @@ func adminCreateKey(req managementRequest) ([]byte, error) {
 	if name == "" {
 		name = "new key"
 	}
+	enabled := true
+	if body.Enabled != nil {
+		enabled = *body.Enabled
+	}
+	rpm := body.RPM
+	if rpm == 0 {
+		rpm = 60
+	}
+	concurrency := body.Concurrency
+	if concurrency == 0 {
+		concurrency = 2
+	}
+	maxActiveSessions := body.MaxActiveSessions
+	if maxActiveSessions == 0 {
+		maxActiveSessions = 2
+	}
 	store := loadedStore()
 	if store == nil {
 		return jsonResponse(http.StatusServiceUnavailable, map[string]any{"ok": false, "error": "store_unavailable"})
@@ -1047,16 +1173,17 @@ func adminCreateKey(req managementRequest) ([]byte, error) {
 		ID:                "key_" + policyplus.HashPreview(hash),
 		Name:              name,
 		KeyHash:           "sha256:" + hash,
-		Enabled:           true,
+		Enabled:           enabled,
 		Preview:           policyplus.HashPreview(hash),
-		RPM:               60,
-		Concurrency:       2,
-		MaxActiveSessions: 2,
-		Models:            []string{},
-		FiveHourUSD:       nil,
-		DailyLimitUSD:     nil,
-		WeeklyLimitUSD:    nil,
-		MonthlyLimitUSD:   nil,
+		RPM:               rpm,
+		Concurrency:       concurrency,
+		MaxActiveSessions: maxActiveSessions,
+		Models:            cleanStrings(body.Models),
+		Prices:            cleanPrices(body.Prices),
+		FiveHourUSD:       body.FiveHourUSD,
+		DailyLimitUSD:     body.DailyUSD,
+		WeeklyLimitUSD:    body.WeeklyUSD,
+		MonthlyLimitUSD:   body.MonthlyUSD,
 	}
 	if err := store.UpsertKey(context.Background(), key); err != nil {
 		return jsonResponse(http.StatusInternalServerError, map[string]any{"ok": false, "error": err.Error()})
@@ -1120,7 +1247,7 @@ func adminSaveKeys(req managementRequest) ([]byte, error) {
 		key.MaxActiveSessions = item.MaxActiveSessions
 		key.Models = cleanStrings(item.Models)
 		if item.Prices != nil {
-			key.Prices = item.Prices
+			key.Prices = cleanPrices(item.Prices)
 		}
 		key.FiveHourUSD = item.FiveHourUSD
 		key.DailyLimitUSD = item.DailyUSD
@@ -1131,6 +1258,25 @@ func adminSaveKeys(req managementRequest) ([]byte, error) {
 		}
 	}
 	return adminKeys(req)
+}
+
+func cleanPrices(items map[string]policyplus.ModelPrice) map[string]policyplus.ModelPrice {
+	if items == nil {
+		return nil
+	}
+	out := map[string]policyplus.ModelPrice{}
+	for name, price := range items {
+		model := strings.TrimSpace(price.Model)
+		if model == "" {
+			model = strings.TrimSpace(name)
+		}
+		if model == "" {
+			continue
+		}
+		price.Model = model
+		out[model] = price
+	}
+	return out
 }
 
 func cleanStrings(items []string) []string {

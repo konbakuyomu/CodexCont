@@ -73,6 +73,42 @@ func TestKeyPolicyStateParsesSafeRecords(t *testing.T) {
 	}
 }
 
+func TestNormalizeModelOptionsAcceptsCommonPayloadShapes(t *testing.T) {
+	payload := map[string]any{
+		"models": []any{
+			map[string]any{"id": "gpt-5.5", "display_name": "GPT 5.5", "owned_by": "openai"},
+			map[string]any{"model": "gpt-5.4"},
+			"gpt-5.5",
+			map[string]any{"alias": "codex-auto-review", "target_model": "gpt-5.5"},
+		},
+	}
+	options := NormalizeModelOptions(payload, "online")
+	if len(options) != 3 {
+		t.Fatalf("options = %#v", options)
+	}
+	if options[0].ID != "gpt-5.5" || options[0].DisplayName != "GPT 5.5" || options[0].OwnedBy != "openai" {
+		t.Fatalf("first option = %#v", options[0])
+	}
+	if options[2].ID != "codex-auto-review" {
+		t.Fatalf("alias model was not parsed: %#v", options)
+	}
+}
+
+func TestMergeModelOptionsPreservesUnknownConfiguredModels(t *testing.T) {
+	known := NormalizeModelOptions([]any{map[string]any{"id": "gpt-5.5", "display_name": "GPT 5.5"}}, "online")
+	configured := ModelOptionsFromIDs([]string{"gpt-5.5", "legacy-custom"}, "plus_configured", false)
+	merged := MergeModelOptions(known, configured)
+	if len(merged) != 2 {
+		t.Fatalf("merged = %#v", merged)
+	}
+	if !merged[0].Known || merged[0].DisplayName != "GPT 5.5" {
+		t.Fatalf("known metadata should win: %#v", merged[0])
+	}
+	if merged[1].ID != "legacy-custom" || merged[1].Known {
+		t.Fatalf("unknown configured model should be preserved: %#v", merged[1])
+	}
+}
+
 func TestImportKeysDoesNotDeletePlusNativeKeys(t *testing.T) {
 	ctx := context.Background()
 	store, err := OpenStore(filepath.Join(t.TempDir(), "policyplus.sqlite"))

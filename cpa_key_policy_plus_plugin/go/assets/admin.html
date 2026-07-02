@@ -5,18 +5,227 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>CPA Key Policy+</title>
   <style>{{CSS}}</style>
+  <style>
+    .admin-table { min-width: 1240px; }
+    .admin-table th:nth-child(1) { width: 250px; }
+    .admin-table th:nth-child(2) { width: 92px; }
+    .admin-table th:nth-child(3),
+    .admin-table th:nth-child(4),
+    .admin-table th:nth-child(5) { width: 104px; }
+    .admin-table th:nth-child(6) { width: 270px; }
+    .admin-table th:nth-child(7) { width: 220px; }
+    .admin-table th:nth-child(8) { width: 120px; }
+    .admin-table th:nth-child(9) { width: 210px; }
+    .key-name-input { width: 100%; min-width: 0; }
+    .limit-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(58px, 1fr));
+      gap: 6px;
+    }
+    .limit-grid label,
+    .number-stack label {
+      display: grid;
+      gap: 4px;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 720;
+    }
+    .number-stack {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(74px, 1fr));
+      gap: 6px;
+    }
+    .summary-cell {
+      display: grid;
+      gap: 6px;
+      min-width: 0;
+    }
+    .tag-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      min-width: 0;
+    }
+    .tag {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      min-height: 24px;
+      max-width: 100%;
+      padding: 0 8px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: #1a2230;
+      color: #cbd5e1;
+      font-size: 12px;
+      font-weight: 720;
+      white-space: nowrap;
+    }
+    .tag.warn { color: #ffd893; border-color: rgba(244, 185, 66, .3); background: var(--amber-soft); }
+    .tag.ok { color: #a9f2a2; border-color: rgba(104, 214, 95, .28); background: var(--green-soft); }
+    .modal-backdrop {
+      position: fixed;
+      inset: 0;
+      z-index: 40;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+      background: rgba(5, 10, 18, .72);
+    }
+    .modal-backdrop.open { display: flex; }
+    .modal {
+      width: min(980px, 100%);
+      max-height: min(88vh, 920px);
+      display: flex;
+      flex-direction: column;
+      border: 1px solid var(--line-strong);
+      border-radius: 8px;
+      background: #151b27;
+      box-shadow: 0 24px 70px rgba(0, 0, 0, .42);
+      overflow: hidden;
+    }
+    .modal.small { width: min(680px, 100%); }
+    .modal-head,
+    .modal-foot {
+      padding: 14px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      border-bottom: 1px solid var(--line);
+    }
+    .modal-foot {
+      border-top: 1px solid var(--line);
+      border-bottom: 0;
+      justify-content: flex-end;
+    }
+    .modal-body {
+      padding: 14px;
+      overflow: auto;
+    }
+    .form-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 10px;
+    }
+    .form-grid label,
+    .field {
+      display: grid;
+      gap: 6px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 720;
+    }
+    .form-grid .span-2 { grid-column: span 2; }
+    .form-grid .span-4 { grid-column: 1 / -1; }
+    .selector-layout {
+      display: grid;
+      grid-template-columns: minmax(280px, .9fr) minmax(360px, 1.1fr);
+      gap: 12px;
+      margin-top: 12px;
+    }
+    .model-list,
+    .price-list {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #111722;
+      overflow: hidden;
+    }
+    .model-list-head,
+    .price-list-head {
+      min-height: 44px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 10px;
+      border-bottom: 1px solid var(--line);
+    }
+    .model-items {
+      max-height: 390px;
+      overflow: auto;
+      padding: 6px;
+    }
+    .model-option {
+      display: grid;
+      grid-template-columns: 24px 1fr;
+      gap: 8px;
+      align-items: start;
+      padding: 8px;
+      border-radius: 7px;
+      cursor: pointer;
+    }
+    .model-option:hover { background: rgba(148, 163, 184, .07); }
+    .model-option input { min-height: auto; margin-top: 3px; }
+    .model-option strong {
+      font-size: 13px;
+      overflow-wrap: anywhere;
+    }
+    .selected-chips {
+      min-height: 34px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      padding: 8px 0 0;
+    }
+    .chip-button {
+      border: 0;
+      min-height: 20px;
+      padding: 0 2px;
+      background: transparent;
+      color: inherit;
+      font-weight: 900;
+    }
+    .price-table {
+      width: 100%;
+      min-width: 640px;
+      table-layout: fixed;
+    }
+    .price-table th:nth-child(1) { width: 210px; }
+    .price-table input { width: 100%; min-width: 0; }
+    .copy-box {
+      margin-top: 12px;
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #0f151f;
+      font-family: var(--mono);
+      overflow-wrap: anywhere;
+    }
+    .notice {
+      margin-top: 10px;
+      padding: 10px;
+      border: 1px solid rgba(244, 185, 66, .26);
+      border-radius: 8px;
+      background: var(--amber-soft);
+      color: #ffd893;
+      font-size: 12px;
+    }
+    @media (max-width: 820px) {
+      .form-grid,
+      .selector-layout { grid-template-columns: 1fr; }
+      .form-grid .span-2,
+      .form-grid .span-4 { grid-column: auto; }
+      .modal-backdrop { align-items: stretch; padding: 10px; }
+      .modal { max-height: calc(100vh - 20px); }
+    }
+  </style>
 </head>
 <body>
   <div class="shell">
     <header class="topbar">
-      <div>
-        <h1>CPA Key Policy+</h1>
-        <p class="subtitle">统一管理用户 Key、模型权限、用量限额、并发和 Codex 窗口数</p>
+      <div class="brand">
+        <div class="mark">K+</div>
+        <div>
+          <h1>CPA Key Policy+</h1>
+          <p class="subtitle">统一管理用户 Key、模型权限、用量限额、并发和 Codex 窗口数</p>
+        </div>
       </div>
       <div class="toolbar">
-        <span id="sync" class="chip chip-muted"><span class="dot"></span>准备同步</span>
-        <button id="create" class="btn">新建 Key</button>
-        <button id="save" class="btn primary">保存全部</button>
+        <span id="sync" class="chip stream info"><span class="dot"></span>准备同步</span>
+        <button id="create" class="btn primary">新建 Key</button>
+        <button id="save" class="btn">保存全部</button>
         <button id="refresh" class="btn">刷新</button>
       </div>
     </header>
@@ -27,11 +236,12 @@
       <div class="panel-head">
         <div>
           <h2>Key 策略</h2>
-          <p>5H/24H/7D 是滚动窗口，月限额按 Asia/Shanghai 自然月；清零是 soft reset，不删除历史明细。</p>
+          <p>空模型列表表示允许全部模型；5H/24H/7D 是滚动窗口，月限额按 Asia/Shanghai 自然月。</p>
         </div>
+        <button id="reload-models" class="btn mini">重新获取模型</button>
       </div>
       <div class="table-wrap">
-        <table class="data-table" id="keys-table">
+        <table class="data-table admin-table" id="keys-table">
           <thead>
             <tr>
               <th>用户/Key</th>
@@ -39,16 +249,14 @@
               <th>RPM</th>
               <th>请求并发</th>
               <th>Codex窗口</th>
-              <th>5H</th>
-              <th>24H</th>
-              <th>7D</th>
-              <th>月</th>
-              <th>模型</th>
+              <th>额度 USD</th>
+              <th>模型/价格</th>
+              <th>24H 用量</th>
               <th>操作</th>
             </tr>
           </thead>
           <tbody id="keys-body">
-            <tr><td colspan="11" class="empty">加载中...</td></tr>
+            <tr><td colspan="9" class="empty">加载中...</td></tr>
           </tbody>
         </table>
       </div>
@@ -57,37 +265,169 @@
     <section class="panel">
       <div class="panel-head">
         <div>
-          <h2>审计提示</h2>
-          <p>窗口数限制优先使用 Codex window/session 信号；缺失信号时 v1 放行并记录告警，避免误封。</p>
+          <h2>同步提示</h2>
+          <p>模型列表优先使用 CPA/Plus 当前可见模型；在线获取失败时保留已有配置，不会硬删未知模型。</p>
         </div>
       </div>
       <pre id="raw" class="logbox"></pre>
     </section>
   </div>
 
+  <div id="create-modal" class="modal-backdrop" aria-hidden="true">
+    <div class="modal small" role="dialog" aria-modal="true" aria-labelledby="create-title">
+      <div class="modal-head">
+        <div>
+          <h2 id="create-title">新建 Key</h2>
+          <p class="subtitle">完整 Key 只会在创建成功后显示一次。</p>
+        </div>
+        <button class="btn mini" data-close="create-modal">关闭</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-grid">
+          <label class="span-2">名称<input id="create-name" placeholder="例如 QQ 专用 / Kuma 测试"></label>
+          <label>状态<select id="create-enabled"><option value="true">启用</option><option value="false">禁用</option></select></label>
+          <label>RPM<input id="create-rpm" type="number" min="0" value="60"></label>
+          <label>请求并发<input id="create-concurrency" type="number" min="0" value="2"></label>
+          <label>Codex窗口<input id="create-sessions" type="number" min="0" value="2"></label>
+          <div class="field span-4">
+            <span>初始模型</span>
+            <small>不选择任何模型就是允许全部模型；也可以手动添加暂未发现的模型名。</small>
+            <div class="toolbar">
+              <input id="create-model-search" placeholder="搜索模型">
+              <input id="create-add-model" placeholder="手动添加模型名">
+              <button id="create-add-model-btn" class="btn mini">添加</button>
+              <button id="create-select-visible" class="btn mini">全选当前结果</button>
+              <button id="create-clear-models" class="btn mini">清空</button>
+            </div>
+            <div id="create-selected" class="selected-chips"></div>
+            <div class="model-list">
+              <div id="create-model-list" class="model-items"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="modal-foot">
+        <button class="btn" data-close="create-modal">取消</button>
+        <button id="create-submit" class="btn primary">创建</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="editor-modal" class="modal-backdrop" aria-hidden="true">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="editor-title">
+      <div class="modal-head">
+        <div>
+          <h2 id="editor-title">编辑模型与价格</h2>
+          <p class="subtitle">价格单位固定为美元 / 100 万 token；未知模型会保留，除非你主动移除。</p>
+        </div>
+        <button class="btn mini" data-close="editor-modal">关闭</button>
+      </div>
+      <div class="modal-body">
+        <div class="toolbar">
+          <input id="edit-model-search" placeholder="搜索模型">
+          <input id="edit-add-model" placeholder="手动添加模型名">
+          <button id="edit-add-model-btn" class="btn mini">添加</button>
+          <button id="edit-select-visible" class="btn mini">全选当前结果</button>
+          <button id="edit-clear-models" class="btn mini">清空</button>
+        </div>
+        <div id="edit-selected" class="selected-chips"></div>
+        <div id="unknown-notice" class="notice hidden"></div>
+        <div class="selector-layout">
+          <div class="model-list">
+            <div class="model-list-head">
+              <h3>模型列表</h3>
+              <span id="model-source-hint" class="muted"></span>
+            </div>
+            <div id="edit-model-list" class="model-items"></div>
+          </div>
+          <div class="price-list">
+            <div class="price-list-head">
+              <h3>价格</h3>
+              <small>输入 / 输出 / 缓存读 / 缓存写</small>
+            </div>
+            <div class="table-wrap">
+              <table class="price-table">
+                <thead>
+                  <tr>
+                    <th>模型</th>
+                    <th>输入</th>
+                    <th>输出</th>
+                    <th>缓存读</th>
+                    <th>缓存写</th>
+                  </tr>
+                </thead>
+                <tbody id="price-body"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="modal-foot">
+        <button class="btn" data-close="editor-modal">取消</button>
+        <button id="editor-apply" class="btn primary">应用到当前 Key</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="raw-key-modal" class="modal-backdrop" aria-hidden="true">
+    <div class="modal small" role="dialog" aria-modal="true" aria-labelledby="raw-key-title">
+      <div class="modal-head">
+        <div>
+          <h2 id="raw-key-title">Key 已创建</h2>
+          <p class="subtitle">请现在复制完整 Key；关闭后无法从系统中恢复原文。</p>
+        </div>
+      </div>
+      <div class="modal-body">
+        <div id="raw-key-box" class="copy-box"></div>
+        <div class="notice">列表里的预览不是完整 Key，不能用于登录或调用 API。需要重发时请轮换生成新的完整 Key。</div>
+      </div>
+      <div class="modal-foot">
+        <button id="copy-raw-key" class="btn primary">复制完整 Key</button>
+        <button id="close-raw-key" class="btn">我已保存，关闭</button>
+      </div>
+    </div>
+  </div>
+
 <script>
-const API = location.pathname.startsWith("/key-policy-plus")
-  ? "/key-policy-plus/api"
-  : "/v0/resource/plugins/cpa-key-policy-plus/admin/api";
-const state = {keys: [], dirty: false};
+const API = String(window.CPA_KEY_POLICY_PLUS_API_BASE || "/key-policy-plus/api").replace(/\/$/, "");
+const state = {
+  keys: [],
+  modelOptions: [],
+  modelWarnings: [],
+  dirty: false,
+  createModels: new Set(),
+  editor: null,
+  rawKey: ""
+};
 const $ = id => document.getElementById(id);
 
 function setSync(text, cls="info"){
-  $("sync").className = "chip " + cls;
-  $("sync").innerHTML = `<span class="dot"></span>${text}`;
+  $("sync").className = "chip stream " + cls;
+  $("sync").innerHTML = `<span class="dot"></span>${escapeHTML(text)}`;
 }
+
 async function api(path, opts={}){
   const r = await fetch(API + path, {cache:"no-store", credentials:"same-origin", ...opts});
-  const d = await r.json();
-  if (!d.ok) throw new Error(d.message || d.error || "request_failed");
+  let d = {};
+  try { d = await r.json(); } catch (_) {}
+  if (!r.ok || !d.ok) throw new Error(d.message || d.error || `HTTP ${r.status}`);
   return d;
 }
+
+function escapeHTML(s){
+  return String(s ?? "").replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+function num(v){ const n = Number(v ?? 0); return Number.isFinite(n) ? n : 0; }
 function money(v){
   if (v === null || v === undefined || v === "") return "";
   const n = Number(v);
   return Number.isFinite(n) && n > 0 ? n.toFixed(3) : "";
 }
-function num(v){ const n = Number(v || 0); return Number.isFinite(n) ? n : 0; }
+function priceNumber(v){
+  if (v === null || v === undefined || v === "") return "";
+  const n = Number(v);
+  return Number.isFinite(n) && n > 0 ? String(n) : "";
+}
 function limit(k, name){
   const l = k.limits || {};
   if (name === "5h") return l.five_hour_usd;
@@ -95,11 +435,38 @@ function limit(k, name){
   if (name === "7d") return l.weekly_usd;
   return l.monthly_usd;
 }
-function modelsText(k){ return (k.models || []).join(", "); }
-function pricesJSON(k){
-  const prices = k.pricing && k.pricing.models ? k.pricing.models : {};
-  return JSON.stringify(prices, null, 0);
+function pricesOf(k){
+  return structuredCloneSafe(k.prices || (k.pricing && k.pricing.models) || {});
 }
+function structuredCloneSafe(value){
+  return JSON.parse(JSON.stringify(value || {}));
+}
+function selectedModels(k){
+  return Array.isArray(k.models) ? [...k.models] : [];
+}
+function modelCountText(k){
+  const models = selectedModels(k);
+  return models.length ? `${models.length} 个模型` : "允许全部模型";
+}
+function priceCoverage(k){
+  const models = selectedModels(k);
+  const prices = pricesOf(k);
+  const selected = models.length ? models : Object.keys(prices);
+  if (!selected.length) return "无价格";
+  const priced = selected.filter(m => hasPrice(prices[m])).length;
+  return `${priced}/${selected.length} 已计价`;
+}
+function hasPrice(p){
+  if (!p) return false;
+  return ["input_per_million","output_per_million","cache_read_per_million","cache_creation_per_million"].some(f => Number(p[f] || 0) > 0);
+}
+function sourceLabel(source){
+  if (source === "host_auth") return "CPA";
+  if (source === "online") return "在线";
+  if (source === "plus_configured") return "已配置";
+  return source || "未知";
+}
+
 function renderMetrics(){
   const total = state.keys.length;
   const enabled = state.keys.filter(k => k.enabled).length;
@@ -107,32 +474,48 @@ function renderMetrics(){
   const cost = state.keys.reduce((s,k) => s + Number(k.usage?.["24h"] || 0), 0);
   $("metrics").innerHTML = `
     <article class="metric"><div class="label">Key 总数</div><div class="value">${total}</div><div class="hint">已启用 ${enabled}</div></article>
-    <article class="metric"><div class="label">窗口限制</div><div class="value">${limited}</div><div class="hint">30 分钟空闲释放</div></article>
+    <article class="metric"><div class="label">Codex 窗口限制</div><div class="value">${limited}</div><div class="hint">30 分钟空闲释放</div></article>
     <article class="metric"><div class="label">24H 费用</div><div class="value">$${cost.toFixed(3)}</div><div class="hint">按当前价格估算</div></article>
-    <article class="metric"><div class="label">清零策略</div><div class="value">Soft</div><div class="hint">不删除历史事件</div></article>`;
+    <article class="metric"><div class="label">模型来源</div><div class="value">${state.modelOptions.length}</div><div class="hint">${state.modelWarnings.length ? "有兜底提示" : "已同步"}</div></article>`;
 }
+
 function render(){
   renderMetrics();
   const body = $("keys-body");
   if (!state.keys.length) {
-    body.innerHTML = `<tr><td colspan="11" class="empty">暂无 Key</td></tr>`;
+    body.innerHTML = `<tr><td colspan="9" class="empty">暂无 Key，点击右上角新建。</td></tr>`;
+    renderDebug();
     return;
   }
   body.innerHTML = state.keys.map(k => `
-    <tr data-id="${k.id}">
+    <tr data-id="${escapeHTML(k.id)}">
       <td class="key-cell">
-        <input data-field="name" value="${escapeHTML(k.name || "")}">
-        <div class="muted">${escapeHTML(k.preview || k.id || "")}</div>
+        <input class="key-name-input" data-field="name" value="${escapeHTML(k.name || "")}">
+        <div class="muted mono">${escapeHTML(k.preview || k.id || "")}</div>
       </td>
       <td><label class="check"><input data-field="enabled" type="checkbox" ${k.enabled ? "checked" : ""}>启用</label></td>
       <td><input class="narrow" data-field="rpm" type="number" min="0" value="${num(k.rpm)}"></td>
       <td><input class="narrow" data-field="concurrency" type="number" min="0" value="${num(k.concurrency)}"></td>
       <td><input class="narrow" data-field="max_active_sessions" type="number" min="0" value="${num(k.max_active_sessions)}"></td>
-      <td><input class="narrow" data-limit="five_hour_usd" type="number" min="0" step="0.001" value="${money(limit(k,"5h"))}"></td>
-      <td><input class="narrow" data-limit="daily_usd" type="number" min="0" step="0.001" value="${money(limit(k,"24h"))}"></td>
-      <td><input class="narrow" data-limit="weekly_usd" type="number" min="0" step="0.001" value="${money(limit(k,"7d"))}"></td>
-      <td><input class="narrow" data-limit="monthly_usd" type="number" min="0" step="0.001" value="${money(limit(k,"month"))}"></td>
-      <td><textarea data-field="models">${escapeHTML(modelsText(k))}</textarea><textarea data-field="prices">${escapeHTML(pricesJSON(k))}</textarea></td>
+      <td>
+        <div class="limit-grid">
+          <label>5H<input data-limit="five_hour_usd" type="number" min="0" step="0.001" value="${money(limit(k,"5h"))}"></label>
+          <label>24H<input data-limit="daily_usd" type="number" min="0" step="0.001" value="${money(limit(k,"24h"))}"></label>
+          <label>7D<input data-limit="weekly_usd" type="number" min="0" step="0.001" value="${money(limit(k,"7d"))}"></label>
+          <label>月<input data-limit="monthly_usd" type="number" min="0" step="0.001" value="${money(limit(k,"month"))}"></label>
+        </div>
+      </td>
+      <td>
+        <div class="summary-cell">
+          <div class="tag-row">
+            <span class="tag ${selectedModels(k).length ? "" : "warn"}">${escapeHTML(modelCountText(k))}</span>
+            <span class="tag ${priceCoverage(k).startsWith("0/") || priceCoverage(k) === "无价格" ? "warn" : "ok"}">${escapeHTML(priceCoverage(k))}</span>
+          </div>
+          <small>${escapeHTML(modelPreview(k))}</small>
+          <button class="btn mini" data-action="edit-models">编辑模型/价格</button>
+        </div>
+      </td>
+      <td><strong>$${Number(k.usage?.["24h"] || 0).toFixed(3)}</strong><small>当前窗口</small></td>
       <td class="actions">
         <button class="btn mini" data-reset="5h">清5H</button>
         <button class="btn mini" data-reset="24h">清24H</button>
@@ -140,65 +523,214 @@ function render(){
         <button class="btn mini" data-reset="month">清月</button>
       </td>
     </tr>`).join("");
+  renderDebug();
 }
-function escapeHTML(s){
-  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+function modelPreview(k){
+  const models = selectedModels(k);
+  if (!models.length) return "空列表：允许全部模型";
+  const shown = models.slice(0, 3).join(", ");
+  return models.length > 3 ? `${shown} +${models.length - 3}` : shown;
 }
-function readRows(){
-  return [...document.querySelectorAll("tr[data-id]")].map(row => {
-    const id = row.dataset.id;
-    const field = name => row.querySelector(`[data-field="${name}"]`);
-    const lim = name => row.querySelector(`[data-limit="${name}"]`);
-    let prices = {};
-    const rawPrices = field("prices").value.trim();
-    if (rawPrices) prices = JSON.parse(rawPrices);
-    const numberOrNull = el => {
-      const raw = el.value.trim();
-      if (raw === "") return null;
-      const n = Number(raw);
-      if (!Number.isFinite(n) || n < 0) throw new Error("限额/数字字段不能为负或非法");
-      return n;
+
+function renderDebug(){
+  $("raw").textContent = JSON.stringify({
+    api_base: API,
+    keys: state.keys.map(k => ({id:k.id, preview:k.preview, models:selectedModels(k).length, usage:k.usage})),
+    model_sources: summarizeModelSources(),
+    warnings: state.modelWarnings
+  }, null, 2);
+}
+
+function summarizeModelSources(){
+  const out = {};
+  for (const item of state.modelOptions) out[item.source || "unknown"] = (out[item.source || "unknown"] || 0) + 1;
+  return out;
+}
+
+function findKey(id){ return state.keys.find(k => k.id === id); }
+function markDirty(){
+  state.dirty = true;
+  setSync("有未保存更改", "warn");
+}
+
+function updateKeyFromInput(target){
+  const row = target.closest("tr[data-id]");
+  if (!row) return;
+  const key = findKey(row.dataset.id);
+  if (!key) return;
+  if (target.dataset.field) {
+    const field = target.dataset.field;
+    if (target.type === "checkbox") key[field] = target.checked;
+    else if (["rpm","concurrency","max_active_sessions"].includes(field)) key[field] = Number(target.value || 0);
+    else key[field] = target.value;
+  }
+  if (target.dataset.limit) {
+    key.limits = key.limits || {};
+    key.limits[target.dataset.limit] = nullableNumber(target.value);
+  }
+  markDirty();
+}
+
+function nullableNumber(raw){
+  raw = String(raw ?? "").trim();
+  if (raw === "") return null;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 0) throw new Error("数字字段不能为负或非法");
+  return n;
+}
+
+function keyPayload(k){
+  const limits = k.limits || {};
+  return {
+    id: k.id,
+    name: String(k.name || "").trim(),
+    enabled: !!k.enabled,
+    rpm: nullableNumber(k.rpm) || 0,
+    concurrency: nullableNumber(k.concurrency) || 0,
+    max_active_sessions: nullableNumber(k.max_active_sessions) || 0,
+    models: cleanStrings(k.models || []),
+    prices: cleanPrices(pricesOf(k)),
+    five_hour_usd: numberOrNull(limits.five_hour_usd),
+    daily_usd: numberOrNull(limits.daily_usd),
+    weekly_usd: numberOrNull(limits.weekly_usd),
+    monthly_usd: numberOrNull(limits.monthly_usd)
+  };
+}
+
+function numberOrNull(v){
+  if (v === null || v === undefined || v === "") return null;
+  const n = Number(v);
+  if (!Number.isFinite(n) || n < 0) throw new Error("限额/数字字段不能为负或非法");
+  return n;
+}
+function cleanStrings(items){
+  const seen = new Set();
+  const out = [];
+  for (const item of items || []) {
+    const text = String(item || "").trim();
+    const key = text.toLowerCase();
+    if (!text || seen.has(key)) continue;
+    seen.add(key);
+    out.push(text);
+  }
+  return out;
+}
+function cleanPrices(prices){
+  const out = {};
+  for (const [name, raw] of Object.entries(prices || {})) {
+    const model = String(raw.model || name || "").trim();
+    if (!model) continue;
+    out[model] = {
+      model,
+      target_model: String(raw.target_model || "").trim(),
+      provider: String(raw.provider || "").trim(),
+      input_per_million: Number(raw.input_per_million || 0),
+      output_per_million: Number(raw.output_per_million || 0),
+      cache_read_per_million: Number(raw.cache_read_per_million || 0),
+      cache_creation_per_million: Number(raw.cache_creation_per_million || 0)
     };
-    return {
-      id,
-      name: field("name").value.trim(),
-      enabled: field("enabled").checked,
-      rpm: Number(field("rpm").value || 0),
-      concurrency: Number(field("concurrency").value || 0),
-      max_active_sessions: Number(field("max_active_sessions").value || 0),
-      models: field("models").value.split(",").map(s => s.trim()).filter(Boolean),
-      prices,
-      five_hour_usd: numberOrNull(lim("five_hour_usd")),
-      daily_usd: numberOrNull(lim("daily_usd")),
-      weekly_usd: numberOrNull(lim("weekly_usd")),
-      monthly_usd: numberOrNull(lim("monthly_usd"))
-    };
-  });
+  }
+  return out;
 }
+
 async function refresh(){
   try {
     setSync("同步中", "warn");
-    const data = await api("/keys?ts=" + Date.now());
-    state.keys = data.keys || [];
-    $("raw").textContent = JSON.stringify({keys: state.keys.map(k => ({id:k.id, preview:k.preview, usage:k.usage}))}, null, 2);
-    render();
+    const keyData = await api("/keys?ts=" + Date.now());
+    state.keys = (keyData.keys || []).map(k => ({...k, prices: pricesOf(k)}));
+    await refreshModels(false);
     state.dirty = false;
+    render();
     setSync("刚刚更新", "ok");
   } catch (e) {
     setSync("同步失败", "bad");
     $("raw").textContent = e.message;
   }
 }
+
+async function refreshModels(renderAfter=true){
+  const warnings = [];
+  let backendModels = [];
+  try {
+    const data = await api("/models?ts=" + Date.now());
+    backendModels = normalizeModelOptions(data.models || [], "plus_configured");
+    warnings.push(...(data.warnings || []));
+  } catch (e) {
+    warnings.push("Plus 模型端点不可用: " + e.message);
+  }
+  const configured = normalizeModelOptions(modelUnionFromKeys(), "plus_configured").map(m => ({...m, known:false}));
+  state.modelOptions = mergeModelOptions(backendModels, configured);
+  state.modelWarnings = warnings;
+  if (renderAfter) {
+    render();
+    setSync("模型已更新", "ok");
+  }
+}
+
+function modelUnionFromKeys(){
+  const ids = [];
+  for (const key of state.keys) {
+    ids.push(...(key.models || []));
+    ids.push(...Object.keys(pricesOf(key)));
+  }
+  return ids;
+}
+
+function normalizeModelOptions(data, source){
+  const items = Array.isArray(data) ? data : Array.isArray(data?.models) ? data.models : Array.isArray(data?.data) ? data.data : typeof data === "object" && data ? Object.entries(data).map(([id, value]) => typeof value === "object" ? {id, ...value} : id) : [];
+  const seen = new Set();
+  const out = [];
+  for (const item of items) {
+    const id = typeof item === "string" ? item : (item.id || item.model || item.alias || item.name || item.target_model || item.targetModel);
+    const clean = String(id || "").trim();
+    const key = clean.toLowerCase();
+    if (!clean || seen.has(key)) continue;
+    seen.add(key);
+    out.push({
+      id: clean,
+      display_name: String((typeof item === "object" && (item.display_name || item.displayName || item.label || item.name)) || clean),
+      type: String((typeof item === "object" && (item.type || item.object)) || ""),
+      owned_by: String((typeof item === "object" && (item.owned_by || item.ownedBy || item.provider)) || ""),
+      source,
+      known: source !== "plus_configured"
+    });
+  }
+  return out;
+}
+
+function mergeModelOptions(...groups){
+  const byID = new Map();
+  for (const group of groups) {
+    for (const item of group || []) {
+      const id = String(item.id || "").trim();
+      if (!id) continue;
+      const key = id.toLowerCase();
+      const prev = byID.get(key) || {};
+      byID.set(key, {
+        id,
+        display_name: prev.display_name && prev.display_name !== prev.id ? prev.display_name : (item.display_name || id),
+        type: prev.type || item.type || "",
+        owned_by: prev.owned_by || item.owned_by || "",
+        source: prev.source || item.source || "",
+        known: !!(prev.known || item.known)
+      });
+    }
+  }
+  return [...byID.values()].sort((a,b) => (a.known === b.known ? a.id.localeCompare(b.id) : a.known ? -1 : 1));
+}
+
 async function saveAll(){
   try {
     setSync("保存中", "warn");
-    const keys = readRows();
+    const payload = {keys: state.keys.map(keyPayload)};
     const data = await api("/keys/save", {
       method: "PUT",
       headers: {"Content-Type":"application/json"},
-      body: JSON.stringify({keys})
+      body: JSON.stringify(payload)
     });
-    state.keys = data.keys || [];
+    state.keys = (data.keys || []).map(k => ({...k, prices: pricesOf(k)}));
+    state.dirty = false;
     render();
     setSync("已保存", "ok");
   } catch (e) {
@@ -206,19 +738,165 @@ async function saveAll(){
     alert(e.message);
   }
 }
-async function createKey(){
-  const name = prompt("新 Key 名称");
-  if (name === null) return;
-  const data = await api("/keys/create", {
-    method: "POST",
-    headers: {"Content-Type":"application/json"},
-    body: JSON.stringify({name})
-  });
-  await refresh();
-  alert("请立即保存这个完整 Key，关闭后无法找回：\n\n" + data.raw_key);
+
+function openModal(id){
+  $(id).classList.add("open");
+  $(id).setAttribute("aria-hidden", "false");
 }
+function closeModal(id){
+  $(id).classList.remove("open");
+  $(id).setAttribute("aria-hidden", "true");
+}
+
+function openCreate(){
+  state.createModels = new Set();
+  $("create-name").value = "";
+  $("create-enabled").value = "true";
+  $("create-rpm").value = "60";
+  $("create-concurrency").value = "2";
+  $("create-sessions").value = "2";
+  $("create-model-search").value = "";
+  $("create-add-model").value = "";
+  renderCreateModels();
+  openModal("create-modal");
+}
+
+function visibleModels(searchValue){
+  const q = String(searchValue || "").trim().toLowerCase();
+  return state.modelOptions.filter(m => !q || m.id.toLowerCase().includes(q) || String(m.display_name || "").toLowerCase().includes(q));
+}
+
+function renderModelCheckboxes(container, selectedSet, searchValue, prefix){
+  const models = visibleModels(searchValue);
+  if (!models.length) {
+    container.innerHTML = `<div class="empty">没有匹配模型，可以手动添加。</div>`;
+    return;
+  }
+  container.innerHTML = models.map(m => `
+    <label class="model-option">
+      <input type="checkbox" data-${prefix}-model="${escapeHTML(m.id)}" ${selectedSet.has(m.id) ? "checked" : ""}>
+      <span>
+        <strong>${escapeHTML(m.display_name || m.id)}</strong>
+        <small>${escapeHTML(m.id)} · ${escapeHTML(sourceLabel(m.source))}${m.known ? "" : " · 未在当前模型源中"}</small>
+      </span>
+    </label>`).join("");
+}
+
+function renderChips(container, selectedSet, prefix){
+  const items = [...selectedSet];
+  if (!items.length) {
+    container.innerHTML = `<span class="muted">未选择模型：允许全部模型。</span>`;
+    return;
+  }
+  container.innerHTML = items.map(id => `<span class="tag">${escapeHTML(id)} <button class="chip-button" data-${prefix}-remove="${escapeHTML(id)}">×</button></span>`).join("");
+}
+
+function renderCreateModels(){
+  renderChips($("create-selected"), state.createModels, "create");
+  renderModelCheckboxes($("create-model-list"), state.createModels, $("create-model-search").value, "create");
+}
+
+async function submitCreate(){
+  try {
+    const body = {
+      name: $("create-name").value.trim(),
+      enabled: $("create-enabled").value === "true",
+      rpm: numberOrNull($("create-rpm").value) || 0,
+      concurrency: numberOrNull($("create-concurrency").value) || 0,
+      max_active_sessions: numberOrNull($("create-sessions").value) || 0,
+      models: [...state.createModels],
+      prices: {}
+    };
+    setSync("创建中", "warn");
+    const data = await api("/keys/create", {
+      method: "POST",
+      headers: {"Content-Type":"application/json"},
+      body: JSON.stringify(body)
+    });
+    closeModal("create-modal");
+    state.rawKey = data.raw_key || "";
+    $("raw-key-box").textContent = state.rawKey;
+    openModal("raw-key-modal");
+    await refresh();
+  } catch (e) {
+    setSync("创建失败", "bad");
+    alert(e.message);
+  }
+}
+
+function openEditor(id){
+  const key = findKey(id);
+  if (!key) return;
+  state.editor = structuredCloneSafe({...key, prices: pricesOf(key)});
+  state.editor.models = cleanStrings(state.editor.models || []);
+  $("edit-model-search").value = "";
+  $("edit-add-model").value = "";
+  renderEditor();
+  openModal("editor-modal");
+}
+
+function editorSelectedSet(){
+  return new Set(cleanStrings(state.editor?.models || []));
+}
+function renderEditor(){
+  if (!state.editor) return;
+  $("editor-title").textContent = `编辑模型与价格 · ${state.editor.name || state.editor.preview || state.editor.id}`;
+  const selected = editorSelectedSet();
+  renderChips($("edit-selected"), selected, "edit");
+  renderModelCheckboxes($("edit-model-list"), selected, $("edit-model-search").value, "edit");
+  const known = new Set(state.modelOptions.map(m => m.id.toLowerCase()));
+  const unknown = [...selected].filter(id => !known.has(id.toLowerCase()));
+  $("unknown-notice").classList.toggle("hidden", !unknown.length);
+  $("unknown-notice").textContent = unknown.length ? `这些模型未在当前 CPA 模型列表中，但会被保留：${unknown.join(", ")}` : "";
+  $("model-source-hint").textContent = `${state.modelOptions.length} 个可选模型`;
+  renderPriceRows();
+}
+
+function renderPriceRows(){
+  const selected = cleanStrings(state.editor?.models || []);
+  const prices = state.editor.prices || {};
+  const rows = selected.length ? selected : Object.keys(prices);
+  if (!rows.length) {
+    $("price-body").innerHTML = `<tr><td colspan="5" class="empty">选择模型后可填写价格；空模型列表表示允许全部模型。</td></tr>`;
+    return;
+  }
+  $("price-body").innerHTML = rows.map(model => {
+    const p = prices[model] || {model};
+    return `<tr data-price-model="${escapeHTML(model)}">
+      <td><strong class="mono">${escapeHTML(model)}</strong></td>
+      <td><input data-price-field="input_per_million" type="number" min="0" step="0.001" value="${priceNumber(p.input_per_million)}"></td>
+      <td><input data-price-field="output_per_million" type="number" min="0" step="0.001" value="${priceNumber(p.output_per_million)}"></td>
+      <td><input data-price-field="cache_read_per_million" type="number" min="0" step="0.001" value="${priceNumber(p.cache_read_per_million)}"></td>
+      <td><input data-price-field="cache_creation_per_million" type="number" min="0" step="0.001" value="${priceNumber(p.cache_creation_per_million)}"></td>
+    </tr>`;
+  }).join("");
+}
+
+function addModelToSet(set, raw){
+  const text = String(raw || "").trim();
+  if (!text) return;
+  for (const item of set) {
+    if (item.toLowerCase() === text.toLowerCase()) return;
+  }
+  set.add(text);
+}
+function removeModelFromArray(arr, model){
+  return cleanStrings(arr).filter(item => item.toLowerCase() !== String(model).toLowerCase());
+}
+
+function applyEditor(){
+  if (!state.editor) return;
+  const target = findKey(state.editor.id);
+  if (!target) return;
+  target.models = cleanStrings(state.editor.models || []);
+  target.prices = cleanPrices(state.editor.prices || {});
+  markDirty();
+  render();
+  closeModal("editor-modal");
+}
+
 async function resetKey(id, windowName){
-  if (!confirm(`确认清零 ${id} 的 ${windowName} 统计？`)) return;
+  if (!confirm(`确认清零 ${id} 的 ${windowName} 统计？这是 soft reset，不删除历史明细。`)) return;
   await api("/keys/reset", {
     method: "POST",
     headers: {"Content-Type":"application/json"},
@@ -226,19 +904,83 @@ async function resetKey(id, windowName){
   });
   await refresh();
 }
+
 document.addEventListener("input", e => {
-  if (e.target.matches("input,textarea")) {
-    state.dirty = true;
-    setSync("有未保存更改", "warn");
+  if (e.target.closest("#keys-table")) updateKeyFromInput(e.target);
+  if (e.target.id === "create-model-search") renderCreateModels();
+  if (e.target.id === "edit-model-search") renderEditor();
+  if (e.target.dataset.priceField && state.editor) {
+    const row = e.target.closest("tr[data-price-model]");
+    const model = row?.dataset.priceModel;
+    if (!model) return;
+    state.editor.prices = state.editor.prices || {};
+    state.editor.prices[model] = state.editor.prices[model] || {model};
+    state.editor.prices[model].model = model;
+    state.editor.prices[model][e.target.dataset.priceField] = numberOrNull(e.target.value) || 0;
   }
 });
-document.addEventListener("click", e => {
-  const reset = e.target.dataset.reset;
-  if (reset) resetKey(e.target.closest("tr").dataset.id, reset);
+
+document.addEventListener("change", e => {
+  if (e.target.closest("#keys-table")) updateKeyFromInput(e.target);
+  const createModel = e.target.dataset.createModel;
+  if (createModel) {
+    if (e.target.checked) state.createModels.add(createModel);
+    else state.createModels.delete(createModel);
+    renderCreateModels();
+  }
+  const editModel = e.target.dataset.editModel;
+  if (editModel && state.editor) {
+    if (e.target.checked) state.editor.models = cleanStrings([...(state.editor.models || []), editModel]);
+    else state.editor.models = removeModelFromArray(state.editor.models || [], editModel);
+    renderEditor();
+  }
 });
+
+document.addEventListener("click", e => {
+  const close = e.target.dataset.close;
+  if (close) closeModal(close);
+  const row = e.target.closest("tr[data-id]");
+  if (e.target.dataset.action === "edit-models" && row) openEditor(row.dataset.id);
+  const reset = e.target.dataset.reset;
+  if (reset && row) resetKey(row.dataset.id, reset);
+  const createRemove = e.target.dataset.createRemove;
+  if (createRemove) { state.createModels.delete(createRemove); renderCreateModels(); }
+  const editRemove = e.target.dataset.editRemove;
+  if (editRemove && state.editor) { state.editor.models = removeModelFromArray(state.editor.models || [], editRemove); renderEditor(); }
+});
+
 $("refresh").onclick = refresh;
+$("reload-models").onclick = () => refreshModels(true);
 $("save").onclick = saveAll;
-$("create").onclick = createKey;
+$("create").onclick = openCreate;
+$("create-submit").onclick = submitCreate;
+$("create-add-model-btn").onclick = () => { addModelToSet(state.createModels, $("create-add-model").value); $("create-add-model").value = ""; renderCreateModels(); };
+$("create-select-visible").onclick = () => { for (const m of visibleModels($("create-model-search").value)) state.createModels.add(m.id); renderCreateModels(); };
+$("create-clear-models").onclick = () => { state.createModels.clear(); renderCreateModels(); };
+$("edit-add-model-btn").onclick = () => { if (!state.editor) return; state.editor.models = cleanStrings([...(state.editor.models || []), $("edit-add-model").value]); $("edit-add-model").value = ""; renderEditor(); };
+$("edit-select-visible").onclick = () => { if (!state.editor) return; state.editor.models = cleanStrings([...(state.editor.models || []), ...visibleModels($("edit-model-search").value).map(m => m.id)]); renderEditor(); };
+$("edit-clear-models").onclick = () => { if (!state.editor) return; state.editor.models = []; renderEditor(); };
+$("editor-apply").onclick = applyEditor;
+$("copy-raw-key").onclick = async () => {
+  try {
+    await navigator.clipboard.writeText(state.rawKey || "");
+    setSync("已复制 Key", "ok");
+  } catch (_) {
+    setSync("复制失败，请手动复制", "warn");
+  }
+};
+$("close-raw-key").onclick = () => {
+  state.rawKey = "";
+  $("raw-key-box").textContent = "";
+  closeModal("raw-key-modal");
+};
+
+window.addEventListener("beforeunload", e => {
+  if (!state.dirty) return;
+  e.preventDefault();
+  e.returnValue = "";
+});
+
 refresh();
 </script>
 </body>

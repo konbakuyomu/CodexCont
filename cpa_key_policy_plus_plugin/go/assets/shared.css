@@ -31,6 +31,7 @@ body {
   color: var(--text);
   font: 14px/1.48 var(--sans);
   letter-spacing: 0;
+  overflow-x: hidden;
 }
 button, select, input {
   min-height: 38px;
@@ -523,8 +524,9 @@ details.advanced > summary {
   .detail-grid { grid-template-columns: 1fr; }
 }
 @media (max-width: 620px) {
-  .shell { width: min(100% - 20px, 1680px); padding-top: 12px; }
+  .shell { width: min(1680px, calc(100% - 20px)); padding-top: 12px; }
   .topbar { align-items: flex-start; flex-direction: column; padding: 12px; }
+  .topbar .brand { width: 100%; max-width: 100%; }
   .toolbar, .filters { justify-content: flex-start; }
   .metrics { grid-template-columns: 1fr; }
   .login-row { flex-direction: column; }

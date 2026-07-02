@@ -129,11 +129,14 @@ func TestAdminSaveKeysPersistsUnifiedLimits(t *testing.T) {
 		"rpm":                 5,
 		"concurrency":         1,
 		"max_active_sessions": 3,
-		"models":              []string{"gpt-5.4"},
-		"five_hour_usd":       1.25,
-		"daily_usd":           2.5,
-		"weekly_usd":          7.5,
-		"monthly_usd":         20.0,
+		"models":              []string{"gpt-5.4", "custom-unknown"},
+		"prices": map[string]any{
+			"custom-unknown": map[string]any{"input_per_million": 1.2},
+		},
+		"five_hour_usd": 1.25,
+		"daily_usd":     2.5,
+		"weekly_usd":    7.5,
+		"monthly_usd":   20.0,
 	}}}
 	rawBody, _ := json.Marshal(body)
 	raw, err := adminSaveKeys(managementRequest{Body: rawBody})
@@ -156,11 +159,17 @@ func TestAdminSaveKeysPersistsUnifiedLimits(t *testing.T) {
 	if got.FiveHourUSD == nil || *got.FiveHourUSD != 1.25 || got.MonthlyLimitUSD == nil || *got.MonthlyLimitUSD != 20 {
 		t.Fatalf("limits not persisted: %#v", got)
 	}
+	if len(got.Models) != 2 || got.Models[1] != "custom-unknown" {
+		t.Fatalf("models should preserve unknown selected model: %#v", got.Models)
+	}
+	if price, ok := got.Prices["custom-unknown"]; !ok || price.Model != "custom-unknown" || price.InputPerMillion != 1.2 {
+		t.Fatalf("custom price not normalized: %#v", got.Prices)
+	}
 }
 
 func TestAdminCreateKeyReturnsRawKeyOnlyOnce(t *testing.T) {
 	setupTestState(t)
-	raw, err := adminCreateKey(managementRequest{Body: []byte(`{"name":"Bob"}`)})
+	raw, err := adminCreateKey(managementRequest{Body: []byte(`{"name":"Bob","enabled":false,"rpm":9,"concurrency":4,"max_active_sessions":3,"models":["gpt-5.4-mini"]}`)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -177,6 +186,96 @@ func TestAdminCreateKeyReturnsRawKeyOnlyOnce(t *testing.T) {
 	}
 	if strings.Contains(string(bodyBytes), policyplus.SHA256Hex(resp.RawKey)) {
 		t.Fatalf("response leaked full hash: %s", bodyBytes)
+	}
+	keys, err := loadedStore().ListKeys(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var created policyplus.KeyRecord
+	for _, key := range keys {
+		if key.Name == "Bob" {
+			created = key
+			break
+		}
+	}
+	if created.ID == "" || created.Enabled || created.RPM != 9 || created.Concurrency != 4 || created.MaxActiveSessions != 3 {
+		t.Fatalf("created key did not persist requested settings: %#v", created)
+	}
+	if len(created.Models) != 1 || created.Models[0] != "gpt-5.4-mini" {
+		t.Fatalf("created models = %#v", created.Models)
+	}
+}
+
+func TestManagementAliasCreateSaveAndReset(t *testing.T) {
+	setupTestState(t)
+	createRaw, _ := json.Marshal(map[string]any{"name": "Alias", "models": []string{"gpt-5.4"}})
+	raw, err := managementHandle(mustJSON(t, managementRequest{
+		Method: http.MethodPost,
+		Path:   "/key-policy-plus/api/keys/create",
+		Body:   createRaw,
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	createBody := decodeManagementBody(t, raw)
+	if !strings.Contains(string(createBody), `"raw_key"`) {
+		t.Fatalf("create via alias failed: %s", createBody)
+	}
+	saveRaw, _ := json.Marshal(map[string]any{"keys": []map[string]any{{
+		"id":                  "alice-key",
+		"name":                "Alias Saved",
+		"enabled":             true,
+		"rpm":                 11,
+		"concurrency":         2,
+		"max_active_sessions": 1,
+		"models":              []string{"gpt-5.5"},
+	}}})
+	raw, err = managementHandle(mustJSON(t, managementRequest{
+		Method: http.MethodPut,
+		Path:   "/key-policy-plus/api/keys/save",
+		Body:   saveRaw,
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	saveBody := decodeManagementBody(t, raw)
+	if !strings.Contains(string(saveBody), "Alias Saved") {
+		t.Fatalf("save via alias failed: %s", saveBody)
+	}
+	resetRaw, _ := json.Marshal(map[string]any{"id": "alice-key", "window": "5h"})
+	raw, err = managementHandle(mustJSON(t, managementRequest{
+		Method: http.MethodPost,
+		Path:   "/key-policy-plus/api/keys/reset",
+		Body:   resetRaw,
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resetBody := decodeManagementBody(t, raw)
+	if !strings.Contains(string(resetBody), `"ok":true`) {
+		t.Fatalf("reset via alias failed: %s", resetBody)
+	}
+}
+
+func TestAdminModelsFallsBackToConfiguredModels(t *testing.T) {
+	key := setupTestState(t)
+	key.Models = []string{"gpt-5.5", "legacy-custom"}
+	key.Prices = map[string]policyplus.ModelPrice{
+		"price-only": {Model: "price-only", InputPerMillion: 1},
+	}
+	if err := loadedStore().SaveKeySettings(context.Background(), key); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := adminModels(managementRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := decodeManagementBody(t, raw)
+	text := string(body)
+	for _, want := range []string{"gpt-5.5", "legacy-custom", "price-only"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("model catalog missing %s: %s", want, text)
+		}
 	}
 }
 
@@ -197,6 +296,12 @@ func TestAdminHTMLHasRenderedSharedCSS(t *testing.T) {
 	}
 	if !strings.Contains(html, "--panel") || !strings.Contains(html, "CPA Key Policy+") {
 		t.Fatal("admin html should embed shared style and key policy UI")
+	}
+	if strings.Contains(html, "/v0/resource/plugins/cpa-key-policy-plus/admin/api") {
+		t.Fatal("admin html must not send mutating requests through GET-only resource routes")
+	}
+	if !strings.Contains(html, "/key-policy-plus/api") || !strings.Contains(html, "编辑模型/价格") {
+		t.Fatal("admin html should use the management alias and structured model editor")
 	}
 }
 
@@ -260,6 +365,15 @@ func decodeManagementBody(t *testing.T, raw []byte) []byte {
 		t.Fatal(err)
 	}
 	return resp.Body
+}
+
+func mustJSON(t *testing.T, value any) []byte {
+	t.Helper()
+	raw, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
 }
 
 func TestMain(m *testing.M) {
