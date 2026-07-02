@@ -174,3 +174,39 @@ Completed and deployed the CPA usage admin batch-save/request-detail task, inclu
 ### Next Steps
 
 - None - task complete
+
+
+## Session 6: CPA Governor and CodexCont engine rollout
+
+**Date**: 2026-07-02
+**Task**: CPA Governor and CodexCont engine rollout
+**Branch**: `main`
+
+### Summary
+
+Built and deployed the CPA Governor plugin in passive mode, added the CodexCont engine surface, unified Governor admin/user pages, fixed Key Policy login sync and CPAMP embedded user-login header conflicts, recorded Key Policy rotation and no-store cache contracts, and archived the completed task.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `429bed5` | (see git log) |
+| `d9047c8` | (see git log) |
+| `50e77d0` | (see git log) |
+| `69e429e` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

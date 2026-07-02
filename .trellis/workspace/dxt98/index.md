@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 5
+- **Total Sessions**: 6
 - **Last Active**: 2026-07-02
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~176 | Active |
+| `journal-1.md` | ~212 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 6 | 2026-07-02 | CPA Governor and CodexCont engine rollout | `429bed5`, `d9047c8`, `50e77d0`, `69e429e` | `main` |
 | 5 | 2026-07-02 | CPA usage request detail closeout | `432ca38` | `main` |
 | 4 | 2026-07-02 | CPA usage quota admin | `762b9e6` | `main` |
 | 3 | 2026-07-01 | CPA key management and usage portal | `b20a983`, `61911b0` | `main` |
