@@ -2,9 +2,14 @@
 
 `cpa-key-policy-plus` is the self-owned replacement for the old Key Policy
 plugin. It owns ordinary user `cpa_` keys, per-key limits, usage projection,
-soft resets, request concurrency, and Codex active-window limits.
+soft resets, model allowlists, RPM policy, and rolling quota windows.
 
 It does not modify CPA, CPAMP, or the old Key Policy source/image.
+
+Concurrency and Codex active-window limits were intentionally retired because
+normal Codex conversations can trip them too easily. Old database fields remain
+for schema compatibility, but new saves force them to `0` and frontend auth does
+not enforce them.
 
 ## Safety Boundary
 

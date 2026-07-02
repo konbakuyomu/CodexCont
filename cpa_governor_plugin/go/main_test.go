@@ -48,7 +48,6 @@ func configureTestState(t *testing.T) governor.KeyRecord {
 	state.store = store
 	state.keyState = governor.KeyPolicyState{}
 	state.rpmBuckets = map[string][]time.Time{}
-	state.concurrency = map[string]int{}
 	state.mu.Unlock()
 	t.Cleanup(func() {
 		state.mu.Lock()
@@ -178,8 +177,6 @@ func TestFrontendAuthAcceptsManagedKeyAndRejectsDisallowedModel(t *testing.T) {
 	if !resp.Authenticated || resp.Principal != "alice-key" {
 		t.Fatalf("auth response = %#v", resp)
 	}
-	releaseConcurrency("alice-key")
-
 	disallowed, _ := json.Marshal(frontendAuthRequest{
 		Headers: http.Header{"Authorization": []string{"Bearer cpa_live"}},
 		Body:    []byte(`{"model":"other-model","stream":true}`),
@@ -494,11 +491,8 @@ func TestUserCodexContFiltersToCurrentKey(t *testing.T) {
 	}
 }
 
-func TestUsageHandleStoresCostAndReleasesConcurrency(t *testing.T) {
-	key := configureTestState(t)
-	if !acquireConcurrency(key) {
-		t.Fatal("expected concurrency acquire")
-	}
+func TestUsageHandleStoresCost(t *testing.T) {
+	configureTestState(t)
 	rec := usageRecord{
 		Provider:        "openai",
 		ExecutorType:    "codex",
@@ -526,9 +520,6 @@ func TestUsageHandleStoresCostAndReleasesConcurrency(t *testing.T) {
 	rawRec, _ := json.Marshal(rec)
 	if _, err := usageHandle(rawRec); err != nil {
 		t.Fatal(err)
-	}
-	if state.concurrency["alice-key"] != 0 {
-		t.Fatalf("concurrency not released: %d", state.concurrency["alice-key"])
 	}
 	events, err := loadedStore().RecentEvents(context.Background(), "alice-key", 10)
 	if err != nil {
@@ -582,7 +573,6 @@ func TestRefreshKeyPolicyStateImportsNewKeys(t *testing.T) {
 	state.keyStateModTime = time.Time{}
 	state.keyStateLastCheck = time.Time{}
 	state.rpmBuckets = map[string][]time.Time{}
-	state.concurrency = map[string]int{}
 	state.mu.Unlock()
 	t.Cleanup(func() {
 		state.mu.Lock()

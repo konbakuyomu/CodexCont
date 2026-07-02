@@ -23,7 +23,6 @@ func setupTestState(t *testing.T) policyplus.KeyRecord {
 	state.keyState = policyplus.KeyPolicyState{}
 	state.keyStatePath = ""
 	state.rpmBuckets = map[string][]time.Time{}
-	state.concurrency = map[string]int{}
 	old := state.store
 	state.store = nil
 	state.mu.Unlock()
@@ -89,7 +88,7 @@ func TestPluginRegistrationIsPolicyPlusExclusiveAuth(t *testing.T) {
 	}
 }
 
-func TestFrontendAuthEnforcesActiveSessionLimit(t *testing.T) {
+func TestFrontendAuthIgnoresRetiredActiveSessionLimit(t *testing.T) {
 	setupTestState(t)
 	req := frontendAuthRequest{
 		Headers: http.Header{"Authorization": []string{"Bearer cpa_alice_secret"}},
@@ -103,8 +102,8 @@ func TestFrontendAuthEnforcesActiveSessionLimit(t *testing.T) {
 		t.Fatal("same session should refresh and authenticate")
 	}
 	req.Body = []byte(`{"model":"gpt-5.5","prompt_cache_key":"window-b"}`)
-	if authOK(t, req) {
-		t.Fatal("second active session should be rejected")
+	if !authOK(t, req) {
+		t.Fatal("retired Codex window limit should not reject a second session")
 	}
 }
 
@@ -153,7 +152,7 @@ func TestAdminSaveKeysPersistsUnifiedLimits(t *testing.T) {
 		t.Fatalf("ListKeys err=%v keys=%#v", err, keys)
 	}
 	got := keys[0]
-	if got.Enabled || got.RPM != 5 || got.Concurrency != 1 || got.MaxActiveSessions != 3 {
+	if got.Enabled || got.RPM != 5 || got.Concurrency != 0 || got.MaxActiveSessions != 0 {
 		t.Fatalf("updated key = %#v", got)
 	}
 	if got.FiveHourUSD == nil || *got.FiveHourUSD != 1.25 || got.MonthlyLimitUSD == nil || *got.MonthlyLimitUSD != 20 {
@@ -198,7 +197,7 @@ func TestAdminCreateKeyReturnsRawKeyOnlyOnce(t *testing.T) {
 			break
 		}
 	}
-	if created.ID == "" || created.Enabled || created.RPM != 9 || created.Concurrency != 4 || created.MaxActiveSessions != 3 {
+	if created.ID == "" || created.Enabled || created.RPM != 9 || created.Concurrency != 0 || created.MaxActiveSessions != 0 {
 		t.Fatalf("created key did not persist requested settings: %#v", created)
 	}
 	if len(created.Models) != 1 || created.Models[0] != "gpt-5.4-mini" {
@@ -242,6 +241,15 @@ func TestManagementAliasCreateSaveAndReset(t *testing.T) {
 	if !strings.Contains(string(saveBody), "Alias Saved") {
 		t.Fatalf("save via alias failed: %s", saveBody)
 	}
+	keys, err := loadedStore().ListKeys(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range keys {
+		if key.ID == "alice-key" && (key.Concurrency != 0 || key.MaxActiveSessions != 0) {
+			t.Fatalf("alias save should force retired limits to zero: %#v", key)
+		}
+	}
 	resetRaw, _ := json.Marshal(map[string]any{"id": "alice-key", "window": "5h"})
 	raw, err = managementHandle(mustJSON(t, managementRequest{
 		Method: http.MethodPost,
@@ -257,7 +265,7 @@ func TestManagementAliasCreateSaveAndReset(t *testing.T) {
 	}
 }
 
-func TestArchiveKeyRejectsAuthAndUserSession(t *testing.T) {
+func TestArchiveRouteReturnsGone(t *testing.T) {
 	key := setupTestState(t)
 	archiveRaw, _ := json.Marshal(map[string]any{"id": key.ID, "archived": true})
 	raw, err := managementHandle(mustJSON(t, managementRequest{
@@ -269,36 +277,39 @@ func TestArchiveKeyRejectsAuthAndUserSession(t *testing.T) {
 		t.Fatal(err)
 	}
 	body := decodeManagementBody(t, raw)
-	if !strings.Contains(string(body), `"archived":true`) {
-		t.Fatalf("archive response missing archived flag: %s", body)
+	if !strings.Contains(string(body), `"archive_removed_use_delete"`) {
+		t.Fatalf("archive route should return delete guidance: %s", body)
+	}
+}
+
+func TestDeleteKeyRejectsAuthAndUserSession(t *testing.T) {
+	key := setupTestState(t)
+	deleteRaw, _ := json.Marshal(map[string]any{"id": key.ID, "confirm": "delete"})
+	raw, err := managementHandle(mustJSON(t, managementRequest{
+		Method: http.MethodPost,
+		Path:   "/key-policy-plus/api/keys/delete",
+		Body:   deleteRaw,
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := decodeManagementBody(t, raw)
+	if !strings.Contains(string(body), `"keys"`) {
+		t.Fatalf("delete response should return updated key list: %s", body)
 	}
 	if authOK(t, frontendAuthRequest{
 		Headers: http.Header{"Authorization": []string{"Bearer cpa_alice_secret"}},
 		Body:    []byte(`{"model":"gpt-5.5","prompt_cache_key":"window-a"}`),
 	}) {
-		t.Fatal("archived key should not authenticate frontend requests")
+		t.Fatal("deleted key should not authenticate frontend requests")
 	}
 	raw, err = userSession(managementRequest{Headers: http.Header{"X-CPA-Key-Policy-Plus-Key": []string{"cpa_alice_secret"}}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	body = decodeManagementBody(t, raw)
-	if !strings.Contains(string(body), "api_key_archived") {
-		t.Fatalf("archived user session should fail clearly: %s", body)
-	}
-	restoreRaw, _ := json.Marshal(map[string]any{"id": key.ID, "archived": false})
-	if _, err := managementHandle(mustJSON(t, managementRequest{
-		Method: http.MethodPost,
-		Path:   "/key-policy-plus/api/keys/archive",
-		Body:   restoreRaw,
-	})); err != nil {
-		t.Fatal(err)
-	}
-	if !authOK(t, frontendAuthRequest{
-		Headers: http.Header{"Authorization": []string{"Bearer cpa_alice_secret"}},
-		Body:    []byte(`{"model":"gpt-5.5","prompt_cache_key":"window-a"}`),
-	}) {
-		t.Fatal("restored key should authenticate again")
+	if strings.Contains(string(body), `"ok":true`) {
+		t.Fatalf("deleted user session should fail clearly: %s", body)
 	}
 }
 
@@ -371,6 +382,14 @@ func TestAdminHTMLHasRenderedSharedCSS(t *testing.T) {
 	}
 	if !strings.Contains(html, "/key-policy-plus/api") || !strings.Contains(html, "编辑模型/价格") {
 		t.Fatal("admin html should use the management alias and structured model editor")
+	}
+	for _, removed := range []string{"请求并发", "Codex窗口", "显示归档", "归档隐藏", "恢复 Key"} {
+		if strings.Contains(html, removed) {
+			t.Fatalf("admin html should not contain retired control %q", removed)
+		}
+	}
+	if !strings.Contains(html, "删除 Key") || !strings.Contains(html, "/keys/delete") {
+		t.Fatal("admin html should expose hard delete through the management alias")
 	}
 }
 

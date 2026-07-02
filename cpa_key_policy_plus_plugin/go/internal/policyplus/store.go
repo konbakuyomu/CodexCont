@@ -574,6 +574,40 @@ func (s *Store) SetArchived(ctx context.Context, id string, archived bool, at ti
 	return s.Audit(ctx, "admin", action, id, map[string]any{"archived": archived, "archived_at": archivedAt})
 }
 
+func (s *Store) DeleteKey(ctx context.Context, id string) error {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return fmt.Errorf("missing key id")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var name, preview string
+	if err := tx.QueryRowContext(ctx, `select name, preview from keys where id=?`, id).Scan(&name, &preview); err != nil {
+		if err == sql.ErrNoRows {
+			return fmt.Errorf("unknown key: %s", id)
+		}
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `delete from reset_watermarks where key_id=?`, id); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `delete from active_sessions where key_id=?`, id); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `delete from keys where id=?`, id); err != nil {
+		return err
+	}
+	raw, _ := json.Marshal(map[string]any{"name": name, "preview": preview, "kept_usage_history": true})
+	if _, err := tx.ExecContext(ctx, `insert into audit_log(timestamp, actor, action, target, detail_json) values(?, ?, ?, ?, ?)`,
+		time.Now().Unix(), "admin", "delete_key", id, string(raw)); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 func (s *Store) FindKeyByHash(ctx context.Context, hash string) (KeyRecord, bool, error) {
 	keys, err := s.ListKeys(ctx)
 	if err != nil {

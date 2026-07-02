@@ -64,6 +64,15 @@ button.primary {
   background: rgba(59, 130, 246, .18);
 }
 button.ghost { background: #1a2230; }
+button.danger-action {
+  border-color: rgba(248, 113, 113, .42);
+  background: rgba(248, 113, 113, .12);
+  color: #ffb8b8;
+}
+button.danger-action:hover {
+  border-color: rgba(248, 113, 113, .62);
+  background: rgba(248, 113, 113, .18);
+}
 button.compact {
   min-height: 28px;
   padding: 0 9px;

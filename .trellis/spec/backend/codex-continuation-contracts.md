@@ -423,8 +423,8 @@ credential, while CPAMP remains admin-only.
 ### 1. Scope / Trigger
 - Trigger this spec whenever work touches `cpa_key_policy_plus_plugin/`, the
   `cpa-key-policy-plus` CPA plugin config, `cpa-usage.konbakuyomu.us`, per-key
-  quota windows, active Codex window limits, or migration from the old
-  `cpa-key-policy` plugin.
+  quota windows, hard key deletion, or migration from the old `cpa-key-policy`
+  plugin.
 - This is cross-layer work: CPA dynamic plugin loading, old Key Policy JSON
   import, Plus SQLite state, Caddy public/admin routing, user cookies, and
   CodexCont/Governor deployment boundaries must agree.
@@ -439,7 +439,8 @@ credential, while CPAMP remains admin-only.
   `codexcont_enabled`, `codexcont_route`, `codexcont_url`, and `fail_mode`.
 - SQLite tables owned by Plus: `keys`, `usage_events`, `reset_watermarks`,
   `active_requests`, `active_sessions`, `audit_log`, `codexcont_summaries`,
-  and `settings`.
+  and `settings`. `active_sessions` is retained for schema compatibility and
+  delete cleanup, but is not an enforcement source after the RPM-only cutover.
 - Admin resource: `GET /v0/resource/plugins/cpa-key-policy-plus/admin`.
 - Admin management routes:
   - `GET /v0/management/plugins/cpa-key-policy-plus/keys`
@@ -448,6 +449,7 @@ credential, while CPAMP remains admin-only.
   - `PUT /v0/management/plugins/cpa-key-policy-plus/keys/save`
   - `PUT /v0/management/plugins/cpa-key-policy-plus/keys/limits`
   - `POST /v0/management/plugins/cpa-key-policy-plus/keys/reset`
+  - `POST /v0/management/plugins/cpa-key-policy-plus/keys/delete`
 - User resource: `GET /v0/resource/plugins/cpa-key-policy-plus/user`.
 - Admin convenience route:
   `https://cpa-admin.konbakuyomu.us/key-policy-plus/`.
@@ -497,15 +499,19 @@ credential, while CPAMP remains admin-only.
 - `5h`, `24h`, and `7d` are rolling USD windows. `month` is the current
   Asia/Shanghai calendar month. Reset writes a soft watermark and does not
   delete historical `usage_events`.
-- `max_active_sessions` limits active Codex windows, not request frequency.
-  Session identity priority is `X-Codex-Window-Id`,
-  `client_metadata.x-codex-window-id`,
-  `X-Codex-Turn-Metadata.window_id/prompt_cache_key`, body
-  `prompt_cache_key`, `Session_id` / `X-Session-ID`, then
-  `conversation_id`. Sessions expire after 30 idle minutes.
-- Missing session identity is allowed in v1 and audited; do not reject it
-  because that would incorrectly block clients that do not expose a stable
-  window id.
+- Ordinary user throttling is RPM-only plus model allowlist and quota windows.
+  `concurrency` and `max_active_sessions` payload fields are compatibility
+  fields only: create/save handlers must accept stale payloads but persist and
+  return both values as `0`, and frontend auth must not read them.
+- Deleting a key is a hard-delete of the permission/config row:
+  `POST /key-policy-plus/api/keys/delete` with body
+  `{"id":"...","confirm":"delete"}` must remove rows from `keys`,
+  `reset_watermarks`, and `active_sessions`, append a `delete_key` audit entry,
+  and preserve `usage_events` plus `codexcont_summaries` for billing and
+  troubleshooting history.
+- Archive/restore has been retired. Stale archive routes may remain as
+  compatibility guards, but must return `410 archive_removed_use_delete`
+  instead of mutating key state.
 - `exclusive_auth: true` lets Plus participate in CPA frontend auth. In the
   current CPA host, policy rejection may be surfaced as CPA's generic `401`
   `Missing API key` response because `frontendAuth` returns unauthenticated.
@@ -528,11 +534,13 @@ credential, while CPAMP remains admin-only.
   not create a persistent `not_authenticated` loop after a successful login.
 - Shortened key preview or rotated full key -> login fails; only the full key
   shown at create/rotation can match the stored hash.
-- Disabled/disallowed/over-RPM/over-concurrency/over-quota request -> CPA
-  rejects before upstream execution. The public sidecar route may still touch
-  CodexCont during migration, but CPA must not execute the upstream provider.
-- Missing session id -> request is allowed and `missing_session_identity` is
-  recorded in audit.
+- Disabled/deleted/disallowed/over-RPM/over-quota request -> CPA rejects before
+  upstream execution. The public sidecar route may still touch CodexCont during
+  migration, but CPA must not execute the upstream provider.
+- Stale create/save payload includes `concurrency` or `max_active_sessions` ->
+  Plus ignores the requested values and persists `0`.
+- Stale archive route call -> `410 archive_removed_use_delete`.
+- Delete without `confirm:"delete"` -> `400 delete_confirmation_required`.
 - `POST/PUT /v0/resource/plugins/cpa-key-policy-plus/admin/api/*` -> fails
   before reaching plugin logic; this is a deployment/config bug if the admin
   page depends on it.
@@ -560,8 +568,14 @@ credential, while CPAMP remains admin-only.
 - Good: The admin page is a resource HTML page, while its mutations use
   `/key-policy-plus/api/*` and reach Plus management handlers with the CPA
   management key injected by the admin proxy.
+- Good: An unwanted key is removed through `/key-policy-plus/api/keys/delete`;
+  the key can no longer log in or authenticate requests, while historical usage
+  and CodexCont summaries still exist by safe `key_id`.
 - Bad: `cpa-usage` still reads `cpa_usage_portal` SQLite as the authority after
   Plus is enabled. That preserves the split-brain limit problem.
+- Bad: A retired key is only hidden or archived. That keeps a confusing second
+  lifecycle path and can make admins think a key was fully removed when the
+  permission row still exists.
 - Bad: The Plus admin page tries to create keys through
   `/v0/resource/plugins/cpa-key-policy-plus/admin/api/keys/create`. The current
   CPA host treats ResourceRoute as GET-only, so writes fail before plugin code.
@@ -572,8 +586,8 @@ credential, while CPAMP remains admin-only.
 ### 6. Tests Required
 - Go unit: old state import, Plus-native key preservation, raw-key hash login,
   rotation invalidation, negative value validation, model allowlist, RPM,
-  request concurrency, active-session limits, 30-minute expiry, missing-session
-  audit, rolling/natural-month quota windows, soft reset, and cost projection.
+  rolling/natural-month quota windows, soft reset, hard delete, retired
+  concurrency/session fields forced to zero, and cost projection.
 - Go unit: admin/user HTML resources are `no-store`, user login uses
   `X-CPA-Key-Policy-Plus-Key`, and responses do not leak raw keys/full hashes.
 - Go unit: user session creation sets `cpa_key_policy_plus_session` cookies on
@@ -584,9 +598,12 @@ credential, while CPAMP remains admin-only.
 - Go unit: admin HTML points mutations at `/key-policy-plus/api`, model
   normalization preserves unknown configured models, and create/save/reset
   through the admin alias persist settings.
+- Go unit: `/keys/delete` removes key/reset/active-session rows, preserves
+  usage and Codex summaries, writes `delete_key` audit, and stale archive routes
+  return `410 archive_removed_use_delete`.
 - Frontend/Playwright: Plus admin can create a key, select discovered models,
-  edit per-model prices, save, reload, and keep dense tables horizontally
-  scrollable on 390px without page-level overflow.
+  edit per-model prices, save, hard-delete a key, reload, and keep dense tables
+  horizontally scrollable on 390px without page-level overflow.
 - Production smoke: plugin SHA256 matches the built artifact, CPA logs show
   Plus loaded, Plus DB key count is nonzero, `cpa-usage` login works, admin
   backend `/key-policy-plus/` and `/key-policy-plus/api/models` work, a
@@ -629,6 +646,38 @@ admin proxy -> /v0/management/plugins/cpa-key-policy-plus/keys/create
 
 The admin proxy injects the CPA management key from a mounted secret or process
 environment, and the public API host still blocks `/key-policy-plus*`.
+
+#### Wrong
+```text
+admin "deletes" a key by setting enabled=false or archived=true
+```
+
+This leaves a permission row behind and keeps the old archive lifecycle alive.
+
+#### Correct
+```text
+admin HTML -> /key-policy-plus/api/keys/delete {"id":"...","confirm":"delete"}
+Plus -> delete keys/reset_watermarks/active_sessions, keep safe history
+```
+
+Hard deletion removes the authority entry while preserving billing and
+diagnostic records.
+
+#### Wrong
+```text
+Codex window count -> reject requests via max_active_sessions
+```
+
+Normal Codex conversations can reuse or fan out window/session metadata in ways
+that make this limit noisy and hard to explain.
+
+#### Correct
+```text
+frontend auth -> enabled/deleted check -> model allowlist -> RPM -> quota windows
+```
+
+After the RPM-only cutover, concurrency/session fields are accepted only for
+backward-compatible payload decoding and must be stored as zero.
 
 #### Wrong
 ```text

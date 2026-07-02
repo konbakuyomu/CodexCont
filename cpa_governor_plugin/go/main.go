@@ -79,12 +79,10 @@ type runtimeState struct {
 	keyStateModTime   time.Time
 	keyStateLastCheck time.Time
 	rpmBuckets        map[string][]time.Time
-	concurrency       map[string]int
 }
 
 var state = runtimeState{
-	rpmBuckets:  map[string][]time.Time{},
-	concurrency: map[string]int{},
+	rpmBuckets: map[string][]time.Time{},
 }
 
 func main() { runPreviewIfRequested() }
@@ -182,7 +180,6 @@ func runPreviewIfRequested() {
 	state.store = store
 	state.keyState = governor.KeyPolicyState{Keys: []governor.KeyRecord{previewKey}}
 	state.rpmBuckets = map[string][]time.Time{}
-	state.concurrency = map[string]int{}
 	state.mu.Unlock()
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v0/resource/plugins/cpa-governor/admin", func(w http.ResponseWriter, r *http.Request) {
@@ -505,9 +502,6 @@ func frontendAuth(raw []byte) ([]byte, error) {
 	if !allowQuota(record) {
 		return okEnvelope(frontendAuthResponse{Authenticated: false})
 	}
-	if !acquireConcurrency(record) {
-		return okEnvelope(frontendAuthResponse{Authenticated: false})
-	}
 	return okEnvelope(frontendAuthResponse{
 		Authenticated: true,
 		Principal:     record.ID,
@@ -682,35 +676,6 @@ func allowQuota(key governor.KeyRecord) bool {
 	return true
 }
 
-func acquireConcurrency(key governor.KeyRecord) bool {
-	if key.Concurrency <= 0 {
-		return true
-	}
-	state.mu.Lock()
-	if state.concurrency[key.ID] >= key.Concurrency {
-		state.mu.Unlock()
-		return false
-	}
-	state.concurrency[key.ID]++
-	state.mu.Unlock()
-	go func() {
-		time.Sleep(10 * time.Minute)
-		releaseConcurrency(key.ID)
-	}()
-	return true
-}
-
-func releaseConcurrency(keyID string) {
-	if strings.TrimSpace(keyID) == "" {
-		return
-	}
-	state.mu.Lock()
-	defer state.mu.Unlock()
-	if state.concurrency[keyID] > 0 {
-		state.concurrency[keyID]--
-	}
-}
-
 func executorUnavailable() ([]byte, error) {
 	cfg := loadedConfig()
 	if cfg.CodexContRoute && cfg.FailMode == "fail_closed" {
@@ -818,9 +783,6 @@ func usageHandle(raw []byte) ([]byte, error) {
 	key := keyByID[rec.APIKey]
 	if key.ID == "" {
 		key = keyByID[rec.Source]
-	}
-	if key.ID != "" {
-		releaseConcurrency(key.ID)
 	}
 	usage := governor.TokenUsage{
 		InputTokens:         rec.Detail.InputTokens,

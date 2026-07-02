@@ -293,12 +293,11 @@
         <div class="mark">K+</div>
         <div>
           <h1>CPA Key Policy+</h1>
-          <p class="subtitle">统一管理用户 Key、模型权限、用量限额、并发和 Codex 窗口数</p>
+          <p class="subtitle">统一管理用户 Key、模型权限、RPM 和用量限额</p>
         </div>
       </div>
       <div class="toolbar">
         <span id="sync" class="chip stream info"><span class="dot"></span>准备同步</span>
-        <label class="check"><input id="show-archived" type="checkbox">显示归档</label>
         <button id="create" class="btn primary" type="button">新建 Key</button>
         <button id="save" class="btn" type="button">保存全部</button>
         <button id="refresh" class="btn" type="button">刷新</button>
@@ -323,7 +322,7 @@
                 <th>用户/Key</th>
                 <th>状态</th>
                 <th>额度概览</th>
-                <th>并发策略</th>
+                <th>RPM策略</th>
                 <th>模型/价格</th>
                 <th>操作</th>
               </tr>
@@ -363,8 +362,6 @@
           <label class="span-2">名称<input id="create-name" placeholder="例如 QQ 专用 / Kuma 测试"></label>
           <label>状态<select id="create-enabled"><option value="true">启用</option><option value="false">禁用</option></select></label>
           <label>RPM<input id="create-rpm" type="number" min="0" value="60"></label>
-          <label>请求并发<input id="create-concurrency" type="number" min="0" value="2"></label>
-          <label>Codex窗口<input id="create-sessions" type="number" min="0" value="2"></label>
           <div class="field span-2">
             <span>初始模型</span>
             <small>不选择任何模型就是允许全部模型；也可以手动添加暂未发现的模型名。</small>
@@ -471,7 +468,6 @@ const state = {
   modelOptions: [],
   modelWarnings: [],
   selectedId: "",
-  showArchived: false,
   dirty: false,
   createModels: new Set(),
   editor: null,
@@ -565,17 +561,17 @@ function modelPreview(k){
 }
 function displayPreview(v){ return String(v || "").replace(/\.\.\./g, "…"); }
 function statusChip(k){
-  if (k.archived) return `<span class="chip warn"><span class="dot"></span>已归档</span>`;
+  if (k.archived) return `<span class="chip warn"><span class="dot"></span>待删除</span>`;
   if (k.enabled) return `<span class="chip ok"><span class="dot"></span>启用</span>`;
   return `<span class="chip bad"><span class="dot"></span>禁用</span>`;
 }
 function visibleKeys(){
-  return state.keys.filter(k => state.showArchived || !k.archived);
+  return state.keys;
 }
 function findKey(id){ return state.keys.find(k => k.id === id); }
 function ensureSelection(){
   const list = visibleKeys();
-  if (state.selectedId && findKey(state.selectedId) && (state.showArchived || !findKey(state.selectedId).archived)) return;
+  if (state.selectedId && findKey(state.selectedId)) return;
   state.selectedId = list[0]?.id || "";
 }
 function markDirty(){
@@ -634,8 +630,8 @@ function keyPayload(k){
     name: String(k.name || "").trim(),
     enabled: !!k.enabled,
     rpm: nullableNumber(k.rpm) || 0,
-    concurrency: nullableNumber(k.concurrency) || 0,
-    max_active_sessions: nullableNumber(k.max_active_sessions) || 0,
+    concurrency: 0,
+    max_active_sessions: 0,
     models: cleanStrings(k.models || []),
     prices: cleanPrices(pricesOf(k)),
     five_hour_usd: numberOrNull(limits.five_hour_usd),
@@ -647,13 +643,12 @@ function keyPayload(k){
 
 function renderMetrics(){
   const total = state.keys.length;
-  const archived = state.keys.filter(k => k.archived).length;
   const enabled = state.keys.filter(k => k.enabled && !k.archived).length;
-  const active = state.keys.reduce((s,k) => s + Number(k.active_sessions || 0), 0);
+  const disabled = state.keys.filter(k => !k.enabled || k.archived).length;
   const cost = state.keys.reduce((s,k) => s + Number(usageOf(k)["24h"] || 0), 0);
   $("metrics").innerHTML = `
-    <article class="metric"><div class="label">Key 总数</div><div class="value">${total}</div><div class="hint">启用 ${enabled} · 归档 ${archived}</div></article>
-    <article class="metric"><div class="label">当前活跃窗口</div><div class="value">${active}</div><div class="hint">30 分钟空闲释放</div></article>
+    <article class="metric"><div class="label">Key 总数</div><div class="value">${total}</div><div class="hint">启用 ${enabled} · 禁用 ${disabled}</div></article>
+    <article class="metric"><div class="label">RPM 策略</div><div class="value">${state.keys.filter(k => Number(k.rpm || 0) > 0).length}</div><div class="hint">仅使用 RPM 控制频率</div></article>
     <article class="metric"><div class="label">24H 费用</div><div class="value">$${cost.toFixed(3)}</div><div class="hint">按当前价格估算</div></article>
     <article class="metric"><div class="label">模型来源</div><div class="value">${state.modelOptions.length}</div><div class="hint">${state.modelWarnings.length ? "有兜底提示" : "已同步"}</div></article>`;
 }
@@ -671,15 +666,15 @@ function renderKeyList(){
   const body = $("keys-body");
   const list = visibleKeys();
   if (!list.length) {
-    body.innerHTML = `<tr><td colspan="6" class="empty">暂无可显示 Key，点击右上角新建或勾选显示归档。</td></tr>`;
+    body.innerHTML = `<tr><td colspan="6" class="empty">暂无可显示 Key，点击右上角新建。</td></tr>`;
     return;
   }
   body.innerHTML = list.map(k => `
     <tr class="key-row ${k.id === state.selectedId ? "selected" : ""}" data-select="${escapeHTML(k.id)}">
       <td><div class="key-title"><strong>${escapeHTML(k.name || "-")}</strong><small class="mono">${escapeHTML(displayPreview(k.preview || k.id || ""))}</small></div></td>
-      <td><div class="stack">${statusChip(k)}<small>活跃 ${Number(k.active_sessions || 0)}</small></div></td>
+      <td><div class="stack">${statusChip(k)}</div></td>
       <td><div class="mini-grid">${renderQuotaMini(k,"5h","5H")}${renderQuotaMini(k,"24h","24H")}${renderQuotaMini(k,"7d","7D")}${renderQuotaMini(k,"month","月")}</div></td>
-      <td><div class="stack"><span>RPM ${Number(k.rpm || 0)}</span><span>请求并发 ${Number(k.concurrency || 0)}</span><span>Codex窗口 ${Number(k.max_active_sessions || 0)}</span></div></td>
+      <td><div class="stack"><span>RPM ${Number(k.rpm || 0)}</span><small>请求频率限制</small></div></td>
       <td><div class="stack"><div class="tag-row"><span class="tag ${selectedModels(k).length ? "" : "warn"}">${escapeHTML(modelCountText(k))}</span><span class="tag ${priceCoverage(k).startsWith("0/") || priceCoverage(k) === "无价格" ? "warn" : "ok"}">${escapeHTML(priceCoverage(k))}</span></div><small>${escapeHTML(modelPreview(k))}</small></div></td>
       <td><button class="btn mini" data-edit="${escapeHTML(k.id)}" type="button">编辑</button></td>
     </tr>`).join("");
@@ -703,14 +698,12 @@ function renderDetail(){
   }
   $("detail-subtitle").textContent = `${key.name || "-"} · ${displayPreview(key.preview || key.id)}`;
   body.innerHTML = `
-    <div class="tag-row">${statusChip(key)}<span class="tag">活跃 ${Number(key.active_sessions || 0)}</span><span class="tag">${escapeHTML(modelCountText(key))}</span><span class="tag ${priceCoverage(key).startsWith("0/") || priceCoverage(key) === "无价格" ? "warn" : "ok"}">${escapeHTML(priceCoverage(key))}</span></div>
+    <div class="tag-row">${statusChip(key)}<span class="tag">RPM ${Number(key.rpm || 0)}</span><span class="tag">${escapeHTML(modelCountText(key))}</span><span class="tag ${priceCoverage(key).startsWith("0/") || priceCoverage(key) === "无价格" ? "warn" : "ok"}">${escapeHTML(priceCoverage(key))}</span></div>
     <div class="section-title"><h3>基础策略</h3></div>
     <div class="field-grid">
       <label class="span-2">名称<input data-detail="name" value="${escapeHTML(key.name || "")}"></label>
       <label>启用状态<select data-detail="enabled"><option value="true" ${key.enabled ? "selected" : ""}>启用</option><option value="false" ${!key.enabled ? "selected" : ""}>禁用</option></select></label>
       <label>RPM<input data-detail="rpm" type="number" min="0" value="${Number(key.rpm || 0)}"></label>
-      <label>请求并发<input data-detail="concurrency" type="number" min="0" value="${Number(key.concurrency || 0)}"></label>
-      <label>Codex窗口<input data-detail="max_active_sessions" type="number" min="0" value="${Number(key.max_active_sessions || 0)}"></label>
     </div>
     <div class="section-title"><h3>额度窗口</h3><small>已用 / 限额 / 剩余</small></div>
     <div class="quota-editor">${windows.map(([name,label,field]) => {
@@ -734,7 +727,7 @@ function renderDetail(){
       <button class="btn mini" data-reset="7d" type="button">清7D</button>
       <button class="btn mini" data-reset="month" type="button">清月</button>
       <button class="btn mini" data-reset="all" type="button">清全部</button>
-      <button class="btn mini ${key.archived ? "primary" : ""}" id="archive-key" type="button">${key.archived ? "恢复 Key" : "归档隐藏"}</button>
+      <button class="btn mini danger-action" id="delete-key" type="button">删除 Key</button>
     </div>`;
   body.querySelectorAll("[data-detail]").forEach(input => input.oninput = () => updateDetail(input));
   body.querySelectorAll("[data-detail]").forEach(input => input.onchange = () => updateDetail(input));
@@ -745,14 +738,14 @@ function renderDetail(){
   });
   body.querySelectorAll("[data-reset]").forEach(btn => btn.onclick = () => resetSelected(btn.dataset.reset));
   $("edit-models").onclick = () => openEditor(key.id);
-  $("archive-key").onclick = () => archiveSelected();
+  $("delete-key").onclick = () => deleteSelected();
 }
 function updateDetail(input){
   const key = findKey(state.selectedId);
   if (!key) return;
   const field = input.dataset.detail;
   if (field === "enabled") key.enabled = input.value === "true";
-  else if (["rpm","concurrency","max_active_sessions"].includes(field)) key[field] = Number(input.value || 0);
+  else if (field === "rpm") key[field] = Number(input.value || 0);
   else key[field] = input.value;
   markDirty();
   renderKeyList();
@@ -824,25 +817,23 @@ async function resetSelected(windowName){
     setSync("清零失败：" + e.message, "bad");
   }
 }
-async function archiveSelected(){
+async function deleteSelected(){
   const key = findKey(state.selectedId);
   if (!key) return;
-  const next = !key.archived;
-  const text = next ? "归档后该 Key 将不能登录或调用，但历史用量会保留。确认归档？" : "确认恢复这个 Key？恢复后仍受启用状态和额度限制。";
-  if (!confirm(text)) return;
+  if (!confirm(`确认彻底删除 ${key.name || key.id}？删除后该 Key 不能再登录或调用；历史用量明细会保留用于账单和排障。`)) return;
   try {
-    setSync(next ? "归档中" : "恢复中", "info");
-    const resp = await api("/keys/archive", {
+    setSync("删除中", "info");
+    const resp = await api("/keys/delete", {
       method: "POST",
       headers: {"Content-Type":"application/json"},
-      body: JSON.stringify({id:key.id, archived:next})
+      body: JSON.stringify({id:key.id, confirm:"delete"})
     });
-    state.keys = resp.keys || state.keys.map(k => k.id === key.id ? {...k, archived:next} : k);
-    if (next && !state.showArchived) state.selectedId = "";
+    state.keys = resp.keys || state.keys.filter(k => k.id !== key.id);
+    state.selectedId = "";
     render();
-    setSync(next ? "已归档" : "已恢复", "ok");
+    setSync("已删除", "ok");
   } catch(e) {
-    setSync("生命周期操作失败：" + e.message, "bad");
+    setSync("删除失败：" + e.message, "bad");
   }
 }
 
@@ -892,8 +883,6 @@ function openCreate(){
   $("create-name").value = "";
   $("create-enabled").value = "true";
   $("create-rpm").value = "60";
-  $("create-concurrency").value = "2";
-  $("create-sessions").value = "2";
   $("create-model-search").value = "";
   $("create-add-model").value = "";
   openModal("create-modal");
@@ -923,8 +912,8 @@ async function createKey(){
       name: $("create-name").value.trim(),
       enabled: $("create-enabled").value === "true",
       rpm: numberOrNull($("create-rpm").value) || 0,
-      concurrency: numberOrNull($("create-concurrency").value) || 0,
-      max_active_sessions: numberOrNull($("create-sessions").value) || 0,
+      concurrency: 0,
+      max_active_sessions: 0,
       models: [...state.createModels]
     };
     const resp = await api("/keys/create", {
@@ -1009,7 +998,6 @@ function applyEditor(){
 function openModal(id){ $(id).classList.add("open"); $(id).setAttribute("aria-hidden", "false"); }
 function closeModal(id){ $(id).classList.remove("open"); $(id).setAttribute("aria-hidden", "true"); }
 
-$("show-archived").onchange = () => { state.showArchived = $("show-archived").checked; render(); };
 $("create").onclick = openCreate;
 $("refresh").onclick = load;
 $("save").onclick = saveAll;

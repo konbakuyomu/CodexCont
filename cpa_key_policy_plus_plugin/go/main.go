@@ -85,12 +85,10 @@ type runtimeState struct {
 	keyStateModTime   time.Time
 	keyStateLastCheck time.Time
 	rpmBuckets        map[string][]time.Time
-	concurrency       map[string]int
 }
 
 var state = runtimeState{
-	rpmBuckets:  map[string][]time.Time{},
-	concurrency: map[string]int{},
+	rpmBuckets: map[string][]time.Time{},
 }
 
 func main() { runPreviewIfRequested() }
@@ -121,7 +119,7 @@ func runPreviewIfRequested() {
 		Enabled:         true,
 		Preview:         policyplus.HashPreview(policyplus.SHA256Hex(previewRawKey)),
 		RPM:             60,
-		Concurrency:     2,
+		Concurrency:     0,
 		Models:          []string{"gpt-5.5", "gpt-5.4"},
 		FiveHourUSD:     floatPtr(2),
 		DailyLimitUSD:   floatPtr(8),
@@ -138,20 +136,10 @@ func runPreviewIfRequested() {
 		Enabled:           false,
 		Preview:           policyplus.HashPreview(policyplus.SHA256Hex("cpa_preview_disabled_abcdefghijklmnopqrstuvwxyz0123")),
 		RPM:               30,
-		Concurrency:       1,
-		MaxActiveSessions: 1,
+		Concurrency:       0,
+		MaxActiveSessions: 0,
 		Models:            []string{"gpt-5.4-mini"},
 		DailyLimitUSD:     floatPtr(3),
-	}
-	archivedKey := policyplus.KeyRecord{
-		ID:         "preview-archived",
-		Name:       "归档演示",
-		KeyHash:    "sha256:" + policyplus.SHA256Hex("cpa_preview_archived_abcdefghijklmnopqrstuvwxyz0123"),
-		Enabled:    true,
-		Preview:    policyplus.HashPreview(policyplus.SHA256Hex("cpa_preview_archived_abcdefghijklmnopqrstuvwxyz0123")),
-		Archived:   true,
-		ArchivedAt: time.Now().Add(-2 * time.Hour).Unix(),
-		Models:     []string{"gpt-5.5"},
 	}
 	noLimitKey := policyplus.KeyRecord{
 		ID:                "preview-no-limit",
@@ -165,7 +153,6 @@ func runPreviewIfRequested() {
 	}
 	_ = store.UpsertKey(context.Background(), previewKey)
 	_ = store.UpsertKey(context.Background(), disabledKey)
-	_ = store.UpsertKey(context.Background(), archivedKey)
 	_ = store.UpsertKey(context.Background(), noLimitKey)
 	_ = store.InsertUsage(context.Background(), policyplus.UsageEvent{
 		RequestID:       "req-preview-a",
@@ -226,20 +213,11 @@ func runPreviewIfRequested() {
 		RequestedAt: time.Now().Add(-25 * time.Minute),
 		Cost:        0.18,
 	})
-	_ = store.InsertUsage(context.Background(), policyplus.UsageEvent{
-		RequestID:   "req-preview-archived",
-		KeyID:       archivedKey.ID,
-		KeyPreview:  archivedKey.Preview,
-		Model:       "gpt-5.5",
-		RequestedAt: time.Now().Add(-70 * time.Minute),
-		Cost:        1.2,
-	})
 	state.mu.Lock()
 	state.cfg = cfg
 	state.store = store
-	state.keyState = policyplus.KeyPolicyState{Keys: []policyplus.KeyRecord{previewKey, disabledKey, archivedKey, noLimitKey}}
+	state.keyState = policyplus.KeyPolicyState{Keys: []policyplus.KeyRecord{previewKey, disabledKey, noLimitKey}}
 	state.rpmBuckets = map[string][]time.Time{}
-	state.concurrency = map[string]int{}
 	state.mu.Unlock()
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v0/resource/plugins/cpa-key-policy-plus/admin", func(w http.ResponseWriter, r *http.Request) {
@@ -594,12 +572,6 @@ func frontendAuth(raw []byte) ([]byte, error) {
 	if !allowQuota(record) {
 		return okEnvelope(frontendAuthResponse{Authenticated: false})
 	}
-	if !allowActiveSession(record, req) {
-		return okEnvelope(frontendAuthResponse{Authenticated: false})
-	}
-	if !acquireConcurrency(record) {
-		return okEnvelope(frontendAuthResponse{Authenticated: false})
-	}
 	return okEnvelope(frontendAuthResponse{
 		Authenticated: true,
 		Principal:     record.ID,
@@ -774,51 +746,6 @@ func allowQuota(key policyplus.KeyRecord) bool {
 	return true
 }
 
-func allowActiveSession(key policyplus.KeyRecord, req frontendAuthRequest) bool {
-	if key.MaxActiveSessions <= 0 {
-		return true
-	}
-	store := loadedStore()
-	if store == nil {
-		return true
-	}
-	identity := policyplus.ExtractSessionIdentity(req.Headers, req.Body)
-	decision, err := store.RegisterActiveSession(context.Background(), key.ID, identity, key.MaxActiveSessions, policyplus.DefaultSessionIdle, time.Now())
-	if err != nil {
-		return false
-	}
-	return decision.Allowed
-}
-
-func acquireConcurrency(key policyplus.KeyRecord) bool {
-	if key.Concurrency <= 0 {
-		return true
-	}
-	state.mu.Lock()
-	if state.concurrency[key.ID] >= key.Concurrency {
-		state.mu.Unlock()
-		return false
-	}
-	state.concurrency[key.ID]++
-	state.mu.Unlock()
-	go func() {
-		time.Sleep(10 * time.Minute)
-		releaseConcurrency(key.ID)
-	}()
-	return true
-}
-
-func releaseConcurrency(keyID string) {
-	if strings.TrimSpace(keyID) == "" {
-		return
-	}
-	state.mu.Lock()
-	defer state.mu.Unlock()
-	if state.concurrency[keyID] > 0 {
-		state.concurrency[keyID]--
-	}
-}
-
 func executorUnavailable() ([]byte, error) {
 	cfg := loadedConfig()
 	if cfg.CodexContRoute && cfg.FailMode == "fail_closed" {
@@ -927,9 +854,6 @@ func usageHandle(raw []byte) ([]byte, error) {
 	if key.ID == "" {
 		key = keyByID[rec.Source]
 	}
-	if key.ID != "" {
-		releaseConcurrency(key.ID)
-	}
 	usage := policyplus.TokenUsage{
 		InputTokens:         rec.Detail.InputTokens,
 		OutputTokens:        rec.Detail.OutputTokens,
@@ -982,7 +906,7 @@ func managementRegister() ([]byte, error) {
 			{Method: http.MethodPut, Path: "/plugins/cpa-key-policy-plus/keys/save"},
 			{Method: http.MethodPut, Path: "/plugins/cpa-key-policy-plus/keys/limits"},
 			{Method: http.MethodPost, Path: "/plugins/cpa-key-policy-plus/keys/reset"},
-			{Method: http.MethodPost, Path: "/plugins/cpa-key-policy-plus/keys/archive"},
+			{Method: http.MethodPost, Path: "/plugins/cpa-key-policy-plus/keys/delete"},
 			{Method: http.MethodGet, Path: "/plugins/cpa-key-policy-plus/events"},
 			{Method: http.MethodGet, Path: "/plugins/cpa-key-policy-plus/codexcont"},
 			{Method: http.MethodPut, Path: "/plugins/cpa-key-policy-plus/codexcont"},
@@ -995,7 +919,7 @@ func managementRegister() ([]byte, error) {
 			{Path: "/admin/api/keys/save"},
 			{Path: "/admin/api/keys/limits"},
 			{Path: "/admin/api/keys/reset"},
-			{Path: "/admin/api/keys/archive"},
+			{Path: "/admin/api/keys/delete"},
 			{Path: "/admin/api/events"},
 			{Path: "/admin/api/codexcont"},
 			{Path: "/user", Description: "Self-service usage dashboard"},
@@ -1034,6 +958,8 @@ func managementHandle(raw []byte) ([]byte, error) {
 		return adminReset(req)
 	case strings.HasSuffix(path, "/admin/api/keys/archive"):
 		return adminArchiveKey(req)
+	case strings.HasSuffix(path, "/admin/api/keys/delete"):
+		return adminDeleteKey(req)
 	case strings.HasSuffix(path, "/admin/api/events"):
 		return adminEvents(req)
 	case strings.HasSuffix(path, "/admin/api/codexcont"):
@@ -1062,6 +988,8 @@ func managementHandle(raw []byte) ([]byte, error) {
 		return adminReset(req)
 	case strings.HasSuffix(path, "/plugins/cpa-key-policy-plus/keys/archive"):
 		return adminArchiveKey(req)
+	case strings.HasSuffix(path, "/plugins/cpa-key-policy-plus/keys/delete"):
+		return adminDeleteKey(req)
 	case strings.HasSuffix(path, "/plugins/cpa-key-policy-plus/events"):
 		return adminEvents(req)
 	case strings.HasSuffix(path, "/plugins/cpa-key-policy-plus/codexcont"):
@@ -1080,6 +1008,8 @@ func managementHandle(raw []byte) ([]byte, error) {
 		return adminReset(req)
 	case strings.HasSuffix(path, "/key-policy-plus/api/keys/archive"):
 		return adminArchiveKey(req)
+	case strings.HasSuffix(path, "/key-policy-plus/api/keys/delete"):
+		return adminDeleteKey(req)
 	case strings.HasSuffix(path, "/key-policy-plus/api/events"):
 		return adminEvents(req)
 	case strings.HasSuffix(path, "/key-policy-plus/api/codexcont"):
@@ -1106,9 +1036,6 @@ func adminKeys(_ managementRequest) ([]byte, error) {
 		usage := usageWindows(context.Background(), store, key.ID, now)
 		row["usage"] = usage
 		row["quota"] = quotaWindows(key, usage)
-		if active, err := store.ActiveSessionCount(context.Background(), key.ID, policyplus.DefaultSessionIdle, now); err == nil {
-			row["active_sessions"] = active
-		}
 		safe = append(safe, row)
 	}
 	return jsonResponse(http.StatusOK, map[string]any{"ok": true, "keys": safe, "codexcont": codexcontStatus()})
@@ -1221,14 +1148,6 @@ func adminCreateKey(req managementRequest) ([]byte, error) {
 	if rpm == 0 {
 		rpm = 60
 	}
-	concurrency := body.Concurrency
-	if concurrency == 0 {
-		concurrency = 2
-	}
-	maxActiveSessions := body.MaxActiveSessions
-	if maxActiveSessions == 0 {
-		maxActiveSessions = 2
-	}
 	store := loadedStore()
 	if store == nil {
 		return jsonResponse(http.StatusServiceUnavailable, map[string]any{"ok": false, "error": "store_unavailable"})
@@ -1240,8 +1159,8 @@ func adminCreateKey(req managementRequest) ([]byte, error) {
 		Enabled:           enabled,
 		Preview:           policyplus.HashPreview(hash),
 		RPM:               rpm,
-		Concurrency:       concurrency,
-		MaxActiveSessions: maxActiveSessions,
+		Concurrency:       0,
+		MaxActiveSessions: 0,
 		Models:            cleanStrings(body.Models),
 		Prices:            cleanPrices(body.Prices),
 		FiveHourUSD:       body.FiveHourUSD,
@@ -1307,8 +1226,8 @@ func adminSaveKeys(req managementRequest) ([]byte, error) {
 			key.Name = strings.TrimSpace(item.Name)
 		}
 		key.RPM = item.RPM
-		key.Concurrency = item.Concurrency
-		key.MaxActiveSessions = item.MaxActiveSessions
+		key.Concurrency = 0
+		key.MaxActiveSessions = 0
 		key.Models = cleanStrings(item.Models)
 		if item.Prices != nil {
 			key.Prices = cleanPrices(item.Prices)
@@ -1411,18 +1330,29 @@ func adminReset(req managementRequest) ([]byte, error) {
 }
 
 func adminArchiveKey(req managementRequest) ([]byte, error) {
+	return jsonResponse(http.StatusGone, map[string]any{
+		"ok":      false,
+		"error":   "archive_removed_use_delete",
+		"message": "归档/恢复功能已移除，请使用删除 Key。",
+	})
+}
+
+func adminDeleteKey(req managementRequest) ([]byte, error) {
 	var body struct {
-		ID       string `json:"id"`
-		Archived bool   `json:"archived"`
+		ID      string `json:"id"`
+		Confirm string `json:"confirm"`
 	}
 	if err := json.Unmarshal(req.Body, &body); err != nil {
 		return jsonResponse(http.StatusBadRequest, map[string]any{"ok": false, "error": "invalid_json"})
+	}
+	if body.Confirm != "delete" {
+		return jsonResponse(http.StatusBadRequest, map[string]any{"ok": false, "error": "delete_confirmation_required"})
 	}
 	store := loadedStore()
 	if store == nil {
 		return jsonResponse(http.StatusServiceUnavailable, map[string]any{"ok": false, "error": "store_unavailable"})
 	}
-	if err := store.SetArchived(context.Background(), body.ID, body.Archived, time.Now()); err != nil {
+	if err := store.DeleteKey(context.Background(), body.ID); err != nil {
 		return jsonResponse(http.StatusBadRequest, map[string]any{"ok": false, "error": err.Error()})
 	}
 	return adminKeys(req)
@@ -1498,7 +1428,7 @@ func userSession(req managementRequest) ([]byte, error) {
 		return jsonResponse(http.StatusForbidden, map[string]any{"ok": false, "error": "api_key_disabled", "category": "auth", "message": "这个 Key 当前已禁用，请联系管理员。"})
 	}
 	if record.Archived {
-		return jsonResponse(http.StatusForbidden, map[string]any{"ok": false, "error": "api_key_archived", "category": "auth", "message": "这个 Key 已归档，不能再登录或调用，请联系管理员恢复。"})
+		return jsonResponse(http.StatusForbidden, map[string]any{"ok": false, "error": "api_key_unavailable", "category": "auth", "message": "这个 Key 已不可用，不能再登录或调用；请联系管理员确认是否已删除。"})
 	}
 	cfg := loadedConfig()
 	token, err := policyplus.SignSession(policyplus.SessionPayload{

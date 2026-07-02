@@ -63,10 +63,10 @@ plugins:
       fail_mode: fallback
 ```
 
-Use `exclusive_auth: true` when Governor is expected to hard-block disabled,
-over-quota, over-RPM, or over-concurrency user keys. Without exclusive auth,
-another frontend auth provider can still authenticate the same request after
-Governor declines it.
+Use `exclusive_auth: true` only when Governor is expected to participate in
+frontend auth. Current production key policy has moved to `cpa-key-policy-plus`,
+which hard-blocks disabled, disallowed-model, over-quota, and over-RPM user
+keys. Governor no longer enforces request concurrency.
 
 ## Production Routes
 

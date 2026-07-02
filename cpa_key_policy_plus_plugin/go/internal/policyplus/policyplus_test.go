@@ -239,7 +239,7 @@ func TestStoreUsageWindowsAndSoftReset(t *testing.T) {
 	}
 }
 
-func TestStoreArchivesAndRestoresKeys(t *testing.T) {
+func TestStoreDeleteKeyRemovesConfigAndKeepsHistory(t *testing.T) {
 	ctx := context.Background()
 	store, err := OpenStore(filepath.Join(t.TempDir(), "policyplus.sqlite"))
 	if err != nil {
@@ -256,25 +256,61 @@ func TestStoreArchivesAndRestoresKeys(t *testing.T) {
 	if err := store.UpsertKey(ctx, key); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.SetArchived(ctx, key.ID, true, time.Unix(1234, 0)); err != nil {
+	now := time.Now()
+	if err := store.Reset(ctx, key.ID, Range5H, now.Add(-time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.RegisterActiveSession(ctx, key.ID, newSessionIdentity("test", "window-a"), 3, DefaultSessionIdle, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.InsertUsage(ctx, UsageEvent{
+		RequestID:   "req-delete-kept",
+		KeyID:       key.ID,
+		RequestedAt: now,
+		Cost:        0.25,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveCodexSummary(ctx, "codex-delete-kept", key.ID, "gpt-5.5", "protected_clean", map[string]any{
+		"request_id": "codex-delete-kept",
+		"started_at": now.Format(time.RFC3339),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := store.DeleteKey(ctx, key.ID); err != nil {
 		t.Fatal(err)
 	}
 	keys, err := store.ListKeys(ctx)
-	if err != nil || len(keys) != 1 {
+	if err != nil || len(keys) != 0 {
 		t.Fatalf("keys err=%v keys=%#v", err, keys)
 	}
-	if !keys[0].Archived || keys[0].ArchivedAt != 1234 {
-		t.Fatalf("archive fields = %#v", keys[0])
-	}
-	if err := store.SetArchived(ctx, key.ID, false, time.Unix(1300, 0)); err != nil {
+	usage, err := store.UsageSummary(ctx, key.ID, WindowFor(Range24H, now))
+	if err != nil {
 		t.Fatal(err)
 	}
-	keys, err = store.ListKeys(ctx)
-	if err != nil || len(keys) != 1 {
-		t.Fatalf("keys err=%v keys=%#v", err, keys)
+	if usage.Calls != 1 || usage.TotalCost != 0.25 {
+		t.Fatalf("usage history should be retained after delete: %#v", usage)
 	}
-	if keys[0].Archived || keys[0].ArchivedAt != 0 {
-		t.Fatalf("restore fields = %#v", keys[0])
+	codex, err := store.RecentCodexSummaries(ctx, key.ID, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(codex) != 1 || codex[0].RequestID != "codex-delete-kept" {
+		t.Fatalf("codex history should be retained after delete: %#v", codex)
+	}
+	var resetCount, activeCount, auditCount int
+	if err := store.db.QueryRowContext(ctx, `select count(1) from reset_watermarks where key_id=?`, key.ID).Scan(&resetCount); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.QueryRowContext(ctx, `select count(1) from active_sessions where key_id=?`, key.ID).Scan(&activeCount); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.QueryRowContext(ctx, `select count(1) from audit_log where target=? and action='delete_key'`, key.ID).Scan(&auditCount); err != nil {
+		t.Fatal(err)
+	}
+	if resetCount != 0 || activeCount != 0 || auditCount != 1 {
+		t.Fatalf("delete cleanup reset=%d active=%d audit=%d", resetCount, activeCount, auditCount)
 	}
 }
 
