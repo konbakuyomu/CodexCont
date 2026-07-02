@@ -128,7 +128,42 @@ func runPreviewIfRequested() {
 			"gpt-5.5": {Model: "gpt-5.5", InputPerMillion: 5, OutputPerMillion: 30, CacheReadPerMillion: 0.5},
 		},
 	}
+	disabledKey := policyplus.KeyRecord{
+		ID:                "preview-disabled",
+		Name:              "禁用演示",
+		KeyHash:           "sha256:" + policyplus.SHA256Hex("cpa_preview_disabled_abcdefghijklmnopqrstuvwxyz0123"),
+		Enabled:           false,
+		Preview:           policyplus.HashPreview(policyplus.SHA256Hex("cpa_preview_disabled_abcdefghijklmnopqrstuvwxyz0123")),
+		RPM:               30,
+		Concurrency:       1,
+		MaxActiveSessions: 1,
+		Models:            []string{"gpt-5.4-mini"},
+		DailyLimitUSD:     floatPtr(3),
+	}
+	archivedKey := policyplus.KeyRecord{
+		ID:         "preview-archived",
+		Name:       "归档演示",
+		KeyHash:    "sha256:" + policyplus.SHA256Hex("cpa_preview_archived_abcdefghijklmnopqrstuvwxyz0123"),
+		Enabled:    true,
+		Preview:    policyplus.HashPreview(policyplus.SHA256Hex("cpa_preview_archived_abcdefghijklmnopqrstuvwxyz0123")),
+		Archived:   true,
+		ArchivedAt: time.Now().Add(-2 * time.Hour).Unix(),
+		Models:     []string{"gpt-5.5"},
+	}
+	noLimitKey := policyplus.KeyRecord{
+		ID:                "preview-no-limit",
+		Name:              "无限额演示",
+		KeyHash:           "sha256:" + policyplus.SHA256Hex("cpa_preview_nolimit_abcdefghijklmnopqrstuvwxyz0123"),
+		Enabled:           true,
+		Preview:           policyplus.HashPreview(policyplus.SHA256Hex("cpa_preview_nolimit_abcdefghijklmnopqrstuvwxyz0123")),
+		RPM:               0,
+		Concurrency:       0,
+		MaxActiveSessions: 0,
+	}
 	_ = store.UpsertKey(context.Background(), previewKey)
+	_ = store.UpsertKey(context.Background(), disabledKey)
+	_ = store.UpsertKey(context.Background(), archivedKey)
+	_ = store.UpsertKey(context.Background(), noLimitKey)
 	_ = store.InsertUsage(context.Background(), policyplus.UsageEvent{
 		RequestID:       "req-preview-a",
 		KeyID:           previewKey.ID,
@@ -180,10 +215,26 @@ func runPreviewIfRequested() {
 		"stopped_reason":                    "completed",
 		"rounds":                            []map[string]any{{"round": 1, "reasoning_tokens": 516, "decision": "continue", "truncation_match": true}, {"round": 2, "reasoning_tokens": 181, "decision": "clean", "truncation_match": false}},
 	})
+	_ = store.InsertUsage(context.Background(), policyplus.UsageEvent{
+		RequestID:   "req-preview-disabled",
+		KeyID:       disabledKey.ID,
+		KeyPreview:  disabledKey.Preview,
+		Model:       "gpt-5.4-mini",
+		RequestedAt: time.Now().Add(-25 * time.Minute),
+		Cost:        0.18,
+	})
+	_ = store.InsertUsage(context.Background(), policyplus.UsageEvent{
+		RequestID:   "req-preview-archived",
+		KeyID:       archivedKey.ID,
+		KeyPreview:  archivedKey.Preview,
+		Model:       "gpt-5.5",
+		RequestedAt: time.Now().Add(-70 * time.Minute),
+		Cost:        1.2,
+	})
 	state.mu.Lock()
 	state.cfg = cfg
 	state.store = store
-	state.keyState = policyplus.KeyPolicyState{Keys: []policyplus.KeyRecord{previewKey}}
+	state.keyState = policyplus.KeyPolicyState{Keys: []policyplus.KeyRecord{previewKey, disabledKey, archivedKey, noLimitKey}}
 	state.rpmBuckets = map[string][]time.Time{}
 	state.concurrency = map[string]int{}
 	state.mu.Unlock()
@@ -527,7 +578,7 @@ func frontendAuth(raw []byte) ([]byte, error) {
 		return okEnvelope(frontendAuthResponse{Authenticated: false})
 	}
 	record, ok := findKeyByRaw(key)
-	if !ok || !record.Enabled {
+	if !ok || !record.Enabled || record.Archived {
 		return okEnvelope(frontendAuthResponse{Authenticated: false})
 	}
 	model := requestedModelFromBody(req.Body)
@@ -575,14 +626,14 @@ func lookupKeyByRaw(rawKey string) (policyplus.KeyRecord, bool) {
 	keyState := state.keyState
 	store := state.store
 	state.mu.RUnlock()
-	if key, ok := keyState.FindByRawKey(rawKey); ok {
-		return key, true
-	}
 	if store != nil {
 		key, ok, err := store.FindKeyByHash(context.Background(), policyplus.SHA256Hex(rawKey))
 		if err == nil && ok {
 			return key, true
 		}
+	}
+	if key, ok := keyState.FindByRawKey(rawKey); ok {
+		return key, true
 	}
 	return policyplus.KeyRecord{}, false
 }
@@ -928,6 +979,7 @@ func managementRegister() ([]byte, error) {
 			{Method: http.MethodPut, Path: "/plugins/cpa-key-policy-plus/keys/save"},
 			{Method: http.MethodPut, Path: "/plugins/cpa-key-policy-plus/keys/limits"},
 			{Method: http.MethodPost, Path: "/plugins/cpa-key-policy-plus/keys/reset"},
+			{Method: http.MethodPost, Path: "/plugins/cpa-key-policy-plus/keys/archive"},
 			{Method: http.MethodGet, Path: "/plugins/cpa-key-policy-plus/events"},
 			{Method: http.MethodGet, Path: "/plugins/cpa-key-policy-plus/codexcont"},
 			{Method: http.MethodPut, Path: "/plugins/cpa-key-policy-plus/codexcont"},
@@ -940,6 +992,7 @@ func managementRegister() ([]byte, error) {
 			{Path: "/admin/api/keys/save"},
 			{Path: "/admin/api/keys/limits"},
 			{Path: "/admin/api/keys/reset"},
+			{Path: "/admin/api/keys/archive"},
 			{Path: "/admin/api/events"},
 			{Path: "/admin/api/codexcont"},
 			{Path: "/user", Description: "Self-service usage dashboard"},
@@ -976,6 +1029,8 @@ func managementHandle(raw []byte) ([]byte, error) {
 		return adminSetLimits(req)
 	case strings.HasSuffix(path, "/admin/api/keys/reset"):
 		return adminReset(req)
+	case strings.HasSuffix(path, "/admin/api/keys/archive"):
+		return adminArchiveKey(req)
 	case strings.HasSuffix(path, "/admin/api/events"):
 		return adminEvents(req)
 	case strings.HasSuffix(path, "/admin/api/codexcont"):
@@ -1002,6 +1057,8 @@ func managementHandle(raw []byte) ([]byte, error) {
 		return adminSetLimits(req)
 	case strings.HasSuffix(path, "/plugins/cpa-key-policy-plus/keys/reset"):
 		return adminReset(req)
+	case strings.HasSuffix(path, "/plugins/cpa-key-policy-plus/keys/archive"):
+		return adminArchiveKey(req)
 	case strings.HasSuffix(path, "/plugins/cpa-key-policy-plus/events"):
 		return adminEvents(req)
 	case strings.HasSuffix(path, "/plugins/cpa-key-policy-plus/codexcont"):
@@ -1018,6 +1075,8 @@ func managementHandle(raw []byte) ([]byte, error) {
 		return adminSetLimits(req)
 	case strings.HasSuffix(path, "/key-policy-plus/api/keys/reset"):
 		return adminReset(req)
+	case strings.HasSuffix(path, "/key-policy-plus/api/keys/archive"):
+		return adminArchiveKey(req)
 	case strings.HasSuffix(path, "/key-policy-plus/api/events"):
 		return adminEvents(req)
 	case strings.HasSuffix(path, "/key-policy-plus/api/codexcont"):
@@ -1041,7 +1100,9 @@ func adminKeys(_ managementRequest) ([]byte, error) {
 	now := time.Now()
 	for _, key := range keys {
 		row := key.Safe()
-		row["usage"] = usageWindows(context.Background(), store, key.ID, now)
+		usage := usageWindows(context.Background(), store, key.ID, now)
+		row["usage"] = usage
+		row["quota"] = quotaWindows(key, usage)
 		if active, err := store.ActiveSessionCount(context.Background(), key.ID, policyplus.DefaultSessionIdle, now); err == nil {
 			row["active_sessions"] = active
 		}
@@ -1346,6 +1407,24 @@ func adminReset(req managementRequest) ([]byte, error) {
 	return jsonResponse(http.StatusOK, map[string]any{"ok": true})
 }
 
+func adminArchiveKey(req managementRequest) ([]byte, error) {
+	var body struct {
+		ID       string `json:"id"`
+		Archived bool   `json:"archived"`
+	}
+	if err := json.Unmarshal(req.Body, &body); err != nil {
+		return jsonResponse(http.StatusBadRequest, map[string]any{"ok": false, "error": "invalid_json"})
+	}
+	store := loadedStore()
+	if store == nil {
+		return jsonResponse(http.StatusServiceUnavailable, map[string]any{"ok": false, "error": "store_unavailable"})
+	}
+	if err := store.SetArchived(context.Background(), body.ID, body.Archived, time.Now()); err != nil {
+		return jsonResponse(http.StatusBadRequest, map[string]any{"ok": false, "error": err.Error()})
+	}
+	return adminKeys(req)
+}
+
 func adminEvents(req managementRequest) ([]byte, error) {
 	keyID := req.Query.Get("key_id")
 	if keyID == "" {
@@ -1413,7 +1492,10 @@ func userSession(req managementRequest) ([]byte, error) {
 		return jsonResponse(http.StatusUnauthorized, map[string]any{"ok": false, "error": hint.Error, "message": hint.Message})
 	}
 	if !record.Enabled {
-		return jsonResponse(http.StatusForbidden, map[string]any{"ok": false, "error": "api_key_disabled", "message": "这个 Key 当前已禁用，请联系管理员。"})
+		return jsonResponse(http.StatusForbidden, map[string]any{"ok": false, "error": "api_key_disabled", "category": "auth", "message": "这个 Key 当前已禁用，请联系管理员。"})
+	}
+	if record.Archived {
+		return jsonResponse(http.StatusForbidden, map[string]any{"ok": false, "error": "api_key_archived", "category": "auth", "message": "这个 Key 已归档，不能再登录或调用，请联系管理员恢复。"})
 	}
 	cfg := loadedConfig()
 	token, err := policyplus.SignSession(policyplus.SessionPayload{
@@ -1455,11 +1537,13 @@ func userSubmittedKey(req managementRequest) string {
 func userMe(req managementRequest) ([]byte, error) {
 	key, ok := keyFromSession(req)
 	if !ok {
-		return jsonResponse(http.StatusUnauthorized, map[string]any{"ok": false, "error": "not_authenticated"})
+		return jsonResponse(http.StatusUnauthorized, map[string]any{"ok": false, "error": "not_authenticated", "category": "auth", "message": "会话已过期，请重新登录。"})
 	}
 	row := key.Safe()
 	if store := loadedStore(); store != nil {
-		row["usage"] = usageWindows(context.Background(), store, key.ID, time.Now())
+		usage := usageWindows(context.Background(), store, key.ID, time.Now())
+		row["usage"] = usage
+		row["quota"] = quotaWindows(key, usage)
 	}
 	return jsonResponse(http.StatusOK, map[string]any{"ok": true, "me": row})
 }
@@ -1467,7 +1551,7 @@ func userMe(req managementRequest) ([]byte, error) {
 func userUsage(req managementRequest) ([]byte, error) {
 	key, ok := keyFromSession(req)
 	if !ok {
-		return jsonResponse(http.StatusUnauthorized, map[string]any{"ok": false, "error": "not_authenticated"})
+		return jsonResponse(http.StatusUnauthorized, map[string]any{"ok": false, "error": "not_authenticated", "category": "auth", "message": "会话已过期，请重新登录。"})
 	}
 	store := loadedStore()
 	if store == nil {
@@ -1504,7 +1588,7 @@ func userUsage(req managementRequest) ([]byte, error) {
 func userEvents(req managementRequest) ([]byte, error) {
 	key, ok := keyFromSession(req)
 	if !ok {
-		return jsonResponse(http.StatusUnauthorized, map[string]any{"ok": false, "error": "not_authenticated"})
+		return jsonResponse(http.StatusUnauthorized, map[string]any{"ok": false, "error": "not_authenticated", "category": "auth", "message": "会话已过期，请重新登录。"})
 	}
 	return eventsResponseFromRequest(req, key.ID)
 }
@@ -1512,7 +1596,7 @@ func userEvents(req managementRequest) ([]byte, error) {
 func userCodexCont(req managementRequest) ([]byte, error) {
 	key, ok := keyFromSession(req)
 	if !ok {
-		return jsonResponse(http.StatusUnauthorized, map[string]any{"ok": false, "error": "not_authenticated"})
+		return jsonResponse(http.StatusUnauthorized, map[string]any{"ok": false, "error": "not_authenticated", "category": "auth", "message": "会话已过期，请重新登录。"})
 	}
 	limit := 80
 	if rawLimit := strings.TrimSpace(req.Query.Get("limit")); rawLimit != "" {
@@ -1570,6 +1654,40 @@ func usageWindows(ctx context.Context, store *policyplus.Store, keyID string, no
 	for _, name := range []string{policyplus.Range5H, policyplus.Range24H, policyplus.Range7D, policyplus.RangeMonth} {
 		value, _ := store.UsageSum(ctx, keyID, policyplus.WindowFor(name, now))
 		out[name] = value
+	}
+	return out
+}
+
+func quotaWindows(key policyplus.KeyRecord, usage map[string]float64) map[string]map[string]any {
+	limits := map[string]*float64{
+		policyplus.Range5H:    key.FiveHourUSD,
+		policyplus.Range24H:   key.DailyLimitUSD,
+		policyplus.Range7D:    key.WeeklyLimitUSD,
+		policyplus.RangeMonth: key.MonthlyLimitUSD,
+	}
+	out := map[string]map[string]any{}
+	for _, name := range []string{policyplus.Range5H, policyplus.Range24H, policyplus.Range7D, policyplus.RangeMonth} {
+		used := usage[name]
+		row := map[string]any{
+			"used_usd":      used,
+			"limit_usd":     nil,
+			"remaining_usd": nil,
+			"percent":       nil,
+		}
+		if limit := limits[name]; limit != nil {
+			remaining := *limit - used
+			if remaining < 0 {
+				remaining = 0
+			}
+			percent := 0.0
+			if *limit > 0 {
+				percent = used / *limit
+			}
+			row["limit_usd"] = *limit
+			row["remaining_usd"] = remaining
+			row["percent"] = percent
+		}
+		out[name] = row
 	}
 	return out
 }
@@ -1816,7 +1934,7 @@ func keyFromSession(req managementRequest) (policyplus.KeyRecord, bool) {
 	for _, key := range keys {
 		currentHash, errCurrent := policyplus.NormalizeHash(key.KeyHash)
 		sessionHash, errSession := policyplus.NormalizeHash(payload.KeyHash)
-		if key.ID == payload.KeyID && key.Enabled && errCurrent == nil && errSession == nil && currentHash == sessionHash {
+		if key.ID == payload.KeyID && key.Enabled && !key.Archived && errCurrent == nil && errSession == nil && currentHash == sessionHash {
 			return key, true
 		}
 	}

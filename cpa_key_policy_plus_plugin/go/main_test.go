@@ -257,6 +257,75 @@ func TestManagementAliasCreateSaveAndReset(t *testing.T) {
 	}
 }
 
+func TestArchiveKeyRejectsAuthAndUserSession(t *testing.T) {
+	key := setupTestState(t)
+	archiveRaw, _ := json.Marshal(map[string]any{"id": key.ID, "archived": true})
+	raw, err := managementHandle(mustJSON(t, managementRequest{
+		Method: http.MethodPost,
+		Path:   "/key-policy-plus/api/keys/archive",
+		Body:   archiveRaw,
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := decodeManagementBody(t, raw)
+	if !strings.Contains(string(body), `"archived":true`) {
+		t.Fatalf("archive response missing archived flag: %s", body)
+	}
+	if authOK(t, frontendAuthRequest{
+		Headers: http.Header{"Authorization": []string{"Bearer cpa_alice_secret"}},
+		Body:    []byte(`{"model":"gpt-5.5","prompt_cache_key":"window-a"}`),
+	}) {
+		t.Fatal("archived key should not authenticate frontend requests")
+	}
+	raw, err = userSession(managementRequest{Headers: http.Header{"X-CPA-Key-Policy-Plus-Key": []string{"cpa_alice_secret"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body = decodeManagementBody(t, raw)
+	if !strings.Contains(string(body), "api_key_archived") {
+		t.Fatalf("archived user session should fail clearly: %s", body)
+	}
+	restoreRaw, _ := json.Marshal(map[string]any{"id": key.ID, "archived": false})
+	if _, err := managementHandle(mustJSON(t, managementRequest{
+		Method: http.MethodPost,
+		Path:   "/key-policy-plus/api/keys/archive",
+		Body:   restoreRaw,
+	})); err != nil {
+		t.Fatal(err)
+	}
+	if !authOK(t, frontendAuthRequest{
+		Headers: http.Header{"Authorization": []string{"Bearer cpa_alice_secret"}},
+		Body:    []byte(`{"model":"gpt-5.5","prompt_cache_key":"window-a"}`),
+	}) {
+		t.Fatal("restored key should authenticate again")
+	}
+}
+
+func TestAdminKeysIncludesQuotaProjection(t *testing.T) {
+	setupTestState(t)
+	store := loadedStore()
+	if err := store.InsertUsage(context.Background(), policyplus.UsageEvent{
+		RequestID:   "usage-a",
+		KeyID:       "alice-key",
+		RequestedAt: time.Now().Add(-time.Hour),
+		Cost:        2.5,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := adminKeys(managementRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := decodeManagementBody(t, raw)
+	text := string(body)
+	for _, want := range []string{`"usage"`, `"quota"`, `"24h"`, `"remaining_usd"`} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("admin key projection missing %s: %s", want, body)
+		}
+	}
+}
+
 func TestAdminModelsFallsBackToConfiguredModels(t *testing.T) {
 	key := setupTestState(t)
 	key.Models = []string{"gpt-5.5", "legacy-custom"}

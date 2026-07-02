@@ -239,6 +239,45 @@ func TestStoreUsageWindowsAndSoftReset(t *testing.T) {
 	}
 }
 
+func TestStoreArchivesAndRestoresKeys(t *testing.T) {
+	ctx := context.Background()
+	store, err := OpenStore(filepath.Join(t.TempDir(), "policyplus.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	key := KeyRecord{
+		ID:      "alice-key",
+		Name:    "Alice",
+		KeyHash: "sha256:" + SHA256Hex("cpa_live"),
+		Enabled: true,
+		Preview: HashPreview(SHA256Hex("cpa_live")),
+	}
+	if err := store.UpsertKey(ctx, key); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetArchived(ctx, key.ID, true, time.Unix(1234, 0)); err != nil {
+		t.Fatal(err)
+	}
+	keys, err := store.ListKeys(ctx)
+	if err != nil || len(keys) != 1 {
+		t.Fatalf("keys err=%v keys=%#v", err, keys)
+	}
+	if !keys[0].Archived || keys[0].ArchivedAt != 1234 {
+		t.Fatalf("archive fields = %#v", keys[0])
+	}
+	if err := store.SetArchived(ctx, key.ID, false, time.Unix(1300, 0)); err != nil {
+		t.Fatal(err)
+	}
+	keys, err = store.ListKeys(ctx)
+	if err != nil || len(keys) != 1 {
+		t.Fatalf("keys err=%v keys=%#v", err, keys)
+	}
+	if keys[0].Archived || keys[0].ArchivedAt != 0 {
+		t.Fatalf("restore fields = %#v", keys[0])
+	}
+}
+
 func TestStoreImportsLegacyQuotaSQLite(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()

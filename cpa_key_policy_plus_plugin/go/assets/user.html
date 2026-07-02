@@ -78,6 +78,7 @@ const state = {
   cardSig: "",
   usageRenderSig: "",
   protectionRenderSig: "",
+  errors: {usage:"", protection:""},
   timer: null,
   refreshTimer: null,
   timeoutTimer: null,
@@ -193,9 +194,18 @@ function localKeyHint(v){
 }
 async function api(path, opts={}){
   const r = await fetch(USER_API + path, {cache:"no-store", credentials:"same-origin", ...opts});
-  const d = await r.json();
-  if (!d.ok) throw Object.assign(new Error(d.message || d.error || "request_failed"), {data:d, status:r.status});
+  let d = {};
+  try { d = await r.json(); } catch (_) {}
+  if (!d.ok) throw Object.assign(new Error(d.message || d.error || `HTTP ${r.status}`), {data:d, status:r.status});
   return d;
+}
+function errorMessage(e, fallback){
+  const data = (e && e.data) || {};
+  return data.message || data.error || (e && e.message) || fallback || "同步失败";
+}
+function isAuthError(e){
+  const data = (e && e.data) || {};
+  return e && (e.status === 401 || e.status === 403 || data.category === "auth" || data.error === "not_authenticated");
 }
 function clearRefreshTimeout(){
   if (state.timeoutTimer) clearTimeout(state.timeoutTimer);
@@ -402,8 +412,10 @@ function renderUsage(force=false){
     </tr>`;
     return main + (open ? eventDetail(ev) : "");
   }).join("") || `<tr><td colspan="9"><div class="empty">暂无 ${rangeLabel(state.range)} 请求明细</div></td></tr>`;
+  const error = state.errors.usage ? `<div class="notice">${esc(state.errors.usage)}</div>` : "";
   $("content").innerHTML = `<div class="panel embedded-panel">
     <div class="panel-head"><h2>单 Key 实时监控</h2><span class="muted">${rangeLabel(state.range)} · 最近 ${num(events.length)} 条</span></div>
+    ${error}
     <div class="table-wrap"><table class="realtime-table"><thead><tr>
       <th style="width:170px">时间</th><th style="width:130px">状态</th><th style="width:170px">模型</th><th style="width:130px">思考/Tier</th>
       <th style="width:120px">TTFT/耗时</th><th style="width:130px">Tokens</th><th style="width:150px">Cache</th><th style="width:140px">保护</th><th style="width:130px">费用</th>
@@ -471,8 +483,10 @@ function renderProtection(force=false){
   const continued = items.filter(x => x.protection === "auto_continued").length;
   const risk = items.filter(x => x.protection === "risk_uncontinued").length;
   const failed = items.filter(x => x.protection === "failed").length;
+  const error = state.errors.protection ? `<div class="notice">${esc(state.errors.protection)}</div>` : "";
   $("content").innerHTML = `<div class="panel embedded-panel">
     <div class="panel-head"><h2>思维链保护实时状态</h2><span class="muted">${num(items.length)} 条 · 自动续写 ${num(continued)} · 疑似截断 ${num(risk)} · 失败 ${num(failed)}</span></div>
+    ${error}
     <div class="table-wrap"><table class="realtime-table"><thead><tr>
       <th style="width:180px">时间</th><th style="width:140px">保护结果</th><th style="width:160px">模型</th><th style="width:130px">命中轮</th>
       <th style="width:140px">末轮 reasoning</th><th style="width:140px">耗时/停止</th><th>失败摘要</th><th style="width:90px">操作</th>
@@ -501,6 +515,7 @@ async function fetchUsage(seq, signal){
   ]);
   if (seq !== state.seq) return;
   state.usage = usageResp;
+  state.errors.usage = "";
   const events = eventResp.events || [];
   const result = changedIds(events, state.eventSigs, eventID, e => ({
     requested_at:e.requested_at, failed:e.failed, model:e.model, actual_model:e.actual_model,
@@ -517,6 +532,7 @@ async function fetchProtection(seq, signal){
   const cc = await api("/codexcont?limit=100", {signal});
   if (seq !== state.seq) return;
   const requests = sortProtectionItems(cc.requests || []);
+  state.errors.protection = "";
   const result = changedIds(requests, state.protectionSigs, protectionID, r => ({
     protection:r.protection, status:r.status, latest_reasoning_tokens:r.latest_reasoning_tokens,
     continuation_count:r.continuation_count, stopped_reason:r.stopped_reason, failure_reason:r.failure_reason,
@@ -549,16 +565,53 @@ async function refreshActive(force=false, includeInactive=false){
   const startedAt = performance.now();
   markRefreshStart(force);
   try {
-    const tasks = [fetchMe(seq, controller.signal)];
-    if (includeInactive || state.tab === "usage") tasks.push(fetchUsage(seq, controller.signal));
-    if (includeInactive || state.tab === "usage" || state.tab === "codex") tasks.push(fetchProtection(seq, controller.signal));
-    await Promise.all(tasks);
+    await fetchMe(seq, controller.signal);
+    let partial = false;
+    const jobs = [];
+    if (includeInactive || state.tab === "usage") {
+      jobs.push(fetchUsage(seq, controller.signal).catch(e => {
+        if (isAuthError(e)) throw e;
+        partial = true;
+        state.errors.usage = "用量接口同步失败：" + errorMessage(e);
+        renderUsage(true);
+      }));
+    }
+    if (includeInactive || state.tab === "usage" || state.tab === "codex") {
+      jobs.push(fetchProtection(seq, controller.signal).catch(e => {
+        if (isAuthError(e)) throw e;
+        partial = true;
+        state.errors.protection = "思维链保护同步失败：" + errorMessage(e);
+        renderUsage(true);
+        renderProtection(true);
+      }));
+    }
+    await Promise.all(jobs);
     await refreshMinimumDelay(force, startedAt);
     if (seq !== state.seq) return;
-    markRefreshDone(force);
+    if (partial) {
+      if (force) setRefreshState("error", "部分失败");
+      setLive("warn", "部分数据同步失败");
+    } else {
+      markRefreshDone(force);
+    }
   } catch(e) {
     await refreshMinimumDelay(force, startedAt);
-    if (seq === state.seq) markRefreshError(force);
+    if (seq === state.seq) {
+      if (isAuthError(e)) {
+        setLive("bad", "会话已过期");
+        if (force) setRefreshState("error", "重新登录");
+        clearInterval(state.timer);
+        $("app").classList.add("hidden");
+        $("login").classList.remove("hidden");
+        $("refresh").classList.add("hidden");
+        $("active-chip").classList.add("hidden");
+        $("logout").classList.add("hidden");
+        $("rangeSelect").classList.add("hidden");
+        $("err").textContent = errorMessage(e, "会话已过期，请重新登录。");
+      } else {
+        markRefreshError(force);
+      }
+    }
   } finally {
     if (seq === state.seq) {
       state.refreshing = false;
@@ -574,6 +627,7 @@ async function loginNow(){
   if (hint) { $("err").textContent = "登录失败：" + hint; return; }
   try {
     await api("/session", {headers:{"X-CPA-Key-Policy-Plus-Key": raw}});
+    state.errors = {usage:"", protection:""};
     $("login").classList.add("hidden");
     $("app").classList.remove("hidden");
     $("refresh").classList.remove("hidden");

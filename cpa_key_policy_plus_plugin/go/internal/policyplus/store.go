@@ -105,6 +105,8 @@ func (s *Store) EnsureSchema(ctx context.Context) error {
 			daily_limit_usd real,
 			weekly_limit_usd real,
 			monthly_limit_usd real,
+			archived integer not null default 0,
+			archived_at integer not null default 0,
 			updated_at integer not null
 		)`,
 		`create table if not exists reset_watermarks (
@@ -191,6 +193,8 @@ func (s *Store) EnsureSchema(ctx context.Context) error {
 	}
 	if err := s.ensureColumns(ctx, "keys", map[string]string{
 		"max_active_sessions": "integer default 0",
+		"archived":            "integer not null default 0",
+		"archived_at":         "integer not null default 0",
 	}); err != nil {
 		return err
 	}
@@ -239,8 +243,8 @@ func (s *Store) UpsertKey(ctx context.Context, key KeyRecord) error {
 		ctx,
 		`insert into keys(
 			id, name, key_hash, enabled, preview, rpm, concurrency, max_active_sessions, models_json, prices_json,
-			five_hour_limit_usd, daily_limit_usd, weekly_limit_usd, monthly_limit_usd, updated_at
-		) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			five_hour_limit_usd, daily_limit_usd, weekly_limit_usd, monthly_limit_usd, archived, archived_at, updated_at
+		) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		on conflict(id) do update set
 			name=excluded.name,
 			key_hash=excluded.key_hash,
@@ -255,6 +259,8 @@ func (s *Store) UpsertKey(ctx context.Context, key KeyRecord) error {
 			daily_limit_usd=excluded.daily_limit_usd,
 			weekly_limit_usd=excluded.weekly_limit_usd,
 			monthly_limit_usd=coalesce(keys.monthly_limit_usd, excluded.monthly_limit_usd),
+			archived=case when excluded.archived != 0 then excluded.archived else keys.archived end,
+			archived_at=case when excluded.archived != 0 then excluded.archived_at else keys.archived_at end,
 			updated_at=excluded.updated_at`,
 		key.ID,
 		key.Name,
@@ -270,6 +276,8 @@ func (s *Store) UpsertKey(ctx context.Context, key KeyRecord) error {
 		key.DailyLimitUSD,
 		key.WeeklyLimitUSD,
 		key.MonthlyLimitUSD,
+		boolInt(key.Archived),
+		key.ArchivedAt,
 		time.Now().Unix(),
 	)
 	return err
@@ -512,7 +520,7 @@ func (s *Store) syncDeletedKeys(ctx context.Context, seen map[string]bool) error
 
 func (s *Store) ListKeys(ctx context.Context) ([]KeyRecord, error) {
 	rows, err := s.db.QueryContext(ctx, `select id, name, key_hash, enabled, preview, rpm, concurrency, max_active_sessions, models_json, prices_json,
-		five_hour_limit_usd, daily_limit_usd, weekly_limit_usd, monthly_limit_usd from keys order by name collate nocase`)
+		five_hour_limit_usd, daily_limit_usd, weekly_limit_usd, monthly_limit_usd, archived, archived_at from keys order by name collate nocase`)
 	if err != nil {
 		return nil, err
 	}
@@ -520,16 +528,18 @@ func (s *Store) ListKeys(ctx context.Context) ([]KeyRecord, error) {
 	var out []KeyRecord
 	for rows.Next() {
 		var key KeyRecord
-		var enabled int
+		var enabled, archived int
 		var modelsJSON, pricesJSON string
 		var fiveHour, daily, weekly, monthly sql.NullFloat64
 		if err := rows.Scan(
 			&key.ID, &key.Name, &key.KeyHash, &enabled, &key.Preview, &key.RPM, &key.Concurrency, &key.MaxActiveSessions,
 			&modelsJSON, &pricesJSON, &fiveHour, &daily, &weekly, &monthly,
+			&archived, &key.ArchivedAt,
 		); err != nil {
 			return nil, err
 		}
 		key.Enabled = enabled != 0
+		key.Archived = archived != 0
 		key.FiveHourUSD = nullFloatPtr(fiveHour)
 		key.DailyLimitUSD = nullFloatPtr(daily)
 		key.WeeklyLimitUSD = nullFloatPtr(weekly)
@@ -539,6 +549,29 @@ func (s *Store) ListKeys(ctx context.Context) ([]KeyRecord, error) {
 		out = append(out, key)
 	}
 	return out, rows.Err()
+}
+
+func (s *Store) SetArchived(ctx context.Context, id string, archived bool, at time.Time) error {
+	if strings.TrimSpace(id) == "" {
+		return fmt.Errorf("missing key id")
+	}
+	archivedAt := int64(0)
+	if archived {
+		archivedAt = at.Unix()
+	}
+	res, err := s.db.ExecContext(ctx, `update keys set archived=?, archived_at=?, updated_at=? where id=?`,
+		boolInt(archived), archivedAt, time.Now().Unix(), id)
+	if err != nil {
+		return err
+	}
+	if affected, _ := res.RowsAffected(); affected == 0 {
+		return fmt.Errorf("unknown key: %s", id)
+	}
+	action := "archive_key"
+	if !archived {
+		action = "restore_key"
+	}
+	return s.Audit(ctx, "admin", action, id, map[string]any{"archived": archived, "archived_at": archivedAt})
 }
 
 func (s *Store) FindKeyByHash(ctx context.Context, hash string) (KeyRecord, bool, error) {

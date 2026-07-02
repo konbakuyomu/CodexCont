@@ -41,6 +41,8 @@ type KeyRecord struct {
 	WeeklyLimitUSD    *float64              `json:"weekly_limit_usd,omitempty"`
 	FiveHourUSD       *float64              `json:"five_hour_usd,omitempty"`
 	MonthlyLimitUSD   *float64              `json:"monthly_limit_usd,omitempty"`
+	Archived          bool                  `json:"archived,omitempty"`
+	ArchivedAt        int64                 `json:"archived_at,omitempty"`
 }
 
 func (k KeyRecord) Safe() map[string]any {
@@ -53,6 +55,8 @@ func (k KeyRecord) Safe() map[string]any {
 		"concurrency":         k.Concurrency,
 		"max_active_sessions": k.MaxActiveSessions,
 		"models":              append([]string(nil), k.Models...),
+		"archived":            k.Archived,
+		"archived_at":         k.ArchivedAt,
 		"limits": map[string]any{
 			"five_hour_usd": k.FiveHourUSD,
 			"daily_usd":     k.DailyLimitUSD,
@@ -185,6 +189,7 @@ func parseKey(raw map[string]any) (KeyRecord, bool) {
 	if !hasEnabled {
 		enabled = !disabled
 	}
+	archived, _ := firstBool(raw, "archived", "is_archived", "isArchived")
 	modelItems := asList(firstAny(raw, "models", "allowed_models", "allowedModels", "model_allowlist", "modelAllowlist", "aliases"))
 	models := parseModels(modelItems)
 	prices := parsePrices(raw, modelItems)
@@ -203,6 +208,7 @@ func parseKey(raw map[string]any) (KeyRecord, bool) {
 		WeeklyLimitUSD:    firstFloatPtr(raw, "weekly_limit_usd", "weeklyLimitUsd", "weekly_limit", "weeklyLimit", "weekly_usd", "weeklyUsd"),
 		FiveHourUSD:       firstFloatPtr(raw, "five_hour_limit_usd", "fiveHourLimitUsd", "five_hour_usd", "fiveHourUsd", "5h_limit_usd"),
 		MonthlyLimitUSD:   firstFloatPtr(raw, "monthly_limit_usd", "monthlyLimitUsd", "monthly_usd", "monthlyUsd", "month_limit_usd"),
+		Archived:          archived,
 	}, true
 }
 

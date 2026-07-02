@@ -419,6 +419,15 @@ small, .muted {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+.notice {
+  margin: 10px 14px;
+  padding: 10px;
+  border: 1px solid rgba(244, 185, 66, .26);
+  border-radius: 8px;
+  background: var(--amber-soft);
+  color: #ffd893;
+  font-size: 12px;
+}
 .empty {
   padding: 22px;
   text-align: center;
