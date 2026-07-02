@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode"
 )
 
 func SHA256Hex(value string) string {
@@ -23,8 +24,15 @@ var bearerPrefixPattern = regexp.MustCompile(`(?i)^\s*(authorization\s*:\s*)?(be
 // the self-service portal, while keeping hashing deterministic.
 func NormalizeSubmittedKey(value string) string {
 	text := strings.TrimSpace(value)
+	text = strings.Map(func(r rune) rune {
+		if unicode.Is(unicode.Cf, r) {
+			return -1
+		}
+		return r
+	}, text)
+	text = strings.TrimSpace(strings.Trim(text, `"'`+"`"+`“”‘’「」『』<>`))
 	text = bearerPrefixPattern.ReplaceAllString(text, "")
-	return strings.TrimSpace(text)
+	return strings.TrimSpace(strings.Trim(text, `"'`+"`"+`“”‘’「」『』<>`))
 }
 
 type SubmittedKeyHint struct {
@@ -44,8 +52,10 @@ func ExplainUnmatchedSubmittedKey(value string) SubmittedKeyHint {
 		return SubmittedKeyHint{Error: "key_preview_not_usable", Message: "你粘贴的是缩略预览，不是完整 Key。Key Policy 创建或轮换时弹窗里的完整 cpa_ Key 才能登录。"}
 	case !strings.HasPrefix(lower, "cpa_"):
 		return SubmittedKeyHint{Error: "unsupported_key_format", Message: "用量自助页只接受 Key Policy 的完整 cpa_ 用户 Key。"}
+	case len(key) < 40:
+		return SubmittedKeyHint{Error: "key_preview_not_usable", Message: "这个 cpa_ Key 太短，像是列表里的预览，不是完整 Key。请在 Key Policy 里点击“轮换”，复制弹窗中新生成的完整 Key。"}
 	default:
-		return SubmittedKeyHint{Error: "invalid_api_key", Message: "这个 cpa_ Key 没有匹配到当前 Key Policy 记录。请确认粘贴的是创建时弹窗里的完整 Key，且该 Key 未被轮换。"}
+		return SubmittedKeyHint{Error: "invalid_api_key", Message: "这个 cpa_ Key 没有匹配到当前 Key Policy 记录。请确认粘贴的是创建或轮换弹窗里的完整 Key；列表里的 cpa_xxx...xxx 只是预览，旧 Key 关闭弹窗后无法找回，需要在 Key Policy 里轮换生成新的完整 Key。"}
 	}
 }
 

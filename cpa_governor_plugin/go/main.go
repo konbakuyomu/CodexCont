@@ -239,6 +239,7 @@ func configure(raw []byte) error {
 	if err != nil {
 		return err
 	}
+	cfg = applyStoredSettings(cfg, store)
 	var keyState governor.KeyPolicyState
 	if strings.TrimSpace(cfg.KeyPolicyStatePath) != "" {
 		loaded, err := governor.LoadKeyPolicyState(cfg.KeyPolicyStatePath)
@@ -261,6 +262,28 @@ func configure(raw []byte) error {
 	}
 	_ = refreshKeyPolicyState(true)
 	return nil
+}
+
+func applyStoredSettings(cfg governor.Config, store *governor.Store) governor.Config {
+	if store == nil {
+		return cfg
+	}
+	settings, err := store.LoadSettings(context.Background())
+	if err != nil {
+		return cfg
+	}
+	if value, ok := settings["codexcont_enabled"]; ok {
+		if parsed, err := strconv.ParseBool(value); err == nil {
+			cfg.CodexContEnabled = parsed
+		}
+	}
+	if value := strings.TrimSpace(settings["codexcont_url"]); value != "" {
+		cfg.CodexContURL = strings.TrimRight(value, "/")
+	}
+	if value := strings.TrimSpace(settings["fail_mode"]); value != "" {
+		cfg.FailMode = strings.ToLower(value)
+	}
+	return cfg.Normalize()
 }
 
 func pluginRegistration() registration {
@@ -357,6 +380,17 @@ func frontendAuth(raw []byte) ([]byte, error) {
 
 func findKeyByRaw(rawKey string) (governor.KeyRecord, bool) {
 	_ = refreshKeyPolicyState(false)
+	if key, ok := lookupKeyByRaw(rawKey); ok {
+		return key, true
+	}
+	if strings.HasPrefix(strings.ToLower(governor.NormalizeSubmittedKey(rawKey)), "cpa_") {
+		_ = refreshKeyPolicyState(true)
+		return lookupKeyByRaw(rawKey)
+	}
+	return governor.KeyRecord{}, false
+}
+
+func lookupKeyByRaw(rawKey string) (governor.KeyRecord, bool) {
 	state.mu.RLock()
 	keyState := state.keyState
 	store := state.store
@@ -376,7 +410,6 @@ func findKeyByRaw(rawKey string) (governor.KeyRecord, bool) {
 func refreshKeyPolicyState(force bool) error {
 	state.mu.RLock()
 	path := strings.TrimSpace(state.keyStatePath)
-	lastCheck := state.keyStateLastCheck
 	lastMod := state.keyStateModTime
 	store := state.store
 	state.mu.RUnlock()
@@ -384,9 +417,6 @@ func refreshKeyPolicyState(force bool) error {
 		return nil
 	}
 	now := time.Now()
-	if !force && now.Sub(lastCheck) < 2*time.Second {
-		return nil
-	}
 	info, err := os.Stat(path)
 	if err != nil {
 		state.mu.Lock()
@@ -841,13 +871,24 @@ func adminEvents(req managementRequest) ([]byte, error) {
 }
 
 func adminCodexCont(req managementRequest) ([]byte, error) {
-	if req.Method == http.MethodPut {
+	if req.Method == http.MethodPut || (req.Method == http.MethodGet && req.Query.Get("action") == "save") {
 		var body struct {
 			Enabled  *bool  `json:"enabled"`
 			URL      string `json:"url"`
 			FailMode string `json:"fail_mode"`
 		}
-		_ = json.Unmarshal(req.Body, &body)
+		if req.Method == http.MethodGet {
+			if rawEnabled := strings.TrimSpace(req.Query.Get("enabled")); rawEnabled != "" {
+				if parsed, err := strconv.ParseBool(rawEnabled); err == nil {
+					body.Enabled = &parsed
+				}
+			}
+			body.URL = req.Query.Get("url")
+			body.FailMode = req.Query.Get("fail_mode")
+		} else {
+			_ = json.Unmarshal(req.Body, &body)
+		}
+		store := loadedStore()
 		state.mu.Lock()
 		if body.Enabled != nil {
 			state.cfg.CodexContEnabled = *body.Enabled
@@ -856,17 +897,28 @@ func adminCodexCont(req managementRequest) ([]byte, error) {
 			state.cfg.CodexContURL = strings.TrimRight(strings.TrimSpace(body.URL), "/")
 		}
 		if strings.TrimSpace(body.FailMode) != "" {
-			state.cfg.FailMode = strings.TrimSpace(body.FailMode)
+			state.cfg.FailMode = strings.ToLower(strings.TrimSpace(body.FailMode))
 		}
+		state.cfg = state.cfg.Normalize()
 		cfg := state.cfg
 		state.mu.Unlock()
-		return jsonResponse(http.StatusOK, map[string]any{"ok": true, "codexcont": cfg})
+		if store != nil {
+			settings := map[string]string{
+				"codexcont_enabled": strconv.FormatBool(cfg.CodexContEnabled),
+				"codexcont_url":     cfg.CodexContURL,
+				"fail_mode":         cfg.FailMode,
+			}
+			if err := store.SaveSettings(context.Background(), settings); err != nil {
+				return jsonResponse(http.StatusInternalServerError, map[string]any{"ok": false, "error": "save_settings_failed"})
+			}
+		}
+		return jsonResponse(http.StatusOK, map[string]any{"ok": true, "codexcont": codexcontStatus()})
 	}
 	return jsonResponse(http.StatusOK, map[string]any{"ok": true, "codexcont": codexcontStatus()})
 }
 
 func userSession(req managementRequest) ([]byte, error) {
-	key := governor.NormalizeSubmittedKey(bearer(req.Headers.Get("Authorization")))
+	key := userSubmittedKey(req)
 	if key == "" {
 		hint := governor.ExplainUnmatchedSubmittedKey(key)
 		return jsonResponse(http.StatusUnauthorized, map[string]any{"ok": false, "error": hint.Error, "message": hint.Message})
@@ -895,12 +947,24 @@ func userSession(req managementRequest) ([]byte, error) {
 	resp := managementResponse{
 		StatusCode: http.StatusOK,
 		Headers: http.Header{
-			"Content-Type": []string{"application/json; charset=utf-8"},
-			"Set-Cookie":   []string{fmt.Sprintf("cpa_governor_session=%s; Path=/; HttpOnly; SameSite=Lax; Max-Age=86400", token)},
+			"Content-Type":  []string{"application/json; charset=utf-8"},
+			"Cache-Control": []string{"no-store"},
+			"Set-Cookie":    []string{fmt.Sprintf("cpa_governor_session=%s; Path=/; HttpOnly; SameSite=Lax; Max-Age=86400", token)},
 		},
 		Body: body,
 	}
 	return okEnvelope(resp)
+}
+
+func userSubmittedKey(req managementRequest) string {
+	raw := firstNonEmpty(
+		headerFirst(req.Headers, "X-CPA-Governor-Key"),
+		headerFirst(req.Headers, "X-CPA-User-Key"),
+	)
+	if raw == "" {
+		raw = bearer(headerFirst(req.Headers, "Authorization"))
+	}
+	return governor.NormalizeSubmittedKey(raw)
 }
 
 func userMe(req managementRequest) ([]byte, error) {
@@ -1024,7 +1088,7 @@ func forwardHostStream(targetStreamID string, sourceStreamID string) {
 
 func keyFromSession(req managementRequest) (governor.KeyRecord, bool) {
 	_ = refreshKeyPolicyState(false)
-	cookie := req.Headers.Get("Cookie")
+	cookie := headerFirst(req.Headers, "Cookie")
 	token := ""
 	for _, part := range strings.Split(cookie, ";") {
 		part = strings.TrimSpace(part)
@@ -1103,6 +1167,26 @@ func bearer(value string) string {
 	return ""
 }
 
+func headerFirst(headers http.Header, name string) string {
+	if headers == nil {
+		return ""
+	}
+	if value := strings.TrimSpace(headers.Get(name)); value != "" {
+		return value
+	}
+	for key, values := range headers {
+		if !strings.EqualFold(key, name) {
+			continue
+		}
+		for _, value := range values {
+			if strings.TrimSpace(value) != "" {
+				return strings.TrimSpace(value)
+			}
+		}
+	}
+	return ""
+}
+
 func firstNonEmpty(values ...string) string {
 	for _, value := range values {
 		if strings.TrimSpace(value) != "" {
@@ -1154,16 +1238,22 @@ func jsonResponse(status int, v any) ([]byte, error) {
 	}
 	return okEnvelope(managementResponse{
 		StatusCode: status,
-		Headers:    http.Header{"content-type": []string{"application/json; charset=utf-8"}},
-		Body:       body,
+		Headers: http.Header{
+			"Content-Type":  []string{"application/json; charset=utf-8"},
+			"Cache-Control": []string{"no-store"},
+		},
+		Body: body,
 	})
 }
 
 func managementHTML(html string) ([]byte, error) {
 	return okEnvelope(managementResponse{
 		StatusCode: http.StatusOK,
-		Headers:    http.Header{"content-type": []string{"text/html; charset=utf-8"}},
-		Body:       []byte(html),
+		Headers: http.Header{
+			"Content-Type":  []string{"text/html; charset=utf-8"},
+			"Cache-Control": []string{"no-store"},
+		},
+		Body: []byte(html),
 	})
 }
 
@@ -1187,7 +1277,8 @@ function keyName(id){const k=(snapshot.keys||[]).find(x=>x.id===id);return k?(k.
 function cardsRender(keys,data){cards.innerHTML='<article><b>'+keys.length+'</b><span>Key 数量</span></article><article><b>'+keys.filter(k=>k.enabled).length+'</b><span>启用</span></article><article><b>'+money(keys.reduce((s,k)=>s+Number((k.usage||{})["24h"]||0),0))+'</b><span>24H 估算</span></article><article><b>'+((data.codexcont||{}).enabled?'已开启':'未开启')+'</b><span>CodexCont 状态</span></article><article><b>'+((data.codexcont||{}).route?'已切流':'未切流')+'</b><span>插件执行器</span></article>'}
 function renderKeys(){const keys=snapshot.keys||[]; content.innerHTML='<table><thead><tr><th>用户/Key</th><th>状态</th><th>RPM</th><th>并发</th><th>5H 用量</th><th>日用量</th><th>周用量</th><th>月用量</th><th>限额</th></tr></thead><tbody>'+keys.map(k=>'<tr><td><b>'+k.name+'</b><small>'+k.preview+'</small></td><td><span class="chip '+(k.enabled?'ok':'bad')+'">'+(k.enabled?'启用':'禁用')+'</span></td><td>'+ (k.rpm||'-') +'</td><td>'+ (k.concurrency||'-') +'</td><td>'+money((k.usage||{})["5h"])+'</td><td>'+money((k.usage||{})["24h"])+'</td><td>'+money((k.usage||{})["7d"])+'</td><td>'+money((k.usage||{})["month"])+'</td><td><small>5H '+money(k.limits.five_hour_usd)+' / 日 '+money(k.limits.daily_usd)+' / 周 '+money(k.limits.weekly_usd)+' / 月 '+money(k.limits.monthly_usd)+'</small></td></tr>').join('')+'</tbody></table>'}
 async function renderEvents(){const ev=await j('/events?key_id=all'); const rows=ev.events||[]; content.innerHTML='<table><thead><tr><th>时间</th><th>用户/Key</th><th>模型</th><th>状态</th><th>延迟</th><th>Tokens</th><th>思考量</th><th>费用</th></tr></thead><tbody>'+rows.map(e=>'<tr><td>'+new Date(e.requested_at).toLocaleString()+'</td><td>'+keyName(e.key_id)+'</td><td>'+e.model+'</td><td><span class="chip '+(e.failed?'bad':'ok')+'">'+(e.failed?'失败':'成功')+'</span><small>'+((e.failure||'').slice(0,120))+'</small></td><td>'+num(e.latency_ms)+' ms</td><td>'+num((e.usage||{}).total_tokens)+'</td><td>'+num((e.usage||{}).reasoning_tokens)+'</td><td>'+money(e.cost)+'</td></tr>').join('')+'</tbody></table>'}
-function renderCodex(){const c=snapshot.codexcont||{}; content.innerHTML='<div class="detail"><h2>CodexCont Engine</h2><p><span class="chip '+(c.enabled?'ok':'bad')+'">'+(c.enabled?'状态启用':'状态未启用')+'</span> <span class="chip '+(c.route?'warn':'')+'">'+(c.route?'插件执行器已切流':'生产仍走当前稳定链路')+'</span></p><dl><dt>Engine URL</dt><dd>'+c.url+'</dd><dt>失败策略</dt><dd>'+c.fail_mode+'</dd><dt>模式</dt><dd>'+c.mode+'</dd></dl></div>'}
+function renderCodex(){const c=snapshot.codexcont||{}; content.innerHTML='<div class="detail"><h2>CodexCont Engine</h2><p><span class="chip '+(c.enabled?'ok':'bad')+'">'+(c.enabled?'状态检查已开启':'状态检查未开启')+'</span> <span class="chip '+(c.route?'warn':'')+'">'+(c.route?'插件执行器已切流':'生产仍走当前稳定链路')+'</span></p><dl><dt>状态检查</dt><dd><label class="switchline"><input id="ccEnabled" type="checkbox" '+(c.enabled?'checked':'')+'> 在 Governor 面板显示 CodexCont 健康状态</label></dd><dt>Engine URL</dt><dd><input id="ccUrl" value="'+(c.url||'')+'" spellcheck="false"></dd><dt>失败策略</dt><dd><select id="ccFail"><option value="fallback">fallback</option><option value="fail_closed">fail_closed</option></select></dd><dt>插件执行器</dt><dd>'+(c.route?'已切流':'未切流，仍保留当前已验证的 Caddy -> CodexCont 稳定链路')+'</dd><dt>健康</dt><dd>'+(c.health_ok?'正常':'未确认')+' '+(c.health_error||'')+'</dd><dt>模式</dt><dd>'+c.mode+'</dd></dl><div class="actions"><button id="saveCodex">保存 CodexCont 设置</button></div><p class="hint">这里控制 Governor 是否观测 CodexCont Engine；真正把 /v1/responses 切到插件执行器需要单独部署验收，不在页面里随手切。</p></div>'; ccFail.value=c.fail_mode||'fallback'; saveCodex.onclick=saveCodexSettings}
+async function saveCodexSettings(){const qs=new URLSearchParams({action:'save',enabled:ccEnabled.checked?'true':'false',url:ccUrl.value,fail_mode:ccFail.value});const d=await j('/codexcont?'+qs.toString()); if(d.ok){snapshot.codexcont=d.codexcont||snapshot.codexcont; renderCodex();}}
 async function load(){refresh.classList.add('spin'); const data=await j('/keys'); snapshot=data; const keys=data.keys||[]; cardsRender(keys,data); if(tab==='keys')renderKeys(); if(tab==='events')await renderEvents(); if(tab==='codex')renderCodex(); refresh.classList.remove('spin');}
 document.querySelectorAll('.tabs button').forEach(b=>b.onclick=()=>{document.querySelectorAll('.tabs button').forEach(x=>x.classList.remove('active'));b.classList.add('active');tab=b.dataset.tab;load();});
 refresh.onclick=load; load(); setInterval(load, 2000);
@@ -1196,23 +1287,24 @@ refresh.onclick=load; load(); setInterval(load, 2000);
 
 func userHTML() string {
 	return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>CPA 用量</title><style>` + sharedCSS() + `</style></head><body><main class="shell"><header class="top"><div><h1>CPA 用量自助页</h1><p>查看自己的额度、请求明细和思维链保护状态</p></div><div class="toolbar"><span class="pulse">实时轮询</span><button id="refresh" hidden>刷新</button></div></header><section class="panel" id="login"><input id="key" type="password" autocomplete="off" spellcheck="false" placeholder="粘贴完整 cpa_ 用户 Key"><button id="loginBtn">登录</button><p class="hint">请使用 Key Policy 创建时弹窗里的完整 cpa_ Key；不是 CPA 原生 sk Key，也不是列表里的缩略预览。</p><p id="err"></p></section><section class="grid" id="cards" hidden></section><section class="panel" id="main" hidden><div class="tabs"><button data-tab="usage" class="active">额度与用量</button><button data-tab="codex">思维链保护</button><button data-tab="events">请求明细</button></div><div id="content"></div></section></main><script>
-const BASE=location.pathname.startsWith('/governor-user')?'/governor-user':'/v0/resource/plugins/cpa-governor';
+const USER_API=location.pathname.startsWith('/governor-user')?'/governor-user/api':'/v0/resource/plugins/cpa-governor/user/api';
 let tab='usage', me=null, events=[];
-async function api(path,opts={}){const r=await fetch(BASE+path,{cache:'no-store',...opts});return r.json();}
+async function api(path,opts={}){const r=await fetch(USER_API+path,{cache:'no-store',...opts});return r.json();}
 function enteredKey(){return key.value.trim().replace(/^authorization\s*:\s*/i,'').replace(/^(bearer\s+)+/i,'').trim()}
-loginBtn.onclick=async()=>{err.textContent='';const r=await fetch(BASE+'/user/api/session',{headers:{Authorization:'Bearer '+enteredKey()},cache:'no-store'});const d=await r.json(); if(!d.ok){err.textContent='登录失败：'+(d.message||d.error);return} login.hidden=true; cards.hidden=false; main.hidden=false; refresh.hidden=false; load();}
+function localKeyHint(v){if(!v)return '请粘贴完整的 cpa_ 用户 Key。'; if(/^sk[-_]/i.test(v))return '这是 CPA 原生 sk Key，不能登录用量自助页。'; if(v.includes('...')||v.includes('…')||(/^cpa_/i.test(v)&&v.length<40))return '这是列表里的 Key 预览，不是完整 Key。请在 Key Policy 里点击“轮换”，复制弹窗中新生成的完整 Key。'; return ''}
+loginBtn.onclick=async()=>{err.textContent='';const raw=enteredKey();const hint=localKeyHint(raw);if(hint){err.textContent='登录失败：'+hint;return}const r=await fetch(USER_API+'/session',{headers:{'X-CPA-Governor-Key':raw},cache:'no-store'});const d=await r.json(); if(!d.ok){err.textContent='登录失败：'+(d.message||d.error);return} login.hidden=true; cards.hidden=false; main.hidden=false; refresh.hidden=false; load();}
 function money(v){return v==null?'未设':('$'+Number(v).toFixed(3))}
 function num(v){return Number(v||0).toLocaleString()}
 function renderCards(k){cards.innerHTML='<article><b>'+k.name+'</b><span>'+k.preview+'</span></article><article><b>'+money(k.limits.five_hour_usd)+'</b><span>5H 限额</span></article><article><b>'+money(k.limits.daily_usd)+'</b><span>日限</span></article><article><b>'+money(k.limits.weekly_usd)+'</b><span>周限</span></article><article><b>'+money(k.limits.monthly_usd)+'</b><span>月限</span></article>'}
-async function renderUsage(){const usage=await api('/user/api/usage?range=24h'); content.innerHTML='<h2>24H 当前用量：$'+Number((usage.summary||{}).total_cost||0).toFixed(4)+'</h2><div class="detail"><dl><dt>5H 限额</dt><dd>'+money(me.limits.five_hour_usd)+'</dd><dt>日限额</dt><dd>'+money(me.limits.daily_usd)+'</dd><dt>周限额</dt><dd>'+money(me.limits.weekly_usd)+'</dd><dt>月限额</dt><dd>'+money(me.limits.monthly_usd)+'</dd><dt>允许模型</dt><dd>'+(me.models||[]).join(', ')+'</dd></dl></div>'}
-async function renderEvents(){const res=await api('/user/api/events?limit=50'); events=res.events||[]; content.innerHTML='<table><thead><tr><th>时间</th><th>模型</th><th>状态</th><th>延迟</th><th>Tokens</th><th>思考量</th><th>费用</th></tr></thead><tbody>'+events.map(e=>'<tr><td>'+new Date(e.requested_at).toLocaleString()+'</td><td>'+e.model+'</td><td><span class="chip '+(e.failed?'bad':'ok')+'">'+(e.failed?'失败':'成功')+'</span></td><td>'+num(e.latency_ms)+' ms</td><td>'+num((e.usage||{}).total_tokens)+'</td><td>'+num((e.usage||{}).reasoning_tokens)+'</td><td>'+money(e.cost)+'</td></tr>').join('')+'</tbody></table>'}
-async function renderCodex(){const res=await api('/user/api/codexcont'); const c=res.codexcont||{}; content.innerHTML='<div class="detail"><h2>思维链保护状态</h2><p><span class="chip '+(c.enabled?'ok':'bad')+'">'+(c.enabled?'Engine 可用':'Engine 未启用')+'</span> <span class="chip '+(c.route?'warn':'')+'">'+(c.route?'插件内执行器已切流':'当前生产仍走稳定保护链')+'</span></p><dl><dt>你的 Key</dt><dd>'+me.name+' / '+me.preview+'</dd><dt>Engine URL</dt><dd>'+c.url+'</dd><dt>模式</dt><dd>'+c.mode+'</dd></dl></div>'}
-async function load(){refresh.classList.add('spin'); const m=await api('/user/api/me'); if(!m.ok){refresh.classList.remove('spin');return;} me=m.me; renderCards(me); if(tab==='usage')await renderUsage(); if(tab==='events')await renderEvents(); if(tab==='codex')await renderCodex(); refresh.classList.remove('spin');}
+async function renderUsage(){const usage=await api('/usage?range=24h'); content.innerHTML='<h2>24H 当前用量：$'+Number((usage.summary||{}).total_cost||0).toFixed(4)+'</h2><div class="detail"><dl><dt>5H 限额</dt><dd>'+money(me.limits.five_hour_usd)+'</dd><dt>日限额</dt><dd>'+money(me.limits.daily_usd)+'</dd><dt>周限额</dt><dd>'+money(me.limits.weekly_usd)+'</dd><dt>月限额</dt><dd>'+money(me.limits.monthly_usd)+'</dd><dt>允许模型</dt><dd>'+(me.models||[]).join(', ')+'</dd></dl></div>'}
+async function renderEvents(){const res=await api('/events?limit=50'); events=res.events||[]; content.innerHTML='<table><thead><tr><th>时间</th><th>模型</th><th>状态</th><th>延迟</th><th>Tokens</th><th>思考量</th><th>费用</th></tr></thead><tbody>'+events.map(e=>'<tr><td>'+new Date(e.requested_at).toLocaleString()+'</td><td>'+e.model+'</td><td><span class="chip '+(e.failed?'bad':'ok')+'">'+(e.failed?'失败':'成功')+'</span></td><td>'+num(e.latency_ms)+' ms</td><td>'+num((e.usage||{}).total_tokens)+'</td><td>'+num((e.usage||{}).reasoning_tokens)+'</td><td>'+money(e.cost)+'</td></tr>').join('')+'</tbody></table>'}
+async function renderCodex(){const res=await api('/codexcont'); const c=res.codexcont||{}; content.innerHTML='<div class="detail"><h2>思维链保护状态</h2><p><span class="chip '+(c.enabled?'ok':'bad')+'">'+(c.enabled?'Engine 可用':'Engine 未启用')+'</span> <span class="chip '+(c.route?'warn':'')+'">'+(c.route?'插件内执行器已切流':'当前生产仍走稳定保护链')+'</span></p><dl><dt>你的 Key</dt><dd>'+me.name+' / '+me.preview+'</dd><dt>Engine URL</dt><dd>'+c.url+'</dd><dt>模式</dt><dd>'+c.mode+'</dd></dl></div>'}
+async function load(){refresh.classList.add('spin'); const m=await api('/me'); if(!m.ok){refresh.classList.remove('spin');return;} me=m.me; renderCards(me); if(tab==='usage')await renderUsage(); if(tab==='events')await renderEvents(); if(tab==='codex')await renderCodex(); refresh.classList.remove('spin');}
 document.querySelectorAll('.tabs button').forEach(b=>b.onclick=()=>{document.querySelectorAll('.tabs button').forEach(x=>x.classList.remove('active'));b.classList.add('active');tab=b.dataset.tab;load();});
 refresh.onclick=load; setInterval(()=>{if(!main.hidden)load()},2000);
 </script></body></html>`
 }
 
 func sharedCSS() string {
-	return `:root{color-scheme:dark;--bg:#0b1020;--panel:#111827;--panel2:#0f172a;--line:#243047;--text:#e5e7eb;--muted:#94a3b8;--brand:#38bdf8;--ok:#22c55e;--bad:#fb7185;--warn:#fbbf24}*{box-sizing:border-box}body{margin:0;background:linear-gradient(180deg,#0b1020,#111827);color:var(--text);font:14px/1.5 ui-sans-serif,system-ui,Segoe UI,Arial}.shell{max-width:1180px;margin:0 auto;padding:24px}.top{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:18px}.top h1{margin:0;font-size:24px}.top p{margin:4px 0 0;color:var(--muted)}.toolbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap}button{border:1px solid var(--line);background:#172033;color:var(--text);border-radius:8px;padding:9px 13px;cursor:pointer}button:hover{border-color:var(--brand)}.spin{animation:spin .8s linear infinite}.pulse{color:var(--ok);animation:pulse 1.4s ease-in-out infinite}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:14px}.grid article,.panel{background:rgba(17,24,39,.92);border:1px solid var(--line);border-radius:10px;box-shadow:0 12px 32px rgba(0,0,0,.25)}.grid article{padding:14px}.grid b{display:block;font-size:22px}.grid span,small{display:block;color:var(--muted);overflow-wrap:anywhere}.panel{padding:16px}.notice{margin-bottom:14px;color:#cbd5e1;background:rgba(15,23,42,.96)}.hint{margin:10px 0 0;color:var(--muted)}#err{color:#fecdd3}.tabs{display:flex;gap:8px;margin-bottom:14px}.tabs .active{background:#0e7490;border-color:#38bdf8}table{width:100%;border-collapse:collapse;table-layout:fixed}th,td{border-bottom:1px solid var(--line);padding:10px;text-align:left;vertical-align:top;white-space:normal;overflow-wrap:break-word}th{color:#cbd5e1;font-size:12px;text-transform:uppercase}.chip{display:inline-block;border-radius:999px;padding:2px 8px;background:#334155}.chip.ok{color:#86efac}.chip.bad{color:#fecdd3}.chip.warn{color:#fde68a}.detail{background:#0f172a;border:1px solid var(--line);border-radius:8px;padding:14px}.detail h2{font-size:18px;margin:0 0 10px}.detail dl{display:grid;grid-template-columns:140px 1fr;gap:8px 12px}.detail dt{color:#94a3b8}.detail dd{margin:0;overflow-wrap:anywhere}input{width:min(520px,100%);padding:11px;border-radius:8px;border:1px solid var(--line);background:#0b1220;color:var(--text);margin-right:8px}@keyframes spin{to{transform:rotate(360deg)}}@keyframes pulse{0%,100%{opacity:.55}50%{opacity:1}}@media(max-width:620px){.shell{padding:14px}.top{align-items:flex-start;flex-direction:column}.panel{overflow-x:auto}table{min-width:860px;font-size:12px}th,td{padding:8px;white-space:normal;overflow-wrap:break-word}.tabs{min-width:max-content;overflow:auto}.detail dl{grid-template-columns:1fr}}`
+	return `:root{color-scheme:dark;--bg:#0b1020;--panel:#111827;--panel2:#0f172a;--line:#243047;--text:#e5e7eb;--muted:#94a3b8;--brand:#38bdf8;--ok:#22c55e;--bad:#fb7185;--warn:#fbbf24}*{box-sizing:border-box}body{margin:0;background:linear-gradient(180deg,#0b1020,#111827);color:var(--text);font:14px/1.5 ui-sans-serif,system-ui,Segoe UI,Arial}.shell{max-width:1180px;margin:0 auto;padding:24px}.top{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:18px}.top h1{margin:0;font-size:24px}.top p{margin:4px 0 0;color:var(--muted)}.toolbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap}button{border:1px solid var(--line);background:#172033;color:var(--text);border-radius:8px;padding:9px 13px;cursor:pointer}button:hover{border-color:var(--brand)}.spin{animation:spin .8s linear infinite}.pulse{color:var(--ok);animation:pulse 1.4s ease-in-out infinite}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:14px}.grid article,.panel{background:rgba(17,24,39,.92);border:1px solid var(--line);border-radius:10px;box-shadow:0 12px 32px rgba(0,0,0,.25)}.grid article{padding:14px}.grid b{display:block;font-size:22px}.grid span,small{display:block;color:var(--muted);overflow-wrap:anywhere}.panel{padding:16px}.notice{margin-bottom:14px;color:#cbd5e1;background:rgba(15,23,42,.96)}.hint{margin:10px 0 0;color:var(--muted)}#err{color:#fecdd3}.tabs{display:flex;gap:8px;margin-bottom:14px}.tabs .active{background:#0e7490;border-color:#38bdf8}.actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}table{width:100%;border-collapse:collapse;table-layout:fixed}th,td{border-bottom:1px solid var(--line);padding:10px;text-align:left;vertical-align:top;white-space:normal;overflow-wrap:break-word}th{color:#cbd5e1;font-size:12px;text-transform:uppercase}.chip{display:inline-block;border-radius:999px;padding:2px 8px;background:#334155}.chip.ok{color:#86efac}.chip.bad{color:#fecdd3}.chip.warn{color:#fde68a}.detail{background:#0f172a;border:1px solid var(--line);border-radius:8px;padding:14px}.detail h2{font-size:18px;margin:0 0 10px}.detail dl{display:grid;grid-template-columns:140px 1fr;gap:8px 12px}.detail dt{color:#94a3b8}.detail dd{margin:0;overflow-wrap:anywhere}.switchline{display:flex;align-items:center;gap:8px;color:var(--text)}input,select{width:min(520px,100%);padding:11px;border-radius:8px;border:1px solid var(--line);background:#0b1220;color:var(--text);margin-right:8px}input[type=checkbox]{width:auto;margin:0;accent-color:var(--brand)}@keyframes spin{to{transform:rotate(360deg)}}@keyframes pulse{0%,100%{opacity:.55}50%{opacity:1}}@media(max-width:620px){.shell{padding:14px}.top{align-items:flex-start;flex-direction:column}.panel{overflow-x:auto}table{min-width:860px;font-size:12px}th,td{padding:8px;white-space:normal;overflow-wrap:break-word}.tabs{min-width:max-content;overflow:auto}.detail dl{grid-template-columns:1fr}}`
 }

@@ -190,7 +190,8 @@ func TestSubmittedKeyHints(t *testing.T) {
 		{name: "native", in: "sk-abc", code: "native_cpa_key_not_supported"},
 		{name: "preview", in: "cpa_abcd...efgh", code: "key_preview_not_usable"},
 		{name: "unsupported", in: "abc", code: "unsupported_key_format"},
-		{name: "full cpa", in: "Bearer cpa_live", code: "invalid_api_key"},
+		{name: "short cpa", in: "Bearer cpa_live", code: "key_preview_not_usable"},
+		{name: "full cpa", in: "Bearer cpa_abcdefghijklmnopqrstuvwxyz0123456789", code: "invalid_api_key"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -202,5 +203,8 @@ func TestSubmittedKeyHints(t *testing.T) {
 	}
 	if got := NormalizeSubmittedKey("Authorization: Bearer Bearer cpa_live "); got != "cpa_live" {
 		t.Fatalf("normalized key = %q", got)
+	}
+	if got := NormalizeSubmittedKey("\ufeff“Bearer cpa_live\u200b”"); got != "cpa_live" {
+		t.Fatalf("normalized decorated key = %q", got)
 	}
 }

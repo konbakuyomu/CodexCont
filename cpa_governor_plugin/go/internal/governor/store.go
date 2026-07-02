@@ -119,6 +119,11 @@ func (s *Store) EnsureSchema(ctx context.Context) error {
 			target text,
 			detail_json text
 		)`,
+		`create table if not exists settings (
+			key text primary key,
+			value text not null,
+			updated_at integer not null
+		)`,
 	}
 	for _, stmt := range stmts {
 		if _, err := s.db.ExecContext(ctx, stmt); err != nil {
@@ -170,8 +175,40 @@ func (s *Store) UpsertKey(ctx context.Context, key KeyRecord) error {
 }
 
 func (s *Store) ImportKeys(ctx context.Context, state KeyPolicyState) error {
+	seen := make(map[string]bool, len(state.Keys))
 	for _, key := range state.Keys {
+		seen[key.ID] = true
 		if err := s.UpsertKey(ctx, key); err != nil {
+			return err
+		}
+	}
+	if err := s.syncDeletedKeys(ctx, seen); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s *Store) syncDeletedKeys(ctx context.Context, seen map[string]bool) error {
+	rows, err := s.db.QueryContext(ctx, `select id from keys`)
+	if err != nil {
+		return err
+	}
+	var stale []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		if !seen[id] {
+			stale = append(stale, id)
+		}
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	for _, id := range stale {
+		if _, err := s.db.ExecContext(ctx, `delete from keys where id=?`, id); err != nil {
 			return err
 		}
 	}
@@ -399,6 +436,34 @@ func (s *Store) Audit(ctx context.Context, actor, action, target string, detail 
 	_, err := s.db.ExecContext(ctx, `insert into audit_log(timestamp, actor, action, target, detail_json) values(?, ?, ?, ?, ?)`,
 		time.Now().Unix(), actor, action, target, string(raw))
 	return err
+}
+
+func (s *Store) LoadSettings(ctx context.Context) (map[string]string, error) {
+	rows, err := s.db.QueryContext(ctx, `select key, value from settings`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]string{}
+	for rows.Next() {
+		var key, value string
+		if err := rows.Scan(&key, &value); err != nil {
+			return nil, err
+		}
+		out[key] = value
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) SaveSettings(ctx context.Context, values map[string]string) error {
+	for key, value := range values {
+		if _, err := s.db.ExecContext(ctx, `insert into settings(key, value, updated_at) values(?, ?, ?)
+			on conflict(key) do update set value=excluded.value, updated_at=excluded.updated_at`,
+			key, value, time.Now().Unix()); err != nil {
+			return err
+		}
+	}
+	return s.Audit(ctx, "admin", "set_settings", "governor", values)
 }
 
 func boolInt(value bool) int {

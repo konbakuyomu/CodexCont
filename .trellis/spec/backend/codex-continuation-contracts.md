@@ -440,10 +440,16 @@ credential, while CPAMP remains admin-only.
   management paths.
 - CPA plugin `ResourceRoute` dispatch is GET-only in the current CPA host.
   User self-service APIs under `/v0/resource/plugins/cpa-governor/user/api/*`
-  must therefore use GET requests, including session creation with the raw key
-  passed in the `Authorization` header. Do not put the key in the URL, and do
-  not implement user-resource mutations as POST unless they move behind a
-  management route or another authenticated proxy surface.
+  must therefore use GET requests. Session creation passes the raw user key in
+  `X-CPA-Governor-Key` (or `X-CPA-User-Key`) so it does not collide with
+  CPAMP/management `Authorization` headers on embedded plugin pages. A direct
+  route may still accept `Authorization: Bearer <cpa_...>` as a fallback. Do
+  not put the key in the URL, and do not implement user-resource mutations as
+  POST unless they move behind a management route or another authenticated
+  proxy surface.
+- User resource responses and plugin HTML must send `Cache-Control: no-store`.
+  CPAMP can keep a tab alive across plugin upgrades, so stale HTML/JS must not
+  be cached by the browser or an intermediate admin proxy.
 - `cpa-admin.konbakuyomu.us/governor/` is protected by Cloudflare Access and
   may route through the local admin proxy to CPA's plugin resource endpoint.
 - Do not put CPA management keys, API keys, OAuth tokens, cookies, or
@@ -479,6 +485,12 @@ credential, while CPAMP remains admin-only.
 - User session with a shortened `cpa_...` preview -> `401
   key_preview_not_usable` and a message telling the user to use the full key
   shown at create/rotation time.
+- User session with a full but rotated/stale `cpa_...` key -> `401
+  invalid_api_key`; validate by hashing the pasted key and comparing it with
+  the current Key Policy state before blaming Governor sync.
+- Embedded CPAMP plugin page sends a CPAMP management bearer token in
+  `Authorization` plus user key in `X-CPA-Governor-Key` -> Governor must use
+  the dedicated user-key header and return `200` for a valid current key.
 - `POST` to a user resource API -> CPA returns `404` before the plugin; the
   browser UI must call these resource APIs with GET.
 - Mobile Playwright snapshot shows table columns narrower than practical text
@@ -490,6 +502,12 @@ credential, while CPAMP remains admin-only.
   return 404, and real `/v1/responses` still succeeds.
 - Base: Governor user page opens but no user is logged in. `/user/api/me`
   returns `401 not_authenticated`, and the page waits for a raw `cpa_...` key.
+- Base: A Key Policy key is rotated. The old full key is unrecoverable and
+  should fail login; only the newly generated full key shown in the rotation
+  dialog can match the current `key_hash`.
+- Bad: The user portal uses `Authorization` as its only login transport inside
+  CPAMP. The admin shell may already use that header, causing valid user keys
+  to be interpreted as invalid.
 - Bad: Caddy sends public `/v1/responses` to Governor before the executor-level
   continuation path is validated. This can bypass the known-good CodexCont
   fold path.
@@ -500,6 +518,8 @@ credential, while CPAMP remains admin-only.
 ### 6. Tests Required
 - Go unit: key hashing, Key Policy import, quota windows, pricing, redaction,
   store usage events, admin/user handler responses.
+- Go unit: user login must prefer `X-CPA-Governor-Key` over `Authorization`,
+  read headers case-insensitively, and mark JSON/HTML responses `no-store`.
 - Python unit: CodexCont Engine summary projection and route smoke.
 - Build verification: linux/amd64 `.so` SHA256 recorded and `file` reports an
   ELF x86-64 shared object compatible with the Debian/glibc CPA image.

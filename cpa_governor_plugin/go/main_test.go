@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -189,12 +190,38 @@ func TestUserSessionNormalizesPastedBearerKey(t *testing.T) {
 	if got := resp.Headers.Get("set-cookie"); got == "" {
 		t.Fatal("session cookie was not set")
 	}
+	if got := resp.Headers.Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("cache-control = %q", got)
+	}
 	var body map[string]any
 	if err := json.Unmarshal(resp.Body, &body); err != nil {
 		t.Fatal(err)
 	}
 	if body["ok"] != true {
 		t.Fatalf("body = %#v", body)
+	}
+}
+
+func TestUserSessionPrefersDedicatedHeaderOverAuthorization(t *testing.T) {
+	configureTestState(t)
+	raw, err := userSession(managementRequest{
+		Headers: http.Header{
+			"Authorization":      []string{"Bearer cpamp-admin-token"},
+			"X-CPA-Governor-Key": []string{"Authorization: Bearer cpa_live"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp := unwrapManagementResponse(t, raw)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d body=%s", resp.StatusCode, string(resp.Body))
+	}
+	if got := resp.Headers.Get("set-cookie"); got == "" {
+		t.Fatal("session cookie was not set")
+	}
+	if got := resp.Headers.Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("cache-control = %q", got)
 	}
 }
 
@@ -233,11 +260,55 @@ func TestUserSessionExplainsNativeAndPreviewKeys(t *testing.T) {
 
 func TestUserHTMLSessionUsesGETResourceRoute(t *testing.T) {
 	html := userHTML()
-	if !strings.Contains(html, "fetch(BASE+'/user/api/session',{headers:") {
+	if !strings.Contains(html, "fetch(USER_API+'/session',{headers:{'X-CPA-Governor-Key':raw}") {
 		t.Fatal("user login should call the GET-only resource route without a POST method")
+	}
+	if strings.Contains(html, "Authorization:'Bearer '+raw") || strings.Contains(html, `Authorization:"Bearer "+raw`) {
+		t.Fatal("CPAMP embeds plugin pages behind its own auth; user login must use a dedicated key header")
 	}
 	if strings.Contains(strings.ToLower(html), "method:'post'") || strings.Contains(strings.ToLower(html), `method:"post"`) {
 		t.Fatal("CPA resource routes are GET-only; user login must not use POST")
+	}
+}
+
+func TestAdminHTMLCodexContSaveUsesGETResourceRoute(t *testing.T) {
+	html := adminHTML()
+	if !strings.Contains(html, "action:'save'") || !strings.Contains(html, "j('/codexcont?'") {
+		t.Fatal("admin CodexCont save should call the GET-only resource route with query parameters")
+	}
+	if strings.Contains(strings.ToLower(html), "method:'put'") || strings.Contains(strings.ToLower(html), `method:"put"`) {
+		t.Fatal("CPA resource routes are GET-only; admin resource page must not save with PUT")
+	}
+}
+
+func TestAdminCodexContGETSavePersistsSettings(t *testing.T) {
+	configureTestState(t)
+	raw, err := adminCodexCont(managementRequest{
+		Method: http.MethodGet,
+		Query: url.Values{
+			"action":    []string{"save"},
+			"enabled":   []string{"true"},
+			"url":       []string{"http://codexcont:8787/"},
+			"fail_mode": []string{"fail_closed"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp := unwrapManagementResponse(t, raw)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d body=%s", resp.StatusCode, string(resp.Body))
+	}
+	cfg := loadedConfig()
+	if !cfg.CodexContEnabled || cfg.CodexContURL != "http://codexcont:8787" || cfg.FailMode != "fail_closed" {
+		t.Fatalf("cfg = %#v", cfg)
+	}
+	settings, err := loadedStore().LoadSettings(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if settings["codexcont_enabled"] != "true" || settings["codexcont_url"] != "http://codexcont:8787" || settings["fail_mode"] != "fail_closed" {
+		t.Fatalf("settings = %#v", settings)
 	}
 }
 
@@ -333,5 +404,8 @@ func TestRefreshKeyPolicyStateImportsNewKeys(t *testing.T) {
 	}
 	if key, ok := findKeyByRaw("cpa_bob"); !ok || key.ID != "bob" {
 		t.Fatalf("bob not imported after refresh: %#v ok=%v", key, ok)
+	}
+	if key, ok := findKeyByRaw("cpa_alice"); ok {
+		t.Fatalf("deleted alice should not remain in Governor mirror: %#v", key)
 	}
 }
