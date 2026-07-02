@@ -13,10 +13,20 @@ import (
 	"time"
 
 	"codexcont/cpa-governor-plugin/internal/governor"
+	_ "embed"
 	"gopkg.in/yaml.v3"
 )
 
 const pluginID = "cpa-governor"
+
+//go:embed assets/admin.html
+var adminHTMLTemplate string
+
+//go:embed assets/user.html
+var userHTMLTemplate string
+
+//go:embed assets/shared.css
+var sharedCSSTemplate string
 
 type envelope struct {
 	OK     bool            `json:"ok"`
@@ -84,19 +94,25 @@ func runPreviewIfRequested() {
 		return
 	}
 	cfg := governor.DefaultConfig()
-	cfg.StateDBPath = ":memory:"
+	previewDir, err := os.MkdirTemp("", "cpa-governor-preview-*")
+	if err != nil {
+		panic(err)
+	}
+	cfg.StateDBPath = previewDir + "/governor.sqlite"
 	cfg.SessionSecret = "preview-secret"
 	cfg.CodexContEnabled = true
+	cfg.CodexContURL = "http://" + addr
 	store, err := governor.OpenStore(cfg.StateDBPath)
 	if err != nil {
 		panic(err)
 	}
+	previewRawKey := "cpa_preview_abcdefghijklmnopqrstuvwxyz0123456789AB"
 	previewKey := governor.KeyRecord{
 		ID:              "preview-key",
 		Name:            "演示用户",
-		KeyHash:         "sha256:" + governor.SHA256Hex("cpa_preview"),
+		KeyHash:         "sha256:" + governor.SHA256Hex(previewRawKey),
 		Enabled:         true,
-		Preview:         governor.HashPreview(governor.SHA256Hex("cpa_preview")),
+		Preview:         governor.HashPreview(governor.SHA256Hex(previewRawKey)),
 		RPM:             60,
 		Concurrency:     2,
 		Models:          []string{"gpt-5.5", "gpt-5.4"},
@@ -110,13 +126,21 @@ func runPreviewIfRequested() {
 	}
 	_ = store.UpsertKey(context.Background(), previewKey)
 	_ = store.InsertUsage(context.Background(), governor.UsageEvent{
-		RequestID:   "req-preview-1",
-		KeyID:       previewKey.ID,
-		KeyPreview:  previewKey.Preview,
-		Model:       "gpt-5.5",
-		Endpoint:    "/v1/responses",
-		RequestedAt: time.Now().Add(-3 * time.Minute),
-		LatencyMS:   14320,
+		RequestID:       "req-preview-a",
+		KeyID:           previewKey.ID,
+		KeyPreview:      previewKey.Preview,
+		Model:           "gpt-5.5",
+		RequestedModel:  "gpt-5.5",
+		ActualModel:     "gpt-5.5",
+		Provider:        "openai",
+		ExecutorType:    "codex",
+		Endpoint:        "/v1/responses",
+		RequestedAt:     time.Now().Add(-3 * time.Minute),
+		LatencyMS:       14320,
+		TTFTMS:          1180,
+		ReasoningEffort: "high",
+		ServiceTier:     "default",
+		StatusCode:      200,
 		Usage: governor.TokenUsage{
 			InputTokens:     120000,
 			CachedTokens:    103000,
@@ -132,6 +156,25 @@ func runPreviewIfRequested() {
 			ReasoningTokens: 516,
 			TotalTokens:     122100,
 		}, "gpt-5.5"),
+	})
+	_ = store.SaveCodexSummary(context.Background(), "req-preview-a", previewKey.ID, "gpt-5.5", "auto_continued", map[string]any{
+		"request_id":                        "req-preview-a",
+		"model":                             "gpt-5.5",
+		"path":                              "/v1/responses",
+		"started_at":                        time.Now().Add(-2 * time.Minute).Format(time.RFC3339),
+		"updated_at":                        time.Now().Add(-90 * time.Second).Format(time.RFC3339),
+		"duration_ms":                       5570,
+		"status":                            "completed",
+		"protection":                        "auto_continued",
+		"key_identity":                      previewKey.Safe(),
+		"latest_round":                      2,
+		"latest_reasoning_tokens":           181,
+		"first_truncation_round":            1,
+		"first_truncation_reasoning_tokens": 516,
+		"first_truncation_decision":         "continue",
+		"continuation_count":                1,
+		"stopped_reason":                    "completed",
+		"rounds":                            []map[string]any{{"round": 1, "reasoning_tokens": 516, "decision": "continue", "truncation_match": true}, {"round": 2, "reasoning_tokens": 181, "decision": "clean", "truncation_match": false}},
 	})
 	state.mu.Lock()
 	state.cfg = cfg
@@ -150,6 +193,28 @@ func runPreviewIfRequested() {
 		_ = r
 		w.Header().Set("content-type", "text/html; charset=utf-8")
 		_, _ = w.Write([]byte(userHTML()))
+	})
+	mux.HandleFunc("/governor/codexcont/admin/status", func(w http.ResponseWriter, r *http.Request) {
+		_ = r
+		w.Header().Set("content-type", "application/json; charset=utf-8")
+		_, _ = w.Write([]byte(`{"ok":true,"counters":{"total_requests":3,"active_requests":1,"continuations":1,"truncation_hits":1,"failures":0},"last_error":null}`))
+	})
+	mux.HandleFunc("/governor/codexcont/admin/requests", func(w http.ResponseWriter, r *http.Request) {
+		_ = r
+		w.Header().Set("content-type", "application/json; charset=utf-8")
+		_, _ = w.Write([]byte(`{"requests":[{"request_id":"req-preview-a","model":"gpt-5.5","path":"/v1/responses","started_at":"2026-07-02T02:09:31Z","updated_at":"2026-07-02T02:09:42Z","duration_ms":5570,"status":"completed","protection":"auto_continued","key_identity":{"known":true,"name":"演示用户","id":"preview-key","preview":"cpa_...view","enabled":true},"latest_round":2,"latest_reasoning_tokens":181,"first_truncation_round":1,"first_truncation_reasoning_tokens":516,"continuation_count":1,"rounds":[{"round":1,"reasoning_tokens":516,"decision":"continue","truncation_match":true},{"round":2,"reasoning_tokens":181,"decision":"clean","truncation_match":false}]},{"request_id":"req-preview-b","model":"gpt-5.5","path":"/v1/responses","started_at":"2026-07-02T02:09:54Z","updated_at":"2026-07-02T02:09:59Z","duration_ms":3200,"status":"processing","protection":"processing","key_identity":{"known":true,"name":"演示用户","id":"preview-key","preview":"cpa_...view","enabled":true},"latest_round":1,"latest_reasoning_tokens":140,"continuation_count":0,"rounds":[{"round":1,"reasoning_tokens":140,"decision":"clean","truncation_match":false}]}]}`))
+	})
+	mux.HandleFunc("/governor/codexcont/admin/logs/stream", func(w http.ResponseWriter, r *http.Request) {
+		_ = r
+		w.Header().Set("content-type", "text/event-stream")
+		w.Header().Set("cache-control", "no-cache")
+		_, _ = w.Write([]byte("event: ready\ndata: {\"ok\":true}\n\n"))
+		_, _ = w.Write([]byte("event: log\ndata: {\"ts\":\"2026-07-02T02:09:59Z\",\"level\":\"info\",\"event\":\"round_decision\",\"message\":\"preview round decision\",\"fields\":{\"request_id\":\"req-preview-a\"}}\n\n"))
+	})
+	mux.HandleFunc("/engine/healthz", func(w http.ResponseWriter, r *http.Request) {
+		_ = r
+		w.Header().Set("content-type", "application/json; charset=utf-8")
+		_, _ = w.Write([]byte(`{"ok":true,"mode":"preview"}`))
 	})
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		rawReq, _ := json.Marshal(managementRequest{
@@ -698,18 +763,26 @@ func usageHandle(raw []byte) ([]byte, error) {
 		}
 	}
 	event := governor.UsageEvent{
-		RequestID:     rec.ResponseHeaders.Get("x-request-id"),
-		KeyID:         key.ID,
-		KeyPreview:    key.Preview,
-		Model:         firstNonEmpty(rec.Alias, rec.Model),
-		Endpoint:      rec.Source,
-		RequestedAt:   rec.RequestedAt,
-		LatencyMS:     rec.Latency.Milliseconds(),
-		Failed:        rec.Failed,
-		Failure:       governor.Brief(rec.Failure.Body, 600),
-		Usage:         usage,
-		Cost:          cost,
-		CostBreakdown: breakdown,
+		RequestID:       firstNonEmpty(rec.ResponseHeaders.Get("x-request-id"), rec.ResponseHeaders.Get("x-openai-request-id")),
+		KeyID:           key.ID,
+		KeyPreview:      key.Preview,
+		Model:           firstNonEmpty(rec.Alias, rec.Model),
+		RequestedModel:  firstNonEmpty(rec.Alias, rec.Model),
+		ActualModel:     rec.Model,
+		Provider:        rec.Provider,
+		ExecutorType:    rec.ExecutorType,
+		Endpoint:        rec.Source,
+		RequestedAt:     rec.RequestedAt,
+		LatencyMS:       rec.Latency.Milliseconds(),
+		TTFTMS:          rec.TTFT.Milliseconds(),
+		ReasoningEffort: rec.ReasoningEffort,
+		ServiceTier:     rec.ServiceTier,
+		StatusCode:      rec.Failure.StatusCode,
+		Failed:          rec.Failed,
+		Failure:         governor.Brief(rec.Failure.Body, 600),
+		Usage:           usage,
+		Cost:            cost,
+		CostBreakdown:   breakdown,
 	}
 	_ = store.InsertUsage(context.Background(), event)
 	return okEnvelope(map[string]any{})
@@ -732,7 +805,7 @@ func managementRegister() ([]byte, error) {
 			{Path: "/admin/api/keys/reset"},
 			{Path: "/admin/api/events"},
 			{Path: "/admin/api/codexcont"},
-			{Path: "/user", Menu: "CPA Usage", Description: "Self-service usage dashboard"},
+			{Path: "/user", Description: "Self-service usage dashboard"},
 			{Path: "/user/api/session"},
 			{Path: "/user/api/me"},
 			{Path: "/user/api/usage"},
@@ -773,7 +846,7 @@ func managementHandle(raw []byte) ([]byte, error) {
 	case strings.Contains(path, "/user/api/events"):
 		return userEvents(req)
 	case strings.Contains(path, "/user/api/codexcont"):
-		return jsonResponse(http.StatusOK, map[string]any{"ok": true, "codexcont": codexcontStatus()})
+		return userCodexCont(req)
 	case strings.HasSuffix(path, "/plugins/cpa-governor/keys"):
 		return adminKeys(req)
 	case strings.HasSuffix(path, "/plugins/cpa-governor/keys/limits"):
@@ -992,8 +1065,28 @@ func userUsage(req managementRequest) ([]byte, error) {
 	if rangeName == "" {
 		rangeName = governor.Range24H
 	}
-	used, _ := store.UsageSum(context.Background(), key.ID, governor.WindowFor(rangeName, time.Now()))
-	return jsonResponse(http.StatusOK, map[string]any{"ok": true, "range": rangeName, "summary": map[string]any{"total_cost": used}, "limits": key.Safe()["limits"]})
+	summary, err := store.UsageSummary(context.Background(), key.ID, governor.WindowFor(rangeName, time.Now()))
+	if err != nil {
+		return jsonResponse(http.StatusInternalServerError, map[string]any{"ok": false, "error": err.Error()})
+	}
+	success := summary.Calls - summary.Failed
+	successRate := 0.0
+	if summary.Calls > 0 {
+		successRate = float64(success) / float64(summary.Calls)
+	}
+	return jsonResponse(http.StatusOK, map[string]any{
+		"ok":     true,
+		"range":  rangeName,
+		"limits": key.Safe()["limits"],
+		"summary": map[string]any{
+			"calls":        summary.Calls,
+			"success":      success,
+			"failed":       summary.Failed,
+			"success_rate": successRate,
+			"total_cost":   summary.TotalCost,
+			"usage":        summary.Usage,
+		},
+	})
 }
 
 func userEvents(req managementRequest) ([]byte, error) {
@@ -1002,6 +1095,29 @@ func userEvents(req managementRequest) ([]byte, error) {
 		return jsonResponse(http.StatusUnauthorized, map[string]any{"ok": false, "error": "not_authenticated"})
 	}
 	return eventsResponseFromRequest(req, key.ID)
+}
+
+func userCodexCont(req managementRequest) ([]byte, error) {
+	key, ok := keyFromSession(req)
+	if !ok {
+		return jsonResponse(http.StatusUnauthorized, map[string]any{"ok": false, "error": "not_authenticated"})
+	}
+	limit := 80
+	if rawLimit := strings.TrimSpace(req.Query.Get("limit")); rawLimit != "" {
+		if parsed, err := strconv.Atoi(rawLimit); err == nil {
+			limit = parsed
+		}
+	}
+	if limit <= 0 || limit > 200 {
+		limit = 80
+	}
+	requests, source := codexRequestsForKey(key, limit)
+	return jsonResponse(http.StatusOK, map[string]any{
+		"ok":        true,
+		"codexcont": codexcontStatus(),
+		"requests":  requests,
+		"source":    source,
+	})
 }
 
 func eventsResponse(keyID string, limit int) ([]byte, error) {
@@ -1043,6 +1159,106 @@ func usageWindows(ctx context.Context, store *governor.Store, keyID string, now 
 		out[name] = value
 	}
 	return out
+}
+
+func codexRequestsForKey(key governor.KeyRecord, limit int) ([]map[string]any, string) {
+	if requests, ok := fetchCodexContRequests(key, limit); ok {
+		return requests, "codexcont_admin"
+	}
+	store := loadedStore()
+	if store == nil {
+		return []map[string]any{}, "unavailable"
+	}
+	items, err := store.RecentCodexSummaries(context.Background(), key.ID, limit)
+	if err != nil {
+		return []map[string]any{}, "store_error"
+	}
+	out := make([]map[string]any, 0, len(items))
+	for _, item := range items {
+		safe := safeCodexSummary(item.Summary, key)
+		if safe == nil {
+			continue
+		}
+		out = append(out, safe)
+	}
+	return out, "governor_store"
+}
+
+func fetchCodexContRequests(key governor.KeyRecord, limit int) ([]map[string]any, bool) {
+	cfg := loadedConfig()
+	if !cfg.CodexContEnabled {
+		return nil, false
+	}
+	base := strings.TrimRight(strings.TrimSpace(cfg.CodexContURL), "/")
+	if base == "" {
+		return nil, false
+	}
+	parsed, err := url.Parse(base + "/admin/requests?limit=" + strconv.Itoa(limit))
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return nil, false
+	}
+	client := http.Client{Timeout: 1200 * time.Millisecond}
+	resp, err := client.Get(parsed.String())
+	if err != nil {
+		return nil, false
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, false
+	}
+	var body struct {
+		Requests []map[string]any `json:"requests"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		return nil, false
+	}
+	out := make([]map[string]any, 0, len(body.Requests))
+	for _, req := range body.Requests {
+		safe := safeCodexSummary(req, key)
+		if safe == nil {
+			continue
+		}
+		out = append(out, safe)
+	}
+	return out, true
+}
+
+func safeCodexSummary(req map[string]any, key governor.KeyRecord) map[string]any {
+	if req == nil {
+		return nil
+	}
+	identity, _ := req["key_identity"].(map[string]any)
+	if !codexIdentityMatches(identity, key) {
+		return nil
+	}
+	fields := []string{
+		"request_id", "model", "path", "started_at", "updated_at", "ended_at",
+		"duration_ms", "status", "protection", "latest_round",
+		"latest_reasoning_tokens", "first_truncation_round",
+		"first_truncation_reasoning_tokens", "first_truncation_decision",
+		"continuation_count", "stopped_reason", "failure_reason",
+		"passthrough_reason", "rounds",
+	}
+	out := map[string]any{}
+	for _, field := range fields {
+		if value, ok := req[field]; ok {
+			out[field] = value
+		}
+	}
+	out["key_identity"] = key.Safe()
+	return out
+}
+
+func codexIdentityMatches(identity map[string]any, key governor.KeyRecord) bool {
+	if strings.TrimSpace(key.ID) == "" || identity == nil {
+		return false
+	}
+	id := strings.TrimSpace(fmt.Sprint(identity["id"]))
+	if id != "" && id == key.ID {
+		return true
+	}
+	preview := strings.TrimSpace(fmt.Sprint(identity["preview"]))
+	return preview != "" && preview == key.Preview
 }
 
 func forwardHostStream(targetStreamID string, sourceStreamID string) {
@@ -1267,44 +1483,17 @@ func callHost(method string, payload any) (json.RawMessage, error) {
 }
 
 func adminHTML() string {
-	return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>CPA Governor</title><style>` + sharedCSS() + `</style></head><body><main class="shell"><header class="top"><div><h1>CPA Governor 管理</h1><p>这是 CPA 插件里的同一个管理页；CPAMP 左侧的 CPA Governor 与 /governor/ 入口显示的是同一套数据。</p></div><div class="toolbar"><span id="live" class="pulse">实时轮询</span><button id="refresh">刷新</button></div></header><section class="panel notice">建议日常从 CPAMP 左侧菜单进入；/governor/ 只是给管理员排障用的直达入口，不是另一套系统。</section><section class="grid" id="cards"></section><section class="panel"><div class="tabs"><button data-tab="keys" class="active">Key 管理</button><button data-tab="events">请求明细</button><button data-tab="codex">CodexCont</button></div><div id="content">加载中...</div></section></main><script>
-const API=location.pathname.startsWith('/governor')?'/governor/api':'/v0/resource/plugins/cpa-governor/admin/api';
-let tab='keys', snapshot={keys:[],codexcont:{}};
-async function j(path, opts={}){const r=await fetch(API+path,{cache:'no-store',...opts});return r.json();}
-function money(v){return v==null?'未设':('$'+Number(v).toFixed(3))}
-function num(v){return Number(v||0).toLocaleString()}
-function keyName(id){const k=(snapshot.keys||[]).find(x=>x.id===id);return k?(k.name+'<small>'+k.preview+'</small>'):(id||'未知 Key')}
-function cardsRender(keys,data){cards.innerHTML='<article><b>'+keys.length+'</b><span>Key 数量</span></article><article><b>'+keys.filter(k=>k.enabled).length+'</b><span>启用</span></article><article><b>'+money(keys.reduce((s,k)=>s+Number((k.usage||{})["24h"]||0),0))+'</b><span>24H 估算</span></article><article><b>'+((data.codexcont||{}).enabled?'已开启':'未开启')+'</b><span>CodexCont 状态</span></article><article><b>'+((data.codexcont||{}).route?'已切流':'未切流')+'</b><span>插件执行器</span></article>'}
-function renderKeys(){const keys=snapshot.keys||[]; content.innerHTML='<table><thead><tr><th>用户/Key</th><th>状态</th><th>RPM</th><th>并发</th><th>5H 用量</th><th>日用量</th><th>周用量</th><th>月用量</th><th>限额</th></tr></thead><tbody>'+keys.map(k=>'<tr><td><b>'+k.name+'</b><small>'+k.preview+'</small></td><td><span class="chip '+(k.enabled?'ok':'bad')+'">'+(k.enabled?'启用':'禁用')+'</span></td><td>'+ (k.rpm||'-') +'</td><td>'+ (k.concurrency||'-') +'</td><td>'+money((k.usage||{})["5h"])+'</td><td>'+money((k.usage||{})["24h"])+'</td><td>'+money((k.usage||{})["7d"])+'</td><td>'+money((k.usage||{})["month"])+'</td><td><small>5H '+money(k.limits.five_hour_usd)+' / 日 '+money(k.limits.daily_usd)+' / 周 '+money(k.limits.weekly_usd)+' / 月 '+money(k.limits.monthly_usd)+'</small></td></tr>').join('')+'</tbody></table>'}
-async function renderEvents(){const ev=await j('/events?key_id=all'); const rows=ev.events||[]; content.innerHTML='<table><thead><tr><th>时间</th><th>用户/Key</th><th>模型</th><th>状态</th><th>延迟</th><th>Tokens</th><th>思考量</th><th>费用</th></tr></thead><tbody>'+rows.map(e=>'<tr><td>'+new Date(e.requested_at).toLocaleString()+'</td><td>'+keyName(e.key_id)+'</td><td>'+e.model+'</td><td><span class="chip '+(e.failed?'bad':'ok')+'">'+(e.failed?'失败':'成功')+'</span><small>'+((e.failure||'').slice(0,120))+'</small></td><td>'+num(e.latency_ms)+' ms</td><td>'+num((e.usage||{}).total_tokens)+'</td><td>'+num((e.usage||{}).reasoning_tokens)+'</td><td>'+money(e.cost)+'</td></tr>').join('')+'</tbody></table>'}
-function renderCodex(){const c=snapshot.codexcont||{}; content.innerHTML='<div class="detail"><h2>CodexCont Engine</h2><p><span class="chip '+(c.enabled?'ok':'bad')+'">'+(c.enabled?'状态检查已开启':'状态检查未开启')+'</span> <span class="chip '+(c.route?'warn':'')+'">'+(c.route?'插件执行器已切流':'生产仍走当前稳定链路')+'</span></p><dl><dt>状态检查</dt><dd><label class="switchline"><input id="ccEnabled" type="checkbox" '+(c.enabled?'checked':'')+'> 在 Governor 面板显示 CodexCont 健康状态</label></dd><dt>Engine URL</dt><dd><input id="ccUrl" value="'+(c.url||'')+'" spellcheck="false"></dd><dt>失败策略</dt><dd><select id="ccFail"><option value="fallback">fallback</option><option value="fail_closed">fail_closed</option></select></dd><dt>插件执行器</dt><dd>'+(c.route?'已切流':'未切流，仍保留当前已验证的 Caddy -> CodexCont 稳定链路')+'</dd><dt>健康</dt><dd>'+(c.health_ok?'正常':'未确认')+' '+(c.health_error||'')+'</dd><dt>模式</dt><dd>'+c.mode+'</dd></dl><div class="actions"><button id="saveCodex">保存 CodexCont 设置</button></div><p class="hint">这里控制 Governor 是否观测 CodexCont Engine；真正把 /v1/responses 切到插件执行器需要单独部署验收，不在页面里随手切。</p></div>'; ccFail.value=c.fail_mode||'fallback'; saveCodex.onclick=saveCodexSettings}
-async function saveCodexSettings(){const qs=new URLSearchParams({action:'save',enabled:ccEnabled.checked?'true':'false',url:ccUrl.value,fail_mode:ccFail.value});const d=await j('/codexcont?'+qs.toString()); if(d.ok){snapshot.codexcont=d.codexcont||snapshot.codexcont; renderCodex();}}
-async function load(){refresh.classList.add('spin'); const data=await j('/keys'); snapshot=data; const keys=data.keys||[]; cardsRender(keys,data); if(tab==='keys')renderKeys(); if(tab==='events')await renderEvents(); if(tab==='codex')renderCodex(); refresh.classList.remove('spin');}
-document.querySelectorAll('.tabs button').forEach(b=>b.onclick=()=>{document.querySelectorAll('.tabs button').forEach(x=>x.classList.remove('active'));b.classList.add('active');tab=b.dataset.tab;load();});
-refresh.onclick=load; load(); setInterval(load, 2000);
-</script></body></html>`
+	return renderHTML(adminHTMLTemplate)
 }
 
 func userHTML() string {
-	return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>CPA 用量</title><style>` + sharedCSS() + `</style></head><body><main class="shell"><header class="top"><div><h1>CPA 用量自助页</h1><p>查看自己的额度、请求明细和思维链保护状态</p></div><div class="toolbar"><span class="pulse">实时轮询</span><button id="refresh" hidden>刷新</button></div></header><section class="panel" id="login"><input id="key" type="password" autocomplete="off" spellcheck="false" placeholder="粘贴完整 cpa_ 用户 Key"><button id="loginBtn">登录</button><p class="hint">请使用 Key Policy 创建时弹窗里的完整 cpa_ Key；不是 CPA 原生 sk Key，也不是列表里的缩略预览。</p><p id="err"></p></section><section class="grid" id="cards" hidden></section><section class="panel" id="main" hidden><div class="tabs"><button data-tab="usage" class="active">额度与用量</button><button data-tab="codex">思维链保护</button><button data-tab="events">请求明细</button></div><div id="content"></div></section></main><script>
-const USER_API=location.pathname.startsWith('/governor-user')?'/governor-user/api':'/v0/resource/plugins/cpa-governor/user/api';
-let tab='usage', me=null, events=[];
-async function api(path,opts={}){const r=await fetch(USER_API+path,{cache:'no-store',...opts});return r.json();}
-function enteredKey(){return key.value.trim().replace(/^authorization\s*:\s*/i,'').replace(/^(bearer\s+)+/i,'').trim()}
-function localKeyHint(v){if(!v)return '请粘贴完整的 cpa_ 用户 Key。'; if(/^sk[-_]/i.test(v))return '这是 CPA 原生 sk Key，不能登录用量自助页。'; if(v.includes('...')||v.includes('…')||(/^cpa_/i.test(v)&&v.length<40))return '这是列表里的 Key 预览，不是完整 Key。请在 Key Policy 里点击“轮换”，复制弹窗中新生成的完整 Key。'; return ''}
-loginBtn.onclick=async()=>{err.textContent='';const raw=enteredKey();const hint=localKeyHint(raw);if(hint){err.textContent='登录失败：'+hint;return}const r=await fetch(USER_API+'/session',{headers:{'X-CPA-Governor-Key':raw},cache:'no-store'});const d=await r.json(); if(!d.ok){err.textContent='登录失败：'+(d.message||d.error);return} login.hidden=true; cards.hidden=false; main.hidden=false; refresh.hidden=false; load();}
-function money(v){return v==null?'未设':('$'+Number(v).toFixed(3))}
-function num(v){return Number(v||0).toLocaleString()}
-function renderCards(k){cards.innerHTML='<article><b>'+k.name+'</b><span>'+k.preview+'</span></article><article><b>'+money(k.limits.five_hour_usd)+'</b><span>5H 限额</span></article><article><b>'+money(k.limits.daily_usd)+'</b><span>日限</span></article><article><b>'+money(k.limits.weekly_usd)+'</b><span>周限</span></article><article><b>'+money(k.limits.monthly_usd)+'</b><span>月限</span></article>'}
-async function renderUsage(){const usage=await api('/usage?range=24h'); content.innerHTML='<h2>24H 当前用量：$'+Number((usage.summary||{}).total_cost||0).toFixed(4)+'</h2><div class="detail"><dl><dt>5H 限额</dt><dd>'+money(me.limits.five_hour_usd)+'</dd><dt>日限额</dt><dd>'+money(me.limits.daily_usd)+'</dd><dt>周限额</dt><dd>'+money(me.limits.weekly_usd)+'</dd><dt>月限额</dt><dd>'+money(me.limits.monthly_usd)+'</dd><dt>允许模型</dt><dd>'+(me.models||[]).join(', ')+'</dd></dl></div>'}
-async function renderEvents(){const res=await api('/events?limit=50'); events=res.events||[]; content.innerHTML='<table><thead><tr><th>时间</th><th>模型</th><th>状态</th><th>延迟</th><th>Tokens</th><th>思考量</th><th>费用</th></tr></thead><tbody>'+events.map(e=>'<tr><td>'+new Date(e.requested_at).toLocaleString()+'</td><td>'+e.model+'</td><td><span class="chip '+(e.failed?'bad':'ok')+'">'+(e.failed?'失败':'成功')+'</span></td><td>'+num(e.latency_ms)+' ms</td><td>'+num((e.usage||{}).total_tokens)+'</td><td>'+num((e.usage||{}).reasoning_tokens)+'</td><td>'+money(e.cost)+'</td></tr>').join('')+'</tbody></table>'}
-async function renderCodex(){const res=await api('/codexcont'); const c=res.codexcont||{}; content.innerHTML='<div class="detail"><h2>思维链保护状态</h2><p><span class="chip '+(c.enabled?'ok':'bad')+'">'+(c.enabled?'Engine 可用':'Engine 未启用')+'</span> <span class="chip '+(c.route?'warn':'')+'">'+(c.route?'插件内执行器已切流':'当前生产仍走稳定保护链')+'</span></p><dl><dt>你的 Key</dt><dd>'+me.name+' / '+me.preview+'</dd><dt>Engine URL</dt><dd>'+c.url+'</dd><dt>模式</dt><dd>'+c.mode+'</dd></dl></div>'}
-async function load(){refresh.classList.add('spin'); const m=await api('/me'); if(!m.ok){refresh.classList.remove('spin');return;} me=m.me; renderCards(me); if(tab==='usage')await renderUsage(); if(tab==='events')await renderEvents(); if(tab==='codex')await renderCodex(); refresh.classList.remove('spin');}
-document.querySelectorAll('.tabs button').forEach(b=>b.onclick=()=>{document.querySelectorAll('.tabs button').forEach(x=>x.classList.remove('active'));b.classList.add('active');tab=b.dataset.tab;load();});
-refresh.onclick=load; setInterval(()=>{if(!main.hidden)load()},2000);
-</script></body></html>`
+	return renderHTML(userHTMLTemplate)
 }
 
 func sharedCSS() string {
-	return `:root{color-scheme:dark;--bg:#0b1020;--panel:#111827;--panel2:#0f172a;--line:#243047;--text:#e5e7eb;--muted:#94a3b8;--brand:#38bdf8;--ok:#22c55e;--bad:#fb7185;--warn:#fbbf24}*{box-sizing:border-box}body{margin:0;background:linear-gradient(180deg,#0b1020,#111827);color:var(--text);font:14px/1.5 ui-sans-serif,system-ui,Segoe UI,Arial}.shell{max-width:1180px;margin:0 auto;padding:24px}.top{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:18px}.top h1{margin:0;font-size:24px}.top p{margin:4px 0 0;color:var(--muted)}.toolbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap}button{border:1px solid var(--line);background:#172033;color:var(--text);border-radius:8px;padding:9px 13px;cursor:pointer}button:hover{border-color:var(--brand)}.spin{animation:spin .8s linear infinite}.pulse{color:var(--ok);animation:pulse 1.4s ease-in-out infinite}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:14px}.grid article,.panel{background:rgba(17,24,39,.92);border:1px solid var(--line);border-radius:10px;box-shadow:0 12px 32px rgba(0,0,0,.25)}.grid article{padding:14px}.grid b{display:block;font-size:22px}.grid span,small{display:block;color:var(--muted);overflow-wrap:anywhere}.panel{padding:16px}.notice{margin-bottom:14px;color:#cbd5e1;background:rgba(15,23,42,.96)}.hint{margin:10px 0 0;color:var(--muted)}#err{color:#fecdd3}.tabs{display:flex;gap:8px;margin-bottom:14px}.tabs .active{background:#0e7490;border-color:#38bdf8}.actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}table{width:100%;border-collapse:collapse;table-layout:fixed}th,td{border-bottom:1px solid var(--line);padding:10px;text-align:left;vertical-align:top;white-space:normal;overflow-wrap:break-word}th{color:#cbd5e1;font-size:12px;text-transform:uppercase}.chip{display:inline-block;border-radius:999px;padding:2px 8px;background:#334155}.chip.ok{color:#86efac}.chip.bad{color:#fecdd3}.chip.warn{color:#fde68a}.detail{background:#0f172a;border:1px solid var(--line);border-radius:8px;padding:14px}.detail h2{font-size:18px;margin:0 0 10px}.detail dl{display:grid;grid-template-columns:140px 1fr;gap:8px 12px}.detail dt{color:#94a3b8}.detail dd{margin:0;overflow-wrap:anywhere}.switchline{display:flex;align-items:center;gap:8px;color:var(--text)}input,select{width:min(520px,100%);padding:11px;border-radius:8px;border:1px solid var(--line);background:#0b1220;color:var(--text);margin-right:8px}input[type=checkbox]{width:auto;margin:0;accent-color:var(--brand)}@keyframes spin{to{transform:rotate(360deg)}}@keyframes pulse{0%,100%{opacity:.55}50%{opacity:1}}@media(max-width:620px){.shell{padding:14px}.top{align-items:flex-start;flex-direction:column}.panel{overflow-x:auto}table{min-width:860px;font-size:12px}th,td{padding:8px;white-space:normal;overflow-wrap:break-word}.tabs{min-width:max-content;overflow:auto}.detail dl{grid-template-columns:1fr}}`
+	return sharedCSSTemplate
+}
+
+func renderHTML(tpl string) string {
+	return strings.ReplaceAll(tpl, "{{CSS}}", sharedCSS())
 }

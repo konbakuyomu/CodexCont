@@ -87,7 +87,9 @@ are not the quota-managed user identity in this deployment.
 
 CPA plugin resource routes are GET-only in the current host. The user login
 request therefore calls `/user/api/session` with `GET` and passes the key only
-through the `Authorization` header. Do not put user keys in query strings.
+through the `X-CPA-Governor-Key` header so embedded CPAMP pages do not confuse
+it with the admin shell's own `Authorization` header. Do not put user keys in
+query strings.
 
 The CPAMP sidebar entry named `CPA Governor` and the direct
 `https://cpa-admin.konbakuyomu.us/governor/` route are the same admin page.

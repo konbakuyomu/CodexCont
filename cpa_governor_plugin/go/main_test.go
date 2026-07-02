@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -142,6 +143,24 @@ func TestManagementRegisterUsesCPARPCSchema(t *testing.T) {
 	if _, ok := payload["Resources"]; ok {
 		t.Fatalf("unexpected uppercase Resources field: %s", string(env.Result))
 	}
+	resources, ok := payload["resources"].([]any)
+	if !ok {
+		t.Fatalf("resources should be an array: %#v", payload["resources"])
+	}
+	userResourceSeen := false
+	for _, item := range resources {
+		resource, _ := item.(map[string]any)
+		if resource["Path"] != "/user" {
+			continue
+		}
+		userResourceSeen = true
+		if menu, _ := resource["Menu"].(string); strings.TrimSpace(menu) != "" {
+			t.Fatalf("user resource should stay routable but hidden from CPAMP sidebar menu: %#v", resource)
+		}
+	}
+	if !userResourceSeen {
+		t.Fatal("user resource should remain registered for the dedicated cpa-usage host")
+	}
 }
 
 func TestFrontendAuthAcceptsManagedKeyAndRejectsDisallowedModel(t *testing.T) {
@@ -260,8 +279,8 @@ func TestUserSessionExplainsNativeAndPreviewKeys(t *testing.T) {
 
 func TestUserHTMLSessionUsesGETResourceRoute(t *testing.T) {
 	html := userHTML()
-	if !strings.Contains(html, "fetch(USER_API+'/session',{headers:{'X-CPA-Governor-Key':raw}") {
-		t.Fatal("user login should call the GET-only resource route without a POST method")
+	if !strings.Contains(html, `api("/session"`) || !strings.Contains(html, `"X-CPA-Governor-Key": raw`) {
+		t.Fatal("user login should call the GET-only resource session route with the dedicated user-key header")
 	}
 	if strings.Contains(html, "Authorization:'Bearer '+raw") || strings.Contains(html, `Authorization:"Bearer "+raw`) {
 		t.Fatal("CPAMP embeds plugin pages behind its own auth; user login must use a dedicated key header")
@@ -271,13 +290,94 @@ func TestUserHTMLSessionUsesGETResourceRoute(t *testing.T) {
 	}
 }
 
-func TestAdminHTMLCodexContSaveUsesGETResourceRoute(t *testing.T) {
+func TestAdminHTMLIsReadOnlyCodexContDashboard(t *testing.T) {
 	html := adminHTML()
-	if !strings.Contains(html, "action:'save'") || !strings.Contains(html, "j('/codexcont?'") {
-		t.Fatal("admin CodexCont save should call the GET-only resource route with query parameters")
+	for _, want := range []string{
+		`/governor/codexcont/admin`,
+		`EventSource(BASE + "/logs/stream")`,
+		`最近请求`,
+		`高级日志`,
+		`命中轮`,
+		`末轮 reasoning`,
+		`AbortController`,
+		`cancelSnapshot`,
+		`reconnectAll`,
+		`sync-button`,
+		`applySyncLight`,
+		`refreshMinimumDelay`,
+		`live-bad`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("admin dashboard missing %q", want)
+		}
 	}
-	if strings.Contains(strings.ToLower(html), "method:'put'") || strings.Contains(strings.ToLower(html), `method:"put"`) {
-		t.Fatal("CPA resource routes are GET-only; admin resource page must not save with PUT")
+	for _, forbidden := range []string{
+		`Key 管理`,
+		`>请求明细</button>`,
+		`保存 CodexCont`,
+		`action:'save'`,
+		`action:"save"`,
+		`ccEnabled`,
+		`ccUrl`,
+		`ccFail`,
+	} {
+		if strings.Contains(html, forbidden) {
+			t.Fatalf("admin dashboard should be read-only and not contain %q", forbidden)
+		}
+	}
+}
+
+func TestUserHTMLHasTwoTabsAndNoSpinner(t *testing.T) {
+	html := userHTML()
+	if !strings.Contains(html, `data-tab="usage"`) || !strings.Contains(html, `额度与明细`) {
+		t.Fatal("user page should expose the quota/details tab")
+	}
+	if !strings.Contains(html, `data-tab="codex"`) || !strings.Contains(html, `思维链保护`) {
+		t.Fatal("user page should expose the protection tab")
+	}
+	if strings.Contains(html, `data-tab="requests"`) || strings.Contains(html, `>请求明细</button>`) {
+		t.Fatal("request details should be merged into the quota/details tab, not a third tab")
+	}
+	for _, want := range []string{
+		`setRefreshState`,
+		`markRefreshStart`,
+		`row-fresh`,
+		`just-updated`,
+		`refreshActive`,
+		`switchTab`,
+		`AbortController`,
+		`cancelRefresh`,
+		`visibilitychange`,
+		`applySyncLight`,
+		`live-bad`,
+		`setInterval(() => refreshActive(false), 5000)`,
+		`单 Key 实时监控`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("user page should keep realtime refresh animation hook %q", want)
+		}
+	}
+	if strings.Contains(html, `load(true)`) || strings.Contains(html, `setInterval(() => load(false), 3000)`) {
+		t.Fatal("user page should not use the old blocking tab switch or 3s full reload loop")
+	}
+	css := sharedCSS()
+	for _, want := range []string{
+		`@keyframes syncSweep`,
+		`.sync-button.syncing`,
+		`.sync-button.just-updated`,
+		`.sync-button.live-ok .sync-light`,
+		`.sync-button.live-bad .sync-light`,
+		`.topbar.live-active::after`,
+		`.metrics.cards-updated .metric`,
+	} {
+		if !strings.Contains(css, want) {
+			t.Fatalf("shared css should keep realtime refresh animation style %q", want)
+		}
+	}
+	for _, forbidden := range []string{".spin", "spin ", "rotate(", ".metric::after"} {
+		if strings.Contains(css, forbidden) {
+			t.Fatalf("custom pages should not use old spinner/diagonal metric effects: %q", forbidden)
+		}
 	}
 }
 
@@ -312,17 +412,94 @@ func TestAdminCodexContGETSavePersistsSettings(t *testing.T) {
 	}
 }
 
+func TestUserCodexContFiltersToCurrentKey(t *testing.T) {
+	key := configureTestState(t)
+	otherPreview := governor.HashPreview(governor.SHA256Hex("cpa_bob"))
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/engine/healthz" {
+			w.Header().Set("content-type", "application/json")
+			_, _ = w.Write([]byte(`{"ok":true}`))
+			return
+		}
+		if r.URL.Path != "/admin/requests" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		w.Header().Set("content-type", "application/json")
+		_, _ = w.Write([]byte(`{"requests":[
+			{"request_id":"alice-1","model":"gpt-5.5","protection":"auto_continued","key_identity":{"known":true,"id":"alice-key","name":"Alice","preview":"` + key.Preview + `"},"latest_reasoning_tokens":181,"continuation_count":1},
+			{"request_id":"bob-1","model":"gpt-5.5","protection":"protected_clean","key_identity":{"known":true,"id":"bob-key","name":"Bob","preview":"` + otherPreview + `"},"latest_reasoning_tokens":120,"continuation_count":0},
+			{"request_id":"unknown-1","model":"gpt-5.5","protection":"protected_clean","key_identity":{"known":false,"preview":"nope"}}
+		]}`))
+	}))
+	defer srv.Close()
+
+	cfg := loadedConfig()
+	cfg.CodexContEnabled = true
+	cfg.CodexContURL = srv.URL
+	state.mu.Lock()
+	state.cfg = cfg
+	state.mu.Unlock()
+
+	token, err := governor.SignSession(governor.SessionPayload{
+		KeyID:     key.ID,
+		KeyHash:   key.KeyHash,
+		ExpiresAt: time.Now().Add(time.Hour).Unix(),
+	}, cfg.SessionSecret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := userCodexCont(managementRequest{
+		Headers: http.Header{"Cookie": []string{"cpa_governor_session=" + token}},
+		Query:   url.Values{"limit": []string{"20"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp := unwrapManagementResponse(t, raw)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d body=%s", resp.StatusCode, string(resp.Body))
+	}
+	var body struct {
+		OK       bool             `json:"ok"`
+		Source   string           `json:"source"`
+		Requests []map[string]any `json:"requests"`
+	}
+	if err := json.Unmarshal(resp.Body, &body); err != nil {
+		t.Fatal(err)
+	}
+	if !body.OK || body.Source != "codexcont_admin" {
+		t.Fatalf("body = %#v", body)
+	}
+	if len(body.Requests) != 1 || body.Requests[0]["request_id"] != "alice-1" {
+		t.Fatalf("requests were not filtered to current key: %#v", body.Requests)
+	}
+	encoded, _ := json.Marshal(body.Requests)
+	if strings.Contains(string(encoded), "bob-1") || strings.Contains(string(encoded), "unknown-1") {
+		t.Fatalf("other users leaked into codexcont response: %s", encoded)
+	}
+}
+
 func TestUsageHandleStoresCostAndReleasesConcurrency(t *testing.T) {
 	key := configureTestState(t)
 	if !acquireConcurrency(key) {
 		t.Fatal("expected concurrency acquire")
 	}
 	rec := usageRecord{
-		Model:       "gpt-5.5",
-		Alias:       "gpt-5.5",
-		APIKey:      "alice-key",
-		RequestedAt: time.Now(),
-		Latency:     1500 * time.Millisecond,
+		Provider:        "openai",
+		ExecutorType:    "codex",
+		Model:           "gpt-5.5-real",
+		Alias:           "gpt-5.5",
+		APIKey:          "alice-key",
+		Source:          "/v1/responses",
+		ReasoningEffort: "high",
+		ServiceTier:     "default",
+		RequestedAt:     time.Now(),
+		Latency:         1500 * time.Millisecond,
+		TTFT:            220 * time.Millisecond,
+		Failure: usageFailure{
+			StatusCode: 200,
+		},
+		ResponseHeaders: http.Header{"X-Request-Id": []string{"req-usage-1"}},
 		Detail: usageDetail{
 			InputTokens:     100,
 			CachedTokens:    20,
@@ -344,6 +521,16 @@ func TestUsageHandleStoresCostAndReleasesConcurrency(t *testing.T) {
 	}
 	if len(events) != 1 || events[0].Cost <= 0 || events[0].Usage.ReasoningTokens != 30 {
 		t.Fatalf("events = %#v", events)
+	}
+	got := events[0]
+	if got.RequestID != "req-usage-1" || got.Model != "gpt-5.5" || got.ActualModel != "gpt-5.5-real" {
+		t.Fatalf("model/request fields not projected: %#v", got)
+	}
+	if got.Provider != "openai" || got.ExecutorType != "codex" || got.Endpoint != "/v1/responses" {
+		t.Fatalf("source fields not projected: %#v", got)
+	}
+	if got.ReasoningEffort != "high" || got.ServiceTier != "default" || got.TTFTMS != 220 || got.StatusCode != 200 {
+		t.Fatalf("realtime detail fields not projected: %#v", got)
 	}
 }
 

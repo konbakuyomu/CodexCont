@@ -2,6 +2,7 @@ package governor
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -151,6 +152,101 @@ func TestStoreUsageWindowsAndSoftReset(t *testing.T) {
 	}
 	if used != 0.25 {
 		t.Fatalf("used after reset = %v", used)
+	}
+	summary, err := store.UsageSummary(ctx, "alice-key", WindowFor(Range5H, now))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.Calls != 1 || summary.TotalCost != 0.25 {
+		t.Fatalf("summary after reset = %#v", summary)
+	}
+}
+
+func TestStoreMigratesOldUsageEventsSchema(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "governor.sqlite")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec(`create table usage_events (
+		id integer primary key autoincrement,
+		request_id text,
+		key_id text,
+		key_preview text,
+		model text,
+		endpoint text,
+		requested_at integer not null,
+		latency_ms integer,
+		failed integer not null,
+		failure text,
+		input_tokens integer,
+		output_tokens integer,
+		cached_tokens integer,
+		cache_read_tokens integer,
+		cache_creation_tokens integer,
+		reasoning_tokens integer,
+		total_tokens integer,
+		cost real,
+		cost_breakdown_json text
+	)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`insert into usage_events(request_id, key_id, model, requested_at, failed, cost, cost_breakdown_json) values('old-1', 'alice-key', 'gpt-5.5', ?, 0, 0.1, '{}')`, time.Now().Unix()); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err := OpenStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	events, err := store.RecentEvents(context.Background(), "alice-key", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 || events[0].RequestID != "old-1" {
+		t.Fatalf("events = %#v", events)
+	}
+	if events[0].RequestedModel != "" || events[0].TTFTMS != 0 || events[0].StatusCode != 0 {
+		t.Fatalf("old row should read safe zero values: %#v", events[0])
+	}
+}
+
+func TestStoreRecentCodexSummariesFiltersByKey(t *testing.T) {
+	ctx := context.Background()
+	store, err := OpenStore(filepath.Join(t.TempDir(), "governor.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.SaveCodexSummary(ctx, "req-a", "alice-key", "gpt-5.5", "auto_continued", map[string]any{
+		"request_id": "req-a",
+		"protection": "auto_continued",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveCodexSummary(ctx, "req-b", "bob-key", "gpt-5.5", "protected_clean", map[string]any{
+		"request_id": "req-b",
+		"protection": "protected_clean",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	alice, err := store.RecentCodexSummaries(ctx, "alice-key", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(alice) != 1 || alice[0].RequestID != "req-a" || alice[0].Protection != "auto_continued" {
+		t.Fatalf("alice summaries = %#v", alice)
+	}
+	all, err := store.RecentCodexSummaries(ctx, "all", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("all summaries = %#v", all)
 	}
 }
 

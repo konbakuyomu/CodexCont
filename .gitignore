@@ -23,5 +23,6 @@ legacy/
 
 # Local browser/test/build artifacts
 .playwright-cli/
+artifacts/
 cpa_governor_plugin/dist/
 cpa_governor_plugin/go/*.sqlite*

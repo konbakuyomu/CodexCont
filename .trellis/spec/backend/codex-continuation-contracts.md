@@ -105,6 +105,15 @@ The continuation owner must sit at executor level, where it can inspect raw upst
 - When a continued request ends with a clean final round, `latest_reasoning_tokens` may be below 516. The dashboard must label it as latest-round reasoning and separately display the first 516/518n-2 trigger round from the request summary.
 - The dashboard frontend must treat the SSE connection as recoverable browser state, not as a durable data source. Manual refresh and foreground resume (`visibilitychange`, `pageshow`, or stale `focus`) must re-fetch the JSON snapshots with no-store/cache-bust semantics and force-create a new `EventSource`. Late responses from older fetches must not overwrite newer snapshots.
 - The refresh action must provide visible busy/completion feedback, and the realtime connection chip must animate in all states (`connected`, `connecting/reconnecting`, and `disconnected`) so an operator can see that the page is alive after returning from an idle tab.
+- The dashboard's top-right refresh button light must be driven by the same
+  realtime state as the connection chip. During a refresh it may temporarily
+  show `syncing`, but after the label falls back to "refresh" the light must
+  keep the live state class (`live-ok`, `live-warn`, or `live-bad`) instead of
+  returning to a neutral grey dot.
+- Admin snapshot refresh must keep a short minimum visible `syncing` duration
+  on manual/foreground refresh, just like the user page. Fast local admin
+  snapshot responses must not collapse the operator feedback into a single
+  imperceptible frame.
 - When an SSE request update is still `processing`, the dashboard should
   immediately refresh status counters and follow up with short delayed
   `/admin/requests` snapshot reloads. Do not rely only on the next long polling
@@ -296,6 +305,14 @@ This spreads the event contract into JavaScript and makes the beginner-facing st
 - The refresh button and realtime chip must expose visible state changes:
   refresh shows busy/completion animation, while the realtime chip pulses for
   connected, reconnecting, and disconnected states.
+- The visible refresh state must not disappear just because the local or
+  cached API responds quickly. Keep a short minimum `syncing` state before the
+  completion confirmation, then use row/card highlights to show what changed
+  without flashing or blanking the table.
+- The refresh button's small status light and the realtime chip must share the
+  same state transition. After the completion label returns to "refresh", the
+  light must still pulse as connected/reconnecting/error rather than reverting
+  to a grey idle light.
 - A realtime usage event should update the visible recent-request table
   immediately and then schedule delayed snapshot refreshes, because CPAMP
   aggregate views may update slightly after the event row appears.
@@ -419,6 +436,12 @@ credential, while CPAMP remains admin-only.
 - Admin proxy convenience routes:
   `https://cpa-admin.konbakuyomu.us/governor/` and
   `https://cpa-admin.konbakuyomu.us/governor-user/`.
+- Embedded admin CodexCont data channel:
+  `GET /governor/codexcont/admin/status`,
+  `GET /governor/codexcont/admin/requests?limit=N`, and
+  `GET /governor/codexcont/admin/logs/stream?once=1`. These are admin-host
+  only proxy paths to CodexCont `/admin/*`; the retired standalone
+  `/codexcont/` dashboard must return `404`.
 - User portal route:
   `https://cpa-usage.konbakuyomu.us/`.
 - CodexCont Engine:
@@ -452,6 +475,11 @@ credential, while CPAMP remains admin-only.
   be cached by the browser or an intermediate admin proxy.
 - `cpa-admin.konbakuyomu.us/governor/` is protected by Cloudflare Access and
   may route through the local admin proxy to CPA's plugin resource endpoint.
+  The Governor admin resource is read-only daily observability: it may show
+  CodexCont status, request summaries, hit rounds, latest reasoning counters,
+  continuation counts, failures, and advanced logs, but it must not expose Key
+  management, request-management tabs, or server-side CodexCont save controls.
+  Persistent Governor settings live in CPA's plugin configuration drawer.
 - Do not put CPA management keys, API keys, OAuth tokens, cookies, or
   encrypted reasoning into Caddy rewrites, browser URLs, Trellis docs, or git.
 - The Governor user portal must explain key identity clearly: Key Policy
@@ -475,6 +503,9 @@ credential, while CPAMP remains admin-only.
   through the existing working route and return a real successful response.
 - Public `cpa.konbakuyomu.us/v0/resource/plugins/cpa-governor/admin` returns
   200 -> rollback Caddy public block before accepting the rollout.
+- Public `cpa.konbakuyomu.us/governor/` or any
+  `/governor/codexcont/admin/*` path returns 200 -> rollback Caddy public
+  block before accepting the rollout.
 - Public `cpa-usage.konbakuyomu.us/v0/resource/plugins/cpa-governor/admin`
   returns 200 -> rollback user-host route before accepting the rollout.
 - User API without session -> `401`; invalid CPA user key -> `401
@@ -497,9 +528,10 @@ credential, while CPAMP remains admin-only.
   width or vertical labels -> add panel overflow/min-width and revalidate.
 
 ### 5. Good/Base/Bad Cases
-- Good: Governor is loaded by CPA, admin page shows 3 Key Policy keys, user
-  page opens on `cpa-usage`, CodexCont health is green, public API admin paths
-  return 404, and real `/v1/responses` still succeeds.
+- Good: Governor is loaded by CPA, the sidebar `CPA Governor` page shows the
+  read-only CodexCont protection dashboard, user page opens on `cpa-usage`, the
+  embedded admin data channel works, retired `/codexcont/` returns 404, public
+  API admin paths return 404, and real `/v1/responses` still succeeds.
 - Base: Governor user page opens but no user is logged in. `/user/api/me`
   returns `401 not_authenticated`, and the page waits for a raw `cpa_...` key.
 - Base: A Key Policy key is rotated. The old full key is unrecoverable and
@@ -520,6 +552,11 @@ credential, while CPAMP remains admin-only.
   store usage events, admin/user handler responses.
 - Go unit: user login must prefer `X-CPA-Governor-Key` over `Authorization`,
   read headers case-insensitively, and mark JSON/HTML responses `no-store`.
+- Go unit: admin HTML must be read-only and must not contain Key management,
+  request-detail tabs, CodexCont save actions, or spinner/diagonal animation
+  hooks.
+- Go unit: user CodexCont summaries must be filtered to the current session key
+  by safe identity and must not leak other users' request ids.
 - Python unit: CodexCont Engine summary projection and route smoke.
 - Build verification: linux/amd64 `.so` SHA256 recorded and `file` reports an
   ELF x86-64 shared object compatible with the Debian/glibc CPA image.
