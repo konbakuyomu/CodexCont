@@ -305,6 +305,8 @@ func TestAdminHTMLIsReadOnlyCodexContDashboard(t *testing.T) {
 		`sync-button`,
 		`applySyncLight`,
 		`refreshMinimumDelay`,
+		`activeProcessingCount`,
+		`PROCESSING_STALE_MS`,
 		`live-bad`,
 	} {
 		if !strings.Contains(html, want) {
@@ -320,6 +322,7 @@ func TestAdminHTMLIsReadOnlyCodexContDashboard(t *testing.T) {
 		`ccEnabled`,
 		`ccUrl`,
 		`ccFail`,
+		`c.active_requests`,
 	} {
 		if strings.Contains(html, forbidden) {
 			t.Fatalf("admin dashboard should be read-only and not contain %q", forbidden)
@@ -341,7 +344,6 @@ func TestUserHTMLHasTwoTabsAndNoSpinner(t *testing.T) {
 	for _, want := range []string{
 		`setRefreshState`,
 		`markRefreshStart`,
-		`row-fresh`,
 		`just-updated`,
 		`refreshActive`,
 		`switchTab`,
@@ -350,6 +352,10 @@ func TestUserHTMLHasTwoTabsAndNoSpinner(t *testing.T) {
 		`visibilitychange`,
 		`applySyncLight`,
 		`live-bad`,
+		`sortProtectionItems`,
+		`activeProcessingCount`,
+		`PROCESSING_STALE_MS`,
+		`id="active-chip"`,
 		`setInterval(() => refreshActive(false), 5000)`,
 		`单 Key 实时监控`,
 	} {
@@ -362,21 +368,29 @@ func TestUserHTMLHasTwoTabsAndNoSpinner(t *testing.T) {
 	}
 	css := sharedCSS()
 	for _, want := range []string{
-		`@keyframes syncSweep`,
 		`.sync-button.syncing`,
 		`.sync-button.just-updated`,
 		`.sync-button.live-ok .sync-light`,
 		`.sync-button.live-bad .sync-light`,
-		`.topbar.live-active::after`,
-		`.metrics.cards-updated .metric`,
+		`@keyframes statusBlink`,
+		`@keyframes statusPing`,
 	} {
 		if !strings.Contains(css, want) {
-			t.Fatalf("shared css should keep realtime refresh animation style %q", want)
+			t.Fatalf("shared css should keep restrained realtime status style %q", want)
 		}
 	}
-	for _, forbidden := range []string{".spin", "spin ", "rotate(", ".metric::after"} {
+	for _, forbidden := range []string{
+		".spin", "spin ", "rotate(", ".metric::after",
+		`@keyframes syncSweep`,
+		`@keyframes liveSweep`,
+		`@keyframes metricBump`,
+		`@keyframes rowFresh`,
+		`.sync-button::after`,
+		`.topbar::after`,
+		`.metrics.cards-updated .metric`,
+	} {
 		if strings.Contains(css, forbidden) {
-			t.Fatalf("custom pages should not use old spinner/diagonal metric effects: %q", forbidden)
+			t.Fatalf("custom pages should not use old spinner/sweep/bump effects: %q", forbidden)
 		}
 	}
 }
@@ -426,9 +440,10 @@ func TestUserCodexContFiltersToCurrentKey(t *testing.T) {
 		}
 		w.Header().Set("content-type", "application/json")
 		_, _ = w.Write([]byte(`{"requests":[
-			{"request_id":"alice-1","model":"gpt-5.5","protection":"auto_continued","key_identity":{"known":true,"id":"alice-key","name":"Alice","preview":"` + key.Preview + `"},"latest_reasoning_tokens":181,"continuation_count":1},
+			{"request_id":"alice-old","model":"gpt-5.5","protection":"protected_clean","started_at":"2026-07-02T10:00:00Z","key_identity":{"known":true,"id":"alice-key","name":"Alice","preview":"` + key.Preview + `"},"latest_reasoning_tokens":120,"continuation_count":0},
 			{"request_id":"bob-1","model":"gpt-5.5","protection":"protected_clean","key_identity":{"known":true,"id":"bob-key","name":"Bob","preview":"` + otherPreview + `"},"latest_reasoning_tokens":120,"continuation_count":0},
-			{"request_id":"unknown-1","model":"gpt-5.5","protection":"protected_clean","key_identity":{"known":false,"preview":"nope"}}
+			{"request_id":"unknown-1","model":"gpt-5.5","protection":"protected_clean","key_identity":{"known":false,"preview":"nope"}},
+			{"request_id":"alice-new","model":"gpt-5.5","protection":"auto_continued","started_at":"2026-07-02T11:00:00Z","key_identity":{"known":true,"id":"alice-key","name":"Alice","preview":"` + key.Preview + `"},"latest_reasoning_tokens":181,"continuation_count":1}
 		]}`))
 	}))
 	defer srv.Close()
@@ -470,7 +485,7 @@ func TestUserCodexContFiltersToCurrentKey(t *testing.T) {
 	if !body.OK || body.Source != "codexcont_admin" {
 		t.Fatalf("body = %#v", body)
 	}
-	if len(body.Requests) != 1 || body.Requests[0]["request_id"] != "alice-1" {
+	if len(body.Requests) != 2 || body.Requests[0]["request_id"] != "alice-new" || body.Requests[1]["request_id"] != "alice-old" {
 		t.Fatalf("requests were not filtered to current key: %#v", body.Requests)
 	}
 	encoded, _ := json.Marshal(body.Requests)

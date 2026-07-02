@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -194,15 +195,87 @@ func runPreviewIfRequested() {
 		w.Header().Set("content-type", "text/html; charset=utf-8")
 		_, _ = w.Write([]byte(userHTML()))
 	})
+	writePreviewStatus := func(w http.ResponseWriter) {
+		w.Header().Set("content-type", "application/json; charset=utf-8")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"ok": true,
+			"counters": map[string]any{
+				"total_requests":  4,
+				"active_requests": 17,
+				"continuations":   1,
+				"truncation_hits": 1,
+				"failures":        0,
+			},
+			"last_error": nil,
+		})
+	}
+	writePreviewRequests := func(w http.ResponseWriter) {
+		w.Header().Set("content-type", "application/json; charset=utf-8")
+		now := time.Now().UTC()
+		identity := previewKey.Safe()
+		_ = json.NewEncoder(w).Encode(map[string]any{"requests": []map[string]any{
+			{
+				"request_id":                        "req-preview-a",
+				"model":                             "gpt-5.5",
+				"path":                              "/v1/responses",
+				"started_at":                        now.Add(-4 * time.Minute).Format(time.RFC3339),
+				"updated_at":                        now.Add(-3 * time.Minute).Format(time.RFC3339),
+				"duration_ms":                       5570,
+				"status":                            "completed",
+				"protection":                        "auto_continued",
+				"key_identity":                      identity,
+				"latest_round":                      2,
+				"latest_reasoning_tokens":           181,
+				"first_truncation_round":            1,
+				"first_truncation_reasoning_tokens": 516,
+				"continuation_count":                1,
+				"rounds":                            []map[string]any{{"round": 1, "reasoning_tokens": 516, "decision": "continue", "truncation_match": true}, {"round": 2, "reasoning_tokens": 181, "decision": "clean", "truncation_match": false}},
+			},
+			{
+				"request_id":              "req-preview-stale",
+				"model":                   "gpt-5.5",
+				"path":                    "/v1/responses",
+				"started_at":              now.Add(-45 * time.Minute).Format(time.RFC3339),
+				"updated_at":              now.Add(-44 * time.Minute).Format(time.RFC3339),
+				"status":                  "processing",
+				"protection":              "processing",
+				"key_identity":            identity,
+				"latest_round":            1,
+				"latest_reasoning_tokens": 140,
+				"continuation_count":      0,
+				"rounds":                  []map[string]any{{"round": 1, "reasoning_tokens": 140, "decision": "clean", "truncation_match": false}},
+			},
+			{
+				"request_id":              "req-preview-live",
+				"model":                   "gpt-5.5",
+				"path":                    "/v1/responses",
+				"started_at":              now.Add(-30 * time.Second).Format(time.RFC3339),
+				"updated_at":              now.Add(-5 * time.Second).Format(time.RFC3339),
+				"status":                  "processing",
+				"protection":              "processing",
+				"key_identity":            identity,
+				"latest_round":            1,
+				"latest_reasoning_tokens": 140,
+				"continuation_count":      0,
+				"rounds":                  []map[string]any{{"round": 1, "reasoning_tokens": 140, "decision": "clean", "truncation_match": false}},
+			},
+		}})
+	}
 	mux.HandleFunc("/governor/codexcont/admin/status", func(w http.ResponseWriter, r *http.Request) {
 		_ = r
-		w.Header().Set("content-type", "application/json; charset=utf-8")
-		_, _ = w.Write([]byte(`{"ok":true,"counters":{"total_requests":3,"active_requests":1,"continuations":1,"truncation_hits":1,"failures":0},"last_error":null}`))
+		writePreviewStatus(w)
+	})
+	mux.HandleFunc("/admin/status", func(w http.ResponseWriter, r *http.Request) {
+		_ = r
+		writePreviewStatus(w)
 	})
 	mux.HandleFunc("/governor/codexcont/admin/requests", func(w http.ResponseWriter, r *http.Request) {
 		_ = r
-		w.Header().Set("content-type", "application/json; charset=utf-8")
-		_, _ = w.Write([]byte(`{"requests":[{"request_id":"req-preview-a","model":"gpt-5.5","path":"/v1/responses","started_at":"2026-07-02T02:09:31Z","updated_at":"2026-07-02T02:09:42Z","duration_ms":5570,"status":"completed","protection":"auto_continued","key_identity":{"known":true,"name":"演示用户","id":"preview-key","preview":"cpa_...view","enabled":true},"latest_round":2,"latest_reasoning_tokens":181,"first_truncation_round":1,"first_truncation_reasoning_tokens":516,"continuation_count":1,"rounds":[{"round":1,"reasoning_tokens":516,"decision":"continue","truncation_match":true},{"round":2,"reasoning_tokens":181,"decision":"clean","truncation_match":false}]},{"request_id":"req-preview-b","model":"gpt-5.5","path":"/v1/responses","started_at":"2026-07-02T02:09:54Z","updated_at":"2026-07-02T02:09:59Z","duration_ms":3200,"status":"processing","protection":"processing","key_identity":{"known":true,"name":"演示用户","id":"preview-key","preview":"cpa_...view","enabled":true},"latest_round":1,"latest_reasoning_tokens":140,"continuation_count":0,"rounds":[{"round":1,"reasoning_tokens":140,"decision":"clean","truncation_match":false}]}]}`))
+		writePreviewRequests(w)
+	})
+	mux.HandleFunc("/admin/requests", func(w http.ResponseWriter, r *http.Request) {
+		_ = r
+		writePreviewRequests(w)
 	})
 	mux.HandleFunc("/governor/codexcont/admin/logs/stream", func(w http.ResponseWriter, r *http.Request) {
 		_ = r
@@ -215,6 +288,10 @@ func runPreviewIfRequested() {
 		_ = r
 		w.Header().Set("content-type", "application/json; charset=utf-8")
 		_, _ = w.Write([]byte(`{"ok":true,"mode":"preview"}`))
+	})
+	mux.HandleFunc("/favicon.ico", func(w http.ResponseWriter, r *http.Request) {
+		_ = r
+		w.WriteHeader(http.StatusNoContent)
 	})
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		rawReq, _ := json.Marshal(managementRequest{
@@ -1112,6 +1189,7 @@ func userCodexCont(req managementRequest) ([]byte, error) {
 		limit = 80
 	}
 	requests, source := codexRequestsForKey(key, limit)
+	sortCodexSummariesNewestFirst(requests)
 	return jsonResponse(http.StatusOK, map[string]any{
 		"ok":        true,
 		"codexcont": codexcontStatus(),
@@ -1181,6 +1259,7 @@ func codexRequestsForKey(key governor.KeyRecord, limit int) ([]map[string]any, s
 		}
 		out = append(out, safe)
 	}
+	sortCodexSummariesNewestFirst(out)
 	return out, "governor_store"
 }
 
@@ -1220,7 +1299,76 @@ func fetchCodexContRequests(key governor.KeyRecord, limit int) ([]map[string]any
 		}
 		out = append(out, safe)
 	}
+	sortCodexSummariesNewestFirst(out)
 	return out, true
+}
+
+func sortCodexSummariesNewestFirst(items []map[string]any) {
+	sort.SliceStable(items, func(i, j int) bool {
+		left, leftOK := codexSummaryDisplayTime(items[i])
+		right, rightOK := codexSummaryDisplayTime(items[j])
+		if leftOK != rightOK {
+			return leftOK
+		}
+		if !leftOK {
+			return false
+		}
+		return left.After(right)
+	})
+}
+
+func codexSummaryDisplayTime(req map[string]any) (time.Time, bool) {
+	for _, field := range []string{"started_at", "updated_at", "ended_at"} {
+		if parsed, ok := parseCodexSummaryTime(req[field]); ok {
+			return parsed, true
+		}
+	}
+	return time.Time{}, false
+}
+
+func parseCodexSummaryTime(value any) (time.Time, bool) {
+	switch v := value.(type) {
+	case time.Time:
+		if v.IsZero() {
+			return time.Time{}, false
+		}
+		return v, true
+	case string:
+		raw := strings.TrimSpace(v)
+		if raw == "" {
+			return time.Time{}, false
+		}
+		for _, layout := range []string{time.RFC3339Nano, time.RFC3339, "2006-01-02 15:04:05"} {
+			if parsed, err := time.Parse(layout, raw); err == nil {
+				return parsed, true
+			}
+		}
+		return time.Time{}, false
+	case json.Number:
+		if asInt, err := v.Int64(); err == nil {
+			return unixLikeTime(asInt)
+		}
+		if asFloat, err := v.Float64(); err == nil {
+			return unixLikeTime(int64(asFloat))
+		}
+	case float64:
+		return unixLikeTime(int64(v))
+	case int64:
+		return unixLikeTime(v)
+	case int:
+		return unixLikeTime(int64(v))
+	}
+	return time.Time{}, false
+}
+
+func unixLikeTime(raw int64) (time.Time, bool) {
+	if raw <= 0 {
+		return time.Time{}, false
+	}
+	if raw > 1_000_000_000_000 {
+		return time.UnixMilli(raw), true
+	}
+	return time.Unix(raw, 0), true
 }
 
 func safeCodexSummary(req map[string]any, key governor.KeyRecord) map[string]any {

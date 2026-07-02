@@ -313,6 +313,15 @@ This spreads the event contract into JavaScript and makes the beginner-facing st
   same state transition. After the completion label returns to "refresh", the
   light must still pulse as connected/reconnecting/error rather than reverting
   to a grey idle light.
+- Custom Governor/CodexCont dashboards must derive the visible `活跃` chip from
+  the current request list's non-stale `processing` rows rather than directly
+  rendering a backend `active_requests` counter. Backend counters can remain
+  high after abnormal communication; stale processing rows may stay in history
+  but must not keep the active chip inflated.
+- CPAMP-aligned custom dashboards should use restrained status-dot animation
+  only. Do not reintroduce page sweep bars, refresh-button sweep lights,
+  metric-card bump animations, or broad row flash effects as the primary
+  realtime feedback.
 - A realtime usage event should update the visible recent-request table
   immediately and then schedule delayed snapshot refreshes, because CPAMP
   aggregate views may update slightly after the event row appears.

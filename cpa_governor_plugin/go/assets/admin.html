@@ -94,9 +94,31 @@ const logLabels = {
   request_failed:"请求失败",
   passthrough:"透传"
 };
+const PROCESSING_STALE_MS = 10 * 60 * 1000;
 const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));
 const num = (v) => Number(v || 0).toLocaleString();
 const dt = (v) => v ? new Date(v).toLocaleString() : "-";
+function requestTimeMs(req, fields=["started_at", "updated_at", "ended_at"]){
+  for (const field of fields) {
+    const raw = req && req[field];
+    if (!raw) continue;
+    const ms = Date.parse(raw);
+    if (Number.isFinite(ms)) return ms;
+  }
+  return Number.NaN;
+}
+function activeTimeMs(req){
+  return requestTimeMs(req, ["updated_at", "started_at", "ended_at"]);
+}
+function isActiveProcessing(req, now=Date.now()){
+  if (!req || (req.status !== "processing" && req.protection !== "processing")) return false;
+  const ms = activeTimeMs(req);
+  return !Number.isFinite(ms) || (now - ms <= PROCESSING_STALE_MS);
+}
+function activeProcessingCount(items){
+  const now = Date.now();
+  return (items || []).filter(req => isActiveProcessing(req, now)).length;
+}
 function chip(value){
   const item = labels[value] || [value || "未知",""];
   return `<span class="chip ${item[1]}"><span class="dot"></span>${esc(item[0])}</span>`;
@@ -170,9 +192,10 @@ function renderMetrics(){
   const s = state.status || {};
   const c = s.counters || {};
   const reqs = [...state.requests.values()];
+  const active = activeProcessingCount(reqs);
   const continued = reqs.filter(r => r.protection === "auto_continued").length;
   const risky = reqs.filter(r => r.protection === "risk_uncontinued").length;
-  document.getElementById("active-chip").querySelector("span:last-child").textContent = `活跃 ${num(c.active_requests)}`;
+  document.getElementById("active-chip").querySelector("span:last-child").textContent = `活跃 ${num(active)}`;
   document.getElementById("metrics").innerHTML = `
     <article class="metric"><div class="label">总请求</div><div class="value">${num(c.total_requests)}</div><div class="hint">CodexCont 捕获</div></article>
     <article class="metric"><div class="label">自动续写</div><div class="value">${num(c.continuations || continued)}</div><div class="hint">隐藏续写轮</div></article>
@@ -192,7 +215,14 @@ function rowDetail(req){
 function renderRequests(){
   const filter = document.getElementById("protection-filter").value;
   const body = document.getElementById("request-body");
-  let rows = [...state.requests.values()].sort((a,b) => String(b.updated_at || b.started_at).localeCompare(String(a.updated_at || a.started_at)));
+  let rows = [...state.requests.values()].sort((a,b) => {
+    const left = requestTimeMs(b, ["started_at", "updated_at", "ended_at"]);
+    const right = requestTimeMs(a, ["started_at", "updated_at", "ended_at"]);
+    if (Number.isFinite(left) && Number.isFinite(right)) return left - right;
+    if (Number.isFinite(left)) return -1;
+    if (Number.isFinite(right)) return 1;
+    return String(b.updated_at || b.started_at || "").localeCompare(String(a.updated_at || a.started_at || ""));
+  });
   if (filter) rows = rows.filter(r => r.protection === filter);
   if (!rows.length) {
     body.innerHTML = `<tr><td colspan="9"><div class="empty">暂无请求</div></td></tr>`;
