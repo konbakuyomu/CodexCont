@@ -724,6 +724,16 @@ Close read cursors before writes on the same single-connection Plus DB.
   ordinary views while preserving `usage_events` plus `codexcont_summaries` for
   billing and troubleshooting history. Any legacy Plus-owned hard-delete route
   is compatibility-only and must not be used for native key lifecycle.
+- CPAMP native key aliases are stored in `api_key_aliases` inside CPAMP's
+  `usage.sqlite`, which runs in WAL mode in production. CPA must mount the
+  containing CPAMP data directory read-only, not only the bare `usage.sqlite`
+  file, so Plus can see `usage.sqlite-wal` / `usage.sqlite-shm` and newly
+  written aliases. A file-only bind can look healthy but show stale aliases such
+  as a hash preview instead of a newly renamed key.
+- Plus alias loading may try multiple read-only SQLite paths and must treat a
+  missing `api_key_aliases` table as an empty source, not as a fatal key sync
+  failure. The CPA config `api-keys` list remains the current key source of
+  truth; aliases are display metadata matched by native key SHA256.
 - Archive/restore has been retired. Stale archive routes may remain as
   compatibility guards, but must return `410 archive_removed_use_delete`
   instead of mutating key state.
@@ -1031,6 +1041,12 @@ Separate the key authority migration from the continuation-owner migration.
   `gpt-5.3-codex-spark`; production YAML may repeat or override those mappings,
   but missing YAML entries must not make `gpt-5.5` fall through to an
   unregistered upstream model.
+- When routing to `gpt-5.3-codex-spark`, the executor must filter upstream-only
+  incompatible built-in tools such as `image_generation` before the host
+  callback. It must preserve custom/function tools, remove an emptied `tools`
+  array, clear any `tool_choice` that points to the filtered built-in, and keep
+  safe diagnostics such as `filtered_tool_types` without storing the request
+  body.
 - A public `/v1/responses` failure that reaches the executor/host callback and
   returns `authentication_error` with `auth_unavailable` plus wording such as
   `Encountered invalidated oauth token for user` is a CPA Codex OAuth account

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -264,7 +265,7 @@ func executorExecute(raw []byte) ([]byte, error) {
 	}
 	payload := firstBytes(execReq.Payload, execReq.OriginalRequest)
 	upstreamModel := resolveUpstreamModel(cfg, execReq, payload)
-	upstreamPayload := rewritePayloadModel(payload, upstreamModel)
+	upstreamPayload, _ := rewriteUpstreamPayload(payload, upstreamModel)
 	result, err := hostCall(methodHostModelExecute, hostModelExecutionRequest{
 		EntryProtocol:  executorProtocol(execReq.SourceFormat),
 		ExitProtocol:   executorProtocol(execReq.Format),
@@ -350,7 +351,7 @@ type hostStreamReader struct {
 func openHostModelStream(_ context.Context, req executorCallRequest, execReq executorRequest, cfg executor.Config, body []byte, round int, diagnostics *streamDiagnostics) (executor.StreamReader, error) {
 	requestedModel := firstNonEmpty(modelFromBody(body), execReq.Model)
 	upstreamModel := resolveUpstreamModel(cfg, execReq, body)
-	upstreamBody := rewritePayloadModel(body, upstreamModel)
+	upstreamBody, filteredTools := rewriteUpstreamPayload(body, upstreamModel)
 	hostReq := hostModelExecutionRequest{
 		EntryProtocol:  executorProtocol(execReq.SourceFormat),
 		ExitProtocol:   executorProtocol(execReq.Format),
@@ -363,7 +364,7 @@ func openHostModelStream(_ context.Context, req executorCallRequest, execReq exe
 		HostCallbackID: req.HostCallbackID,
 	}
 	if diagnostics != nil {
-		diagnostics.RecordOpen(round, hostReq, requestedModel, modelFromBody(upstreamBody), len(upstreamBody))
+		diagnostics.RecordOpen(round, hostReq, requestedModel, modelFromBody(upstreamBody), len(upstreamBody), filteredTools)
 	}
 	result, err := hostCall(methodHostModelExecuteStream, hostReq)
 	if err != nil {
@@ -674,24 +675,87 @@ func resolveUpstreamModel(cfg executor.Config, req executorRequest, body []byte)
 }
 
 func rewritePayloadModel(body []byte, model string) []byte {
+	out, _ := rewriteUpstreamPayload(body, model)
+	return out
+}
+
+func rewriteUpstreamPayload(body []byte, model string) ([]byte, []string) {
 	model = strings.TrimSpace(model)
 	if model == "" || len(body) == 0 {
-		return append([]byte(nil), body...)
+		return append([]byte(nil), body...), nil
 	}
 	var raw map[string]any
 	if err := json.Unmarshal(body, &raw); err != nil {
-		return append([]byte(nil), body...)
+		return append([]byte(nil), body...), nil
 	}
+	filtered := filterUnsupportedTools(raw, model)
 	current, _ := raw["model"].(string)
-	if strings.TrimSpace(current) == model {
-		return append([]byte(nil), body...)
+	if strings.TrimSpace(current) == model && len(filtered) == 0 {
+		return append([]byte(nil), body...), nil
 	}
 	raw["model"] = model
 	out, err := json.Marshal(raw)
 	if err != nil {
-		return append([]byte(nil), body...)
+		return append([]byte(nil), body...), nil
 	}
-	return out
+	return out, filtered
+}
+
+func filterUnsupportedTools(raw map[string]any, upstreamModel string) []string {
+	if raw == nil || !strings.EqualFold(strings.TrimSpace(upstreamModel), executor.DefaultCodexUpstreamModel) {
+		return nil
+	}
+	tools, ok := raw["tools"].([]any)
+	if !ok || len(tools) == 0 {
+		return nil
+	}
+	kept := make([]any, 0, len(tools))
+	filteredSet := map[string]bool{}
+	for _, tool := range tools {
+		toolMap, ok := tool.(map[string]any)
+		if !ok {
+			kept = append(kept, tool)
+			continue
+		}
+		toolType := strings.TrimSpace(fmt.Sprint(toolMap["type"]))
+		if strings.EqualFold(toolType, "image_generation") {
+			filteredSet["image_generation"] = true
+			continue
+		}
+		kept = append(kept, tool)
+	}
+	if len(filteredSet) == 0 {
+		return nil
+	}
+	if len(kept) == 0 {
+		delete(raw, "tools")
+	} else {
+		raw["tools"] = kept
+	}
+	if isImageGenerationToolChoice(raw["tool_choice"]) {
+		delete(raw, "tool_choice")
+	}
+	filtered := make([]string, 0, len(filteredSet))
+	for toolType := range filteredSet {
+		filtered = append(filtered, toolType)
+	}
+	sort.Strings(filtered)
+	return filtered
+}
+
+func isImageGenerationToolChoice(value any) bool {
+	switch choice := value.(type) {
+	case string:
+		return strings.EqualFold(strings.TrimSpace(choice), "image_generation")
+	case map[string]any:
+		if strings.EqualFold(strings.TrimSpace(fmt.Sprint(choice["type"])), "image_generation") {
+			return true
+		}
+		if strings.EqualFold(strings.TrimSpace(fmt.Sprint(choice["name"])), "image_generation") {
+			return true
+		}
+	}
+	return false
 }
 
 func cloneHeader(in http.Header) http.Header {
@@ -728,7 +792,7 @@ func newStreamDiagnostics() *streamDiagnostics {
 	return &streamDiagnostics{rounds: map[int]map[string]any{}}
 }
 
-func (d *streamDiagnostics) RecordOpen(round int, req hostModelExecutionRequest, requestedModel, bodyModel string, bodyBytes int) {
+func (d *streamDiagnostics) RecordOpen(round int, req hostModelExecutionRequest, requestedModel, bodyModel string, bodyBytes int, filteredTools []string) {
 	if d == nil {
 		return
 	}
@@ -743,6 +807,9 @@ func (d *streamDiagnostics) RecordOpen(round int, req hostModelExecutionRequest,
 	item["body_bytes"] = bodyBytes
 	item["stream"] = req.Stream
 	item["host_callback"] = strings.TrimSpace(req.HostCallbackID) != ""
+	if len(filteredTools) > 0 {
+		item["filtered_tool_types"] = append([]string(nil), filteredTools...)
+	}
 }
 
 func (d *streamDiagnostics) RecordOpenResponse(round int, resp hostModelStreamResponse) {

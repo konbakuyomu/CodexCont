@@ -517,6 +517,52 @@ func TestNativeKeyLoadersReadCPAConfigAndCPAMPAliases(t *testing.T) {
 	}
 }
 
+func TestNativeAliasLoaderFallsBackAcrossSQLitePaths(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	emptyPath := filepath.Join(dir, "empty.sqlite")
+	emptyDB, err := sql.Open("sqlite", emptyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := emptyDB.Exec(`create table unrelated(id text)`); err != nil {
+		t.Fatal(err)
+	}
+	if err := emptyDB.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	aliasPath := filepath.Join(dir, "cpamp-real.sqlite")
+	aliasDB, err := sql.Open("sqlite", aliasPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := aliasDB.Exec(`create table api_key_aliases(api_key_hash text primary key, alias text, updated_at_ms integer)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := aliasDB.Exec(`insert into api_key_aliases(api_key_hash, alias, updated_at_ms) values(?, ?, ?)`, "sha256:"+SHA256Hex("sk-alice"), "alicea", 10); err != nil {
+		t.Fatal(err)
+	}
+	if err := aliasDB.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	emptyAliases, err := LoadAPIKeyAliasesFromSQLite(ctx, emptyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(emptyAliases) != 0 {
+		t.Fatalf("missing alias table should be an empty source, got %#v", emptyAliases)
+	}
+	aliases, errs, err := LoadAPIKeyAliasesFromSQLitePaths(ctx, []string{emptyPath, aliasPath})
+	if err != nil || len(errs) != 0 {
+		t.Fatalf("fallback alias load err=%v errs=%#v", err, errs)
+	}
+	if aliases[SHA256Hex("sk-alice")] != "alicea" {
+		t.Fatalf("fallback alias missing: %#v", aliases)
+	}
+}
+
 func TestCheckLimitTreatsZeroAsExplicitLimit(t *testing.T) {
 	if decision := CheckLimit(0, nil); !decision.Allowed {
 		t.Fatalf("nil limit should mean unlimited: %#v", decision)

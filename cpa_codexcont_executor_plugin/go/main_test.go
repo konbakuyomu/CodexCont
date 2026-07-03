@@ -297,7 +297,7 @@ func TestExecuteStreamAcceptsOfficialFlattenedRPCPayload(t *testing.T) {
 	originalHostCall := hostCall
 	t.Cleanup(func() { hostCall = originalHostCall })
 
-	requestBody := []byte(`{"model":"gpt-5.5","stream":true,"input":[{"role":"user","content":"hi"}]}`)
+	requestBody := []byte(`{"model":"gpt-5.5","stream":true,"input":[{"role":"user","content":"hi"}],"tools":[{"type":"image_generation"},{"type":"function","name":"lookup"}],"tool_choice":"image_generation"}`)
 	upstreamChunks := [][]byte{
 		executor.SerializeEvent(map[string]any{"type": "response.created", "response": map[string]any{"id": "resp-flat", "status": "in_progress"}}),
 		executor.SerializeEvent(map[string]any{"type": "response.completed", "response": map[string]any{
@@ -392,6 +392,9 @@ func TestExecuteStreamAcceptsOfficialFlattenedRPCPayload(t *testing.T) {
 	if openedModel != "gpt-5.3-codex-spark" || opened["model"] != "gpt-5.3-codex-spark" || len(openedBody) == 0 || strings.Contains(string(openedBody), "reasoning.encrypted_content") {
 		t.Fatalf("opened upstream request did not use stable model alias: request=%q body=%s", openedModel, string(openedBody))
 	}
+	if strings.Contains(string(openedBody), "image_generation") || !strings.Contains(string(openedBody), `"type":"function"`) {
+		t.Fatalf("opened upstream body should filter only unsupported Spark built-ins: %s", openedBody)
+	}
 	if openedProtocol != "openai-response->openai-response" {
 		t.Fatalf("opened protocol = %q, want openai-response->openai-response", openedProtocol)
 	}
@@ -432,6 +435,13 @@ func TestExecuteStreamAcceptsOfficialFlattenedRPCPayload(t *testing.T) {
 	firstDiag, _ := diagRounds[0].(map[string]any)
 	if firstDiag["model"] != "gpt-5.3-codex-spark" || firstDiag["requested_model"] != "gpt-5.5" || firstDiag["body_model"] != "gpt-5.3-codex-spark" {
 		t.Fatalf("diagnostics should record gpt-5.5 alias routing: %#v", firstDiag)
+	}
+	filtered, _ := firstDiag["filtered_tool_types"].([]any)
+	if len(filtered) != 1 || filtered[0] != "image_generation" {
+		t.Fatalf("diagnostics should safely record filtered tool types: %#v", firstDiag)
+	}
+	if _, leaked := firstDiag["body"]; leaked {
+		t.Fatalf("diagnostics must not include request body: %#v", firstDiag)
 	}
 	if firstDiag["host_callback"] != true || firstDiag["stream_id_present"] != true {
 		t.Fatalf("unsafe or incomplete diagnostics: %#v", firstDiag)
@@ -576,6 +586,47 @@ func TestRewritePayloadModelLeavesInvalidJSONUntouched(t *testing.T) {
 	got := rewritePayloadModel(raw, "gpt-5.3-codex-spark")
 	if string(got) != string(raw) {
 		t.Fatalf("invalid JSON should be copied unchanged: %q", got)
+	}
+}
+
+func TestRewriteUpstreamPayloadFiltersUnsupportedSparkBuiltins(t *testing.T) {
+	raw := []byte(`{"model":"gpt-5.5","tools":[{"type":"image_generation"},{"type":"function","name":"lookup"}],"tool_choice":{"type":"image_generation"}}`)
+	got, filtered := rewriteUpstreamPayload(raw, "gpt-5.3-codex-spark")
+	if strings.Join(filtered, ",") != "image_generation" {
+		t.Fatalf("filtered tools = %#v", filtered)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(got, &body); err != nil {
+		t.Fatal(err)
+	}
+	if body["model"] != "gpt-5.3-codex-spark" {
+		t.Fatalf("model was not rewritten: %s", got)
+	}
+	if _, ok := body["tool_choice"]; ok {
+		t.Fatalf("image_generation tool_choice should be removed: %s", got)
+	}
+	tools, _ := body["tools"].([]any)
+	if len(tools) != 1 {
+		t.Fatalf("expected only custom/function tool to remain: %#v body=%s", tools, got)
+	}
+	tool, _ := tools[0].(map[string]any)
+	if tool["type"] != "function" || tool["name"] != "lookup" {
+		t.Fatalf("function tool should be preserved: %#v", tool)
+	}
+}
+
+func TestRewriteUpstreamPayloadRemovesEmptyTools(t *testing.T) {
+	raw := []byte(`{"model":"gpt-5.5","tools":[{"type":"image_generation"}]}`)
+	got, filtered := rewriteUpstreamPayload(raw, "gpt-5.3-codex-spark")
+	if strings.Join(filtered, ",") != "image_generation" {
+		t.Fatalf("filtered tools = %#v", filtered)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(got, &body); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := body["tools"]; ok {
+		t.Fatalf("empty tools array should be omitted: %s", got)
 	}
 }
 

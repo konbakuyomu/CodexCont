@@ -485,8 +485,12 @@ func syncNativeKeysFromConfig(store *policyplus.Store, cfg policyplus.Config) er
 		_ = store.Audit(context.Background(), "system", "native_key_sync_failed", "cpa_config", map[string]any{"error": policyplus.Brief(err.Error(), 240)})
 		return err
 	}
-	aliases, err := policyplus.LoadAPIKeyAliasesFromSQLite(context.Background(), cfg.CPAMPAliasDBPath)
-	if err != nil && strings.TrimSpace(cfg.CPAMPAliasDBPath) != "" {
+	aliasPaths := cfg.AliasDBPaths()
+	aliases, aliasErrors, err := policyplus.LoadAPIKeyAliasesFromSQLitePaths(context.Background(), aliasPaths)
+	if len(aliasErrors) > 0 {
+		_ = store.Audit(context.Background(), "system", "native_alias_read_partial", "cpamp", map[string]any{"errors": aliasErrors})
+	}
+	if err != nil && len(aliasPaths) > 0 {
 		_ = store.Audit(context.Background(), "system", "native_alias_read_failed", "cpamp", map[string]any{"error": policyplus.Brief(err.Error(), 240)})
 	}
 	inputs := make([]policyplus.NativeKeySyncInput, 0, len(rawKeys))
@@ -572,6 +576,7 @@ func pluginRegistration() registration {
 				{Name: "codex_summary_db_path", Type: configString, Description: "Optional read-only CodexCont executor SQLite path for safe protection summaries."},
 				{Name: "native_keys_config_path", Type: configString, Description: "Optional CPA config YAML path whose top-level api-keys are synced as native policy keys."},
 				{Name: "cpamp_alias_db_path", Type: configString, Description: "Optional CPAMP manager SQLite path for read-only api_key_aliases lookup."},
+				{Name: "cpamp_alias_db_paths", Type: configString, Description: "Optional comma/semicolon-separated fallback CPAMP SQLite paths for read-only api_key_aliases lookup."},
 				{Name: "session_secret", Type: configString, Description: "Secret used to sign user portal sessions."},
 				{Name: "codexcont_enabled", Type: configBoolean, Description: "Enable CodexCont status lookup for user summaries."},
 				{Name: "codexcont_route", Type: configBoolean, Description: "Deprecated in Key Policy Plus; keep false and let Governor own CodexCont routing."},

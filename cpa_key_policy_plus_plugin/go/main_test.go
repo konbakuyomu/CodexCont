@@ -451,6 +451,63 @@ func TestAdminKeysMirrorsCurrentNativeCPAKeys(t *testing.T) {
 	}
 }
 
+func TestAdminKeysUsesAliasFallbackPath(t *testing.T) {
+	setupTestState(t)
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.yaml")
+	emptyAliasPath := filepath.Join(dir, "empty-cpamp.sqlite")
+	realAliasPath := filepath.Join(dir, "real-cpamp.sqlite")
+	if err := os.WriteFile(configPath, []byte("api-keys:\n  - sk-alice\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	emptyDB, err := sql.Open("sqlite", emptyAliasPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := emptyDB.Exec(`create table unrelated(id text)`); err != nil {
+		t.Fatal(err)
+	}
+	if err := emptyDB.Close(); err != nil {
+		t.Fatal(err)
+	}
+	realDB, err := sql.Open("sqlite", realAliasPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := realDB.Exec(`create table api_key_aliases(api_key_hash text primary key, alias text, updated_at_ms integer)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := realDB.Exec(`insert into api_key_aliases(api_key_hash, alias, updated_at_ms) values(?, ?, ?)`, "sha256:"+policyplus.SHA256Hex("sk-alice"), "alicea", time.Now().UnixMilli()); err != nil {
+		t.Fatal(err)
+	}
+	if err := realDB.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	state.mu.Lock()
+	state.cfg.NativeKeysConfigPath = configPath
+	state.cfg.CPAMPAliasDBPath = emptyAliasPath
+	state.cfg.CPAMPAliasDBPaths = realAliasPath
+	state.mu.Unlock()
+
+	raw, err := adminKeys(managementRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var resp struct {
+		Keys []map[string]any `json:"keys"`
+	}
+	if err := json.Unmarshal(decodeManagementBody(t, raw), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Keys) != 1 || resp.Keys[0]["name"] != "alicea" || resp.Keys[0]["alias"] != "alicea" {
+		t.Fatalf("admin list should use fallback CPAMP alias source: %#v", resp.Keys)
+	}
+	if preview := fmt.Sprint(resp.Keys[0]["preview"]); preview == "" || strings.Contains(preview, "sk-alice") {
+		t.Fatalf("preview should stay safe and derived from the same native key: %#v", resp.Keys[0])
+	}
+}
+
 func TestPolicyDecisionDenialsUseExplicitCodes(t *testing.T) {
 	tests := []struct {
 		name   string

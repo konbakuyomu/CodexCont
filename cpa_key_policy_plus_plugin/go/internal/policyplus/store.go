@@ -952,6 +952,13 @@ func LoadAPIKeyAliasesFromSQLite(ctx context.Context, path string) (map[string]s
 		return nil, err
 	}
 	defer db.Close()
+	exists, err := legacyTableExists(ctx, db, "api_key_aliases")
+	if err != nil {
+		return nil, err
+	}
+	if !exists {
+		return map[string]string{}, nil
+	}
 	rows, err := db.QueryContext(ctx, `select api_key_hash, alias from api_key_aliases`)
 	if err != nil {
 		return nil, err
@@ -972,6 +979,32 @@ func LoadAPIKeyAliasesFromSQLite(ctx context.Context, path string) (map[string]s
 		}
 	}
 	return out, rows.Err()
+}
+
+func LoadAPIKeyAliasesFromSQLitePaths(ctx context.Context, paths []string) (map[string]string, []string, error) {
+	out := map[string]string{}
+	var errs []string
+	for _, path := range paths {
+		path = strings.TrimSpace(path)
+		if path == "" {
+			continue
+		}
+		aliases, err := LoadAPIKeyAliasesFromSQLite(ctx, path)
+		if err != nil {
+			errs = append(errs, fmt.Sprintf("%s: %s", path, Brief(err.Error(), 160)))
+			continue
+		}
+		for hash, alias := range aliases {
+			if strings.TrimSpace(alias) == "" {
+				continue
+			}
+			out[hash] = alias
+		}
+	}
+	if len(errs) > 0 && len(out) == 0 {
+		return out, errs, fmt.Errorf(strings.Join(errs, "; "))
+	}
+	return out, errs, nil
 }
 
 func (s *Store) Reset(ctx context.Context, id, window string, at time.Time) error {
