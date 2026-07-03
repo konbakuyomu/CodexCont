@@ -417,6 +417,43 @@ func TestUserHTMLIgnoresRefreshCancelNoise(t *testing.T) {
 	}
 }
 
+func TestCodexRequestsPreferExecutorSummaryBridge(t *testing.T) {
+	key := setupTestState(t)
+	execPath := filepath.Join(t.TempDir(), "executor.sqlite")
+	execStore, err := policyplus.OpenStore(execPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := execStore.SaveCodexSummary(context.Background(), "exec-a", key.ID, "gpt-5.5", "auto_continued", map[string]any{
+		"request_id":         "exec-a",
+		"model":              "gpt-5.5",
+		"protection":         "auto_continued",
+		"key_identity":       map[string]any{"known": true, "id": key.ID, "preview": key.Preview},
+		"continuation_count": 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := execStore.SaveCodexSummary(context.Background(), "exec-b", "bob-key", "gpt-5.5", "protected_clean", map[string]any{
+		"request_id":   "exec-b",
+		"model":        "gpt-5.5",
+		"protection":   "protected_clean",
+		"key_identity": map[string]any{"known": true, "id": "bob-key"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := execStore.Close(); err != nil {
+		t.Fatal(err)
+	}
+	state.mu.Lock()
+	state.cfg.CodexSummaryDBPath = execPath
+	state.cfg.CodexContEnabled = false
+	state.mu.Unlock()
+	requests, source := codexRequestsForKey(key, 10)
+	if source != "codexcont_executor_store" || len(requests) != 1 || requests[0]["request_id"] != "exec-a" {
+		t.Fatalf("source=%s requests=%#v", source, requests)
+	}
+}
+
 func TestAdminHTMLHasRenderedSharedCSS(t *testing.T) {
 	html := adminHTML()
 	if strings.Contains(html, "{{CSS}}") || strings.Contains(html, "{{SHARED_CSS}}") {

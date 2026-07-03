@@ -711,6 +711,96 @@ single trusted value.
 
 Separate the key authority migration from the continuation-owner migration.
 
+## Scenario: CodexCont executor-only CPA plugin
+
+### 1. Scope / Trigger
+- Trigger this spec whenever work touches `cpa_codexcont_executor_plugin/`,
+  CPA executor routing for `/v1/responses`, or Plus protection-summary reads
+  from an executor store.
+- This plugin replaces the Docker CodexCont sidecar only. It must not own
+  `cpa-usage.konbakuyomu.us`, ordinary user sessions, quota windows, RPM, or
+  `/user/api/*`.
+
+### 2. Signatures
+- CPA plugin id: `cpa-codexcont-executor`.
+- Artifact: `/CLIProxyAPI/plugins/linux/amd64/cpa-codexcont-executor.so`.
+- Config keys: `enabled`, `route_enabled`, `state_db_path`, `fail_mode`,
+  `truncation_step`, `max_continue`, and `marker_text`.
+- Plus optional read-only bridge:
+  `plugins.configs.cpa-key-policy-plus.codex_summary_db_path`.
+- Management routes are internal observability only:
+  `GET /plugins/cpa-codexcont-executor/status` and
+  `GET /plugins/cpa-codexcont-executor/summaries`.
+
+### 3. Contracts
+- `route_enabled=false` -> `model.route` returns unhandled. CPA keeps the
+  normal upstream path and the executor plugin does not provide continuation
+  protection.
+- `route_enabled=true` -> only streaming Responses-style requests are routed to
+  the executor. Non-stream requests remain unhandled by this plugin.
+- The executor stream owner opens upstream rounds through CPA host callbacks,
+  folds them into one downstream SSE stream, and preserves one logical terminal
+  event for the client.
+- The executor may persist only safe summaries: request id, key id, model,
+  protection state, round counters, reasoning counters, continuation count,
+  stopped/failure reason, and timestamps. It must not persist or return request
+  bodies, response bodies, raw keys, Authorization headers, OAuth tokens,
+  cookies, or encrypted reasoning.
+- Plus may read the executor SQLite store through `codex_summary_db_path` for
+  `/user/api/codexcont`; read failures degrade only protection summaries and
+  must not affect login, quota, `/user/api/usage`, or `/user/api/events`.
+
+### 4. Validation & Error Matrix
+- Plugin registers frontend auth or user resources -> reject the change; Plus
+  owns the user portal.
+- `route_enabled=false` but `model.route` handles a request -> reject; the
+  switch is not one-click safe.
+- Missing executor summary DB -> Plus falls back to sidecar/local summaries or
+  returns an empty protection list, while usage APIs continue to pass.
+- Upstream EOF before terminal event -> executor emits `response.incomplete`
+  and must not leak buffered tentative message/function-call output.
+- Truncation fingerprint without encrypted reasoning -> executor must not open
+  a continuation round and must report `no_encrypted_content` metadata.
+
+### 5. Good/Base/Bad Cases
+- Good: `cpa-usage.konbakuyomu.us` still serves Plus, while public
+  `/v1/responses` can later route through CPA and the executor plugin for
+  continuation protection.
+- Base: executor plugin loaded with `route_enabled=false`; no request is
+  handled by the executor, and CPA remains usable without continuation folding.
+- Bad: executor plugin registers `/user` or `/user/api/session`. That creates a
+  second user portal and conflicts with Key Policy Plus ownership.
+
+### 6. Tests Required
+- Go unit: registration has executor/model-router capability but no frontend
+  auth, usage plugin, or user resources.
+- Go unit: route switch disabled/enabled behavior and non-stream fallback.
+- Go unit: stream folding covers auto continuation, max continuation, missing
+  encrypted reasoning, upstream EOF, upstream error, monotonic sequence
+  numbers, and reconstructed proxy metadata.
+- Go unit: Plus reads executor summaries by key id through
+  `codex_summary_db_path`, filters other users, and fails soft when the DB is
+  missing.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+```text
+cpa-codexcont-executor -> registers user page -> cpa-usage host points there
+```
+
+This recreates the ownership confusion between usage portal and continuation
+engine.
+
+#### Correct
+```text
+cpa-key-policy-plus -> owns cpa-usage and /user/api/*
+cpa-codexcont-executor -> owns streaming Responses continuation only
+Plus -> optional read-only summary bridge for display
+```
+
+The executor replaces the Docker sidecar, not the Plus user portal.
+
 ## Scenario: CPA Governor plugin and CodexCont Engine rollout
 
 ### 1. Scope / Trigger

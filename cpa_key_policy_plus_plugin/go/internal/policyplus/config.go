@@ -12,6 +12,7 @@ type Config struct {
 	KeyPolicyStatePath  string `yaml:"key_policy_state_path"`
 	LegacyQuotaDBPath   string `yaml:"legacy_quota_db_path"`
 	GovernorStateDBPath string `yaml:"governor_state_db_path"`
+	CodexSummaryDBPath  string `yaml:"codex_summary_db_path"`
 	SessionSecret       string `yaml:"session_secret"`
 	CodexContEnabled    bool   `yaml:"codexcont_enabled"`
 	CodexContRoute      bool   `yaml:"codexcont_route"`
@@ -45,6 +46,7 @@ func (c Config) Normalize() Config {
 	if c.CodexContURL == "" {
 		c.CodexContURL = DefaultConfig().CodexContURL
 	}
+	c.CodexSummaryDBPath = strings.TrimSpace(c.CodexSummaryDBPath)
 	if c.PollIntervalMS <= 0 {
 		c.PollIntervalMS = 1500
 	}

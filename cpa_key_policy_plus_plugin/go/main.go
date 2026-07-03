@@ -512,6 +512,7 @@ func pluginRegistration() registration {
 				{Name: "key_policy_state_path", Type: configString, Description: "Optional old CPA Key Policy state JSON path to import once or mirror during cutover."},
 				{Name: "legacy_quota_db_path", Type: configString, Description: "Optional old usage-admin SQLite path for one-way 5H/month limit and reset import."},
 				{Name: "governor_state_db_path", Type: configString, Description: "Optional old Governor SQLite path for one-way limit and reset import."},
+				{Name: "codex_summary_db_path", Type: configString, Description: "Optional read-only CodexCont executor SQLite path for safe protection summaries."},
 				{Name: "session_secret", Type: configString, Description: "Secret used to sign user portal sessions."},
 				{Name: "codexcont_enabled", Type: configBoolean, Description: "Enable CodexCont status lookup for user summaries."},
 				{Name: "codexcont_route", Type: configBoolean, Description: "Deprecated in Key Policy Plus; keep false and let Governor own CodexCont routing."},
@@ -1646,6 +1647,9 @@ func quotaWindows(key policyplus.KeyRecord, usage map[string]float64) map[string
 }
 
 func codexRequestsForKey(key policyplus.KeyRecord, limit int) ([]map[string]any, string) {
+	if requests, ok := fetchExecutorCodexSummaries(key, limit); ok {
+		return requests, "codexcont_executor_store"
+	}
 	if requests, ok := fetchCodexContRequests(key, limit); ok {
 		return requests, "codexcont_admin"
 	}
@@ -1667,6 +1671,28 @@ func codexRequestsForKey(key policyplus.KeyRecord, limit int) ([]map[string]any,
 	}
 	sortCodexSummariesNewestFirst(out)
 	return out, "governor_store"
+}
+
+func fetchExecutorCodexSummaries(key policyplus.KeyRecord, limit int) ([]map[string]any, bool) {
+	cfg := loadedConfig()
+	path := strings.TrimSpace(cfg.CodexSummaryDBPath)
+	if path == "" {
+		return nil, false
+	}
+	items, err := policyplus.RecentCodexSummariesFromSQLite(context.Background(), path, key.ID, limit)
+	if err != nil {
+		return nil, false
+	}
+	out := make([]map[string]any, 0, len(items))
+	for _, item := range items {
+		safe := safeCodexSummary(item.Summary, key)
+		if safe == nil {
+			continue
+		}
+		out = append(out, safe)
+	}
+	sortCodexSummariesNewestFirst(out)
+	return out, true
 }
 
 func fetchCodexContRequests(key policyplus.KeyRecord, limit int) ([]map[string]any, bool) {

@@ -500,6 +500,43 @@ func TestStoreRecentCodexSummariesFiltersByKey(t *testing.T) {
 	}
 }
 
+func TestRecentCodexSummariesFromSQLiteReadsExternalExecutorStore(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "executor.sqlite")
+	store, err := OpenStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveCodexSummary(ctx, "exec-a", "alice-key", "gpt-5.5", "auto_continued", map[string]any{
+		"request_id":   "exec-a",
+		"key_identity": map[string]any{"known": true, "id": "alice-key"},
+		"protection":   "auto_continued",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveCodexSummary(ctx, "exec-b", "bob-key", "gpt-5.5", "protected_clean", map[string]any{
+		"request_id":   "exec-b",
+		"key_identity": map[string]any{"known": true, "id": "bob-key"},
+		"protection":   "protected_clean",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	alice, err := RecentCodexSummariesFromSQLite(ctx, path, "alice-key", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(alice) != 1 || alice[0].RequestID != "exec-a" || alice[0].Protection != "auto_continued" {
+		t.Fatalf("alice executor summaries = %#v", alice)
+	}
+	missing, err := RecentCodexSummariesFromSQLite(ctx, filepath.Join(t.TempDir(), "missing.sqlite"), "alice-key", 10)
+	if err == nil || missing != nil {
+		t.Fatalf("missing executor db should fail soft for caller: items=%#v err=%v", missing, err)
+	}
+}
+
 func TestSecurityAndRedaction(t *testing.T) {
 	raw := " cpa_live "
 	hash := SHA256Hex(raw)

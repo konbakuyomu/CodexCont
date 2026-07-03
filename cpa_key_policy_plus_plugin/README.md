@@ -54,6 +54,7 @@ plugins:
       key_policy_state_path: /CLIProxyAPI/plugin-state/cpa-key-policy-state.json
       legacy_quota_db_path: /CLIProxyAPI/plugin-state/cpa-usage-portal/usage-portal.sqlite
       governor_state_db_path: /CLIProxyAPI/plugin-state/cpa-governor/governor.sqlite
+      codex_summary_db_path: /CLIProxyAPI/plugin-state/cpa-codexcont-executor/executor.sqlite
       session_secret: ${CPA_KEY_POLICY_PLUS_SESSION_SECRET}
       codexcont_enabled: true
       codexcont_route: false

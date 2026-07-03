@@ -936,6 +936,53 @@ func (s *Store) RecentCodexSummaries(ctx context.Context, keyID string, limit in
 	return out, rows.Err()
 }
 
+func RecentCodexSummariesFromSQLite(ctx context.Context, path, keyID string, limit int) ([]CodexSummary, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return nil, nil
+	}
+	if _, err := os.Stat(path); err != nil {
+		return nil, err
+	}
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		return nil, err
+	}
+	defer db.Close()
+	if limit <= 0 || limit > 200 {
+		limit = 100
+	}
+	query := `select request_id, key_id, model, protection, summary_json, updated_at from codexcont_summaries`
+	args := []any{}
+	if keyID != "" && keyID != "all" {
+		query += ` where key_id = ?`
+		args = append(args, keyID)
+	}
+	query += ` order by updated_at desc limit ?`
+	args = append(args, limit)
+	rows, err := db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []CodexSummary
+	for rows.Next() {
+		var item CodexSummary
+		var raw string
+		var ts int64
+		if err := rows.Scan(&item.RequestID, &item.KeyID, &item.Model, &item.Protection, &raw, &ts); err != nil {
+			return nil, err
+		}
+		item.UpdatedAt = time.Unix(ts, 0)
+		_ = json.Unmarshal([]byte(raw), &item.Summary)
+		if item.Summary == nil {
+			item.Summary = map[string]any{}
+		}
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
 func (s *Store) Audit(ctx context.Context, actor, action, target string, detail any) error {
 	raw, _ := json.Marshal(detail)
 	_, err := s.db.ExecContext(ctx, `insert into audit_log(timestamp, actor, action, target, detail_json) values(?, ?, ?, ?, ?)`,
