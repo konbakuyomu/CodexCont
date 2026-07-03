@@ -398,6 +398,12 @@ func TestNativeKeyLoadersReadCPAConfigAndCPAMPAliases(t *testing.T) {
 	if _, err := db.Exec(`insert into api_key_aliases(api_key_hash, alias, updated_at_ms) values(?, ?, ?)`, "sha256:"+SHA256Hex("sk-native-one"), "QQ专用", 1); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := db.Exec(`insert into api_key_aliases(api_key_hash, alias, updated_at_ms) values(?, ?, ?)`, SHA256Hex("sk-native-two"), "阿伟专用", 2); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`insert into api_key_aliases(api_key_hash, alias, updated_at_ms) values(?, ?, ?)`, "SHA256:"+SHA256Hex("sk-native-three"), "Kuma专用", 3); err != nil {
+		t.Fatal(err)
+	}
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -407,6 +413,12 @@ func TestNativeKeyLoadersReadCPAConfigAndCPAMPAliases(t *testing.T) {
 	}
 	if aliases[SHA256Hex("sk-native-one")] != "QQ专用" {
 		t.Fatalf("aliases = %#v", aliases)
+	}
+	if aliases[SHA256Hex("sk-native-two")] != "阿伟专用" {
+		t.Fatalf("bare-hash aliases = %#v", aliases)
+	}
+	if aliases[SHA256Hex("sk-native-three")] != "Kuma专用" {
+		t.Fatalf("case-insensitive prefix aliases = %#v", aliases)
 	}
 }
 

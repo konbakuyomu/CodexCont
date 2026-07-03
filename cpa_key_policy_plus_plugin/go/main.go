@@ -1134,8 +1134,8 @@ func isZeroExecutorRequest(req executorRequest) bool {
 
 func policyDenyExecutorResponse(decision policyDecision) executorResponse {
 	return executorResponse{
-		Payload:    policyDenyBody(decision),
-		Headers:    policyDenyHeaders(decision),
+		Payload: policyDenyBody(decision),
+		Headers: policyDenyHeaders(decision),
 		Metadata: map[string]any{
 			"policy_denied": true,
 			"code":          decision.Code,
@@ -1421,7 +1421,10 @@ func managementHandle(raw []byte) ([]byte, error) {
 	}
 }
 
-func adminKeys(_ managementRequest) ([]byte, error) {
+func adminKeys(req managementRequest) ([]byte, error) {
+	if err := syncNativeKeysFromLoadedConfig(); err != nil {
+		return jsonResponse(http.StatusInternalServerError, map[string]any{"ok": false, "error": "native_key_sync_failed", "message": policyplus.Brief(err.Error(), 240)})
+	}
 	_ = refreshKeyPolicyState(false)
 	store := loadedStore()
 	if store == nil {
@@ -1431,6 +1434,8 @@ func adminKeys(_ managementRequest) ([]byte, error) {
 	if err != nil {
 		return jsonResponse(http.StatusInternalServerError, map[string]any{"ok": false, "error": err.Error()})
 	}
+	includeRemoved := truthyQuery(req.Query.Get("include_removed")) || truthyQuery(req.Query.Get("show_removed"))
+	keys = currentAdminKeyRows(keys, includeRemoved)
 	safe := make([]map[string]any, 0, len(keys))
 	now := time.Now()
 	for _, key := range keys {
@@ -1441,6 +1446,29 @@ func adminKeys(_ managementRequest) ([]byte, error) {
 		safe = append(safe, row)
 	}
 	return jsonResponse(http.StatusOK, map[string]any{"ok": true, "keys": safe, "codexcont": codexcontStatus()})
+}
+
+func truthyQuery(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
+func currentAdminKeyRows(keys []policyplus.KeyRecord, includeRemoved bool) []policyplus.KeyRecord {
+	out := make([]policyplus.KeyRecord, 0, len(keys))
+	for _, key := range keys {
+		if key.Source != policyplus.NativeCPASource {
+			continue
+		}
+		if !includeRemoved && (!key.SourcePresent || key.Hidden) {
+			continue
+		}
+		out = append(out, key)
+	}
+	return out
 }
 
 func adminModels(_ managementRequest) ([]byte, error) {
@@ -1467,6 +1495,7 @@ func adminModelCatalog() ([]policyplus.ModelOption, []string) {
 }
 
 func configuredModelOptions() []policyplus.ModelOption {
+	_ = syncNativeKeysFromLoadedConfig()
 	store := loadedStore()
 	if store == nil {
 		return nil
@@ -1546,6 +1575,9 @@ func adminSaveKeys(req managementRequest) ([]byte, error) {
 	store := loadedStore()
 	if store == nil {
 		return jsonResponse(http.StatusServiceUnavailable, map[string]any{"ok": false, "error": "store_unavailable"})
+	}
+	if err := syncNativeKeysFromLoadedConfig(); err != nil {
+		return jsonResponse(http.StatusInternalServerError, map[string]any{"ok": false, "error": "native_key_sync_failed", "message": policyplus.Brief(err.Error(), 240)})
 	}
 	existing, err := store.ListKeys(context.Background())
 	if err != nil {
@@ -1632,6 +1664,9 @@ func adminSetLimits(req managementRequest) ([]byte, error) {
 	if store == nil {
 		return jsonResponse(http.StatusServiceUnavailable, map[string]any{"ok": false, "error": "store_unavailable"})
 	}
+	if err := syncNativeKeysFromLoadedConfig(); err != nil {
+		return jsonResponse(http.StatusInternalServerError, map[string]any{"ok": false, "error": "native_key_sync_failed", "message": policyplus.Brief(err.Error(), 240)})
+	}
 	for _, item := range body.Limits {
 		if strings.TrimSpace(item.ID) == "" {
 			return jsonResponse(http.StatusBadRequest, map[string]any{"ok": false, "error": "missing_key_id"})
@@ -1661,6 +1696,9 @@ func adminReset(req managementRequest) ([]byte, error) {
 	store := loadedStore()
 	if store == nil {
 		return jsonResponse(http.StatusServiceUnavailable, map[string]any{"ok": false, "error": "store_unavailable"})
+	}
+	if err := syncNativeKeysFromLoadedConfig(); err != nil {
+		return jsonResponse(http.StatusInternalServerError, map[string]any{"ok": false, "error": "native_key_sync_failed", "message": policyplus.Brief(err.Error(), 240)})
 	}
 	for _, window := range windows {
 		if err := store.Reset(context.Background(), body.ID, window, time.Now()); err != nil {
@@ -2212,6 +2250,7 @@ func forwardHostStream(targetStreamID string, sourceStreamID string) {
 }
 
 func keyFromSession(req managementRequest) (policyplus.KeyRecord, bool) {
+	_ = syncNativeKeysFromLoadedConfig()
 	_ = refreshKeyPolicyState(false)
 	tokens := sessionTokensFromCookie(headerFirst(req.Headers, "Cookie"))
 	cfg := loadedConfig()

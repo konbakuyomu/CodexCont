@@ -6,6 +6,7 @@ import (
 )
 
 const EncryptedInclude = "reasoning.encrypted_content"
+const DefaultCodexUpstreamModel = "gpt-5.3-codex-spark"
 
 type Config struct {
 	Enabled               bool              `yaml:"enabled"`
@@ -26,10 +27,14 @@ type Config struct {
 
 func DefaultConfig() Config {
 	return Config{
-		Enabled:               true,
-		RouteEnabled:          false,
-		StateDBPath:           "cpa-codexcont-executor.sqlite",
-		FailMode:              "fallback",
+		Enabled:      true,
+		RouteEnabled: false,
+		StateDBPath:  "cpa-codexcont-executor.sqlite",
+		FailMode:     "fallback",
+		UpstreamModelAliases: map[string]string{
+			"gpt-5.4": DefaultCodexUpstreamModel,
+			"gpt-5.5": DefaultCodexUpstreamModel,
+		},
 		TruncationStep:        518,
 		MaxContinue:           8,
 		MinN:                  1,
@@ -48,18 +53,20 @@ func (c Config) Normalize() Config {
 		c.FailMode = "fallback"
 	}
 	c.UpstreamModel = strings.TrimSpace(c.UpstreamModel)
-	if len(c.UpstreamModelAliases) > 0 {
-		clean := make(map[string]string, len(c.UpstreamModelAliases))
-		for alias, target := range c.UpstreamModelAliases {
-			alias = strings.TrimSpace(alias)
-			target = strings.TrimSpace(target)
-			if alias == "" || target == "" {
-				continue
-			}
-			clean[alias] = target
-		}
-		c.UpstreamModelAliases = clean
+	defaultAliases := DefaultConfig().UpstreamModelAliases
+	clean := make(map[string]string, len(defaultAliases)+len(c.UpstreamModelAliases))
+	for alias, target := range defaultAliases {
+		clean[alias] = target
 	}
+	for alias, target := range c.UpstreamModelAliases {
+		alias = strings.TrimSpace(alias)
+		target = strings.TrimSpace(target)
+		if alias == "" || target == "" {
+			continue
+		}
+		clean[alias] = target
+	}
+	c.UpstreamModelAliases = clean
 	if c.TruncationStep <= 0 {
 		c.TruncationStep = DefaultConfig().TruncationStep
 	}

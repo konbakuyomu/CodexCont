@@ -634,7 +634,8 @@ function render(){
 async function load(){
   try {
     setSync("同步中", "info");
-    const [keys, models] = await Promise.all([api("/keys"), api("/models").catch(e => ({ok:false, models:[], warnings:[e.message]}))]);
+    const suffix = state.showRemoved ? "?include_removed=1" : "";
+    const [keys, models] = await Promise.all([api("/keys" + suffix), api("/models").catch(e => ({ok:false, models:[], warnings:[e.message]}))]);
     state.keys = keys.keys || [];
     state.modelOptions = models.models || [];
     state.modelWarnings = models.warnings || [];
@@ -800,7 +801,7 @@ $("refresh").onclick = load;
 $("reload-models").onclick = async () => { await load(); };
 $("show-removed").onchange = () => {
   state.showRemoved = $("show-removed").checked;
-  render();
+  load();
 };
 $("edit-model-search").oninput = renderEditor;
 $("edit-add-model-btn").onclick = addEditorModel;

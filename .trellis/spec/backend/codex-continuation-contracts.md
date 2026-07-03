@@ -492,6 +492,15 @@ credential, while CPAMP remains admin-only.
   new native row, but usage history remains under the old row.
 - Removed native keys are marked `source_present=false`, disabled, hidden by
   default, and retained for historical usage/protection summaries.
+- Plus admin key reads must trigger native-key sync before listing, then default
+  to only current official native rows:
+  `source == native_cpa`, `source_present == true`, and `hidden == false`.
+  Legacy Plus rows and removed native rows may remain in SQLite for history or
+  diagnostics, but must not appear in the ordinary strategy table. A diagnostic
+  `include_removed`/`show_removed` mode may expose removed native rows, but it
+  still must not expose legacy `cpa_...` rows as active strategy items.
+- CPAMP alias sync must normalize `api_key_aliases.api_key_hash` whether it is
+  stored as bare SHA256 hex or with a case-insensitive `sha256:` prefix.
 - Plus user login now accepts CPA native `sk-...` keys. Retired Plus
   `cpa_...` keys should fail with migrated/retired guidance.
 - Plus user APIs and HTML must never return raw keys, full hashes, bearer
@@ -514,6 +523,9 @@ credential, while CPAMP remains admin-only.
   disabled row with conflict state for manual review.
 - Native key disappears from CPA config -> set `source_present=false`,
   `enabled=false`, `hidden=true`; do not delete history.
+- Official key alias changes or deletions in CPAMP -> refreshing the Plus admin
+  key API updates the displayed alias and default key count without requiring a
+  CPA restart.
 - Missing policy, removed source, disabled key, disallowed model, RPM limit, or
   5H/24H/7D/month fee limit -> structured policy denial with safe key name and
   stable error code.
@@ -530,6 +542,9 @@ credential, while CPAMP remains admin-only.
 - Good: CPAMP has aliases `QQ的官key`, `kuma的官key`, and `阿伟的官key`; Plus
   syncs the corresponding native rows as enabled policy records and
   `cpa-usage.konbakuyomu.us` logs in with a native `sk-...` key.
+- Good: CPAMP shows four official native keys; the Plus admin default key API
+  returns exactly those four current native rows with matching aliases, while
+  old `legacy_plus` / `cpa_...` rows remain hidden from the ordinary table.
 - Good: Temporarily setting a key's 5H limit to `$0.00` makes the next
   `/v1/responses` return an OpenAI-compatible error body naming the key and
   `5小时费用限额`, then restoring the previous limit re-enables normal calls.
@@ -542,6 +557,9 @@ credential, while CPAMP remains admin-only.
 
 ### 6. Tests Required
 - Go unit: native CPA config parsing and CPAMP `api_key_aliases` loading.
+- Go unit: admin key listing triggers native sync, reflects alias/deletion
+  changes, hides legacy rows by default, and keeps removed-native diagnostics
+  separate from the ordinary table.
 - Go unit: sync lifecycle for new, removed, inherited, and ambiguous native
   keys; historical usage does not move across native hash IDs.
 - Go unit: policy denials cover missing policy, source removed, disabled,
@@ -968,6 +986,18 @@ Separate the key authority migration from the continuation-owner migration.
 - Upstream alias configured -> upstream host callback uses the internal model
   in callback metadata and body; downstream stream and summaries keep the
   client-visible model.
+- Executor default config must include stable Codex visible-model aliases for
+  currently exposed Codex client models. In this deployment, `gpt-5.4` and
+  `gpt-5.5` both default to the provider-registered upstream
+  `gpt-5.3-codex-spark`; production YAML may repeat or override those mappings,
+  but missing YAML entries must not make `gpt-5.5` fall through to an
+  unregistered upstream model.
+- A public `/v1/responses` failure that reaches the executor/host callback and
+  returns `authentication_error` with `auth_unavailable` plus wording such as
+  `Encountered invalidated oauth token for user` is a CPA Codex OAuth account
+  credential problem, not a Plus native-key sync problem. Verify
+  `/CLIProxyAPI/config.yaml` native key hashes, Plus admin key projection, and
+  `auth-dir` Codex account files separately before blaming API keys.
 - Truncation fingerprint without encrypted reasoning -> executor must not open
   a continuation round and must report `no_encrypted_content` metadata.
 - After final sidecar cleanup, any live production config still containing
@@ -986,8 +1016,15 @@ Separate the key authority migration from the continuation-owner migration.
 - Good: `/v0/resource/plugins/cpa-codexcont-executor/admin` is routable inside
   the admin boundary, while `/v0/resource/plugins/cpa-codexcont-executor/status`
   is not a resource page and returns `404` through resource dispatch.
+- Good: A `gpt-5.5` streaming request opens the host callback with
+  `gpt-5.3-codex-spark`, while downstream events, summaries, and diagnostics
+  preserve the client-visible `gpt-5.5`.
 - Base: executor plugin loaded with `route_enabled=false`; no request is
   handled by the executor, and CPA remains usable without continuation folding.
+- Base: All official native keys fail with the same `invalidated oauth token`
+  message even though Plus lists the right keys and executor aliasing is active.
+  Refresh or replace the CPA Codex OAuth auth JSON; do not rotate CPA native
+  keys to fix an upstream account-token failure.
 - Bad: executor plugin registers `/user` or `/user/api/session`. That creates a
   second user portal and conflicts with Key Policy Plus ownership.
 
@@ -1007,6 +1044,8 @@ Separate the key authority migration from the continuation-owner migration.
 - Go unit: route switch disabled/enabled behavior and non-stream fallback.
 - Go unit: upstream model aliasing rewrites host callback metadata/body while
   preserving downstream client-visible model and safe diagnostics.
+- Go unit: default executor config aliases `gpt-5.5` to the configured Codex
+  upstream model and keeps `gpt-5.5` visible in emitted streams and summaries.
 - Go unit: SSE parser accepts host callback line-chunked streams without
   trailing newlines.
 - Go unit: stream folding covers auto continuation, max continuation, missing

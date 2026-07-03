@@ -61,7 +61,9 @@ func ExplainUnmatchedSubmittedKey(value string) SubmittedKeyHint {
 
 func NormalizeHash(value string) (string, error) {
 	text := strings.TrimSpace(value)
-	text = strings.TrimPrefix(text, "sha256:")
+	if strings.HasPrefix(strings.ToLower(text), "sha256:") {
+		text = text[len("sha256:"):]
+	}
 	if len(text) != 64 {
 		return "", errors.New("invalid hash length")
 	}

@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -11,6 +13,7 @@ import (
 	"time"
 
 	"codexcont/cpa-key-policy-plus-plugin/internal/policyplus"
+	_ "modernc.org/sqlite"
 )
 
 func setupTestState(t *testing.T) policyplus.KeyRecord {
@@ -307,6 +310,139 @@ func TestDeleteKeyRetiredAndDoesNotDisableNativePolicy(t *testing.T) {
 	body = decodeManagementBody(t, raw)
 	if !strings.Contains(string(body), `"ok":true`) {
 		t.Fatalf("retired Plus delete should not break user session: %s", body)
+	}
+}
+
+func TestAdminKeysMirrorsCurrentNativeCPAKeys(t *testing.T) {
+	setupTestState(t)
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.yaml")
+	aliasPath := filepath.Join(dir, "cpamp.sqlite")
+	writeNativeConfig := func(keys ...string) {
+		t.Helper()
+		body := "api-keys:\n"
+		for _, key := range keys {
+			body += "  - " + key + "\n"
+		}
+		if err := os.WriteFile(configPath, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	db, err := sql.Open("sqlite", aliasPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`create table api_key_aliases(api_key_hash text primary key, alias text, updated_at_ms integer)`); err != nil {
+		t.Fatal(err)
+	}
+	upsertAlias := func(rawKey, alias string) {
+		t.Helper()
+		if _, err := db.Exec(`insert into api_key_aliases(api_key_hash, alias, updated_at_ms) values(?, ?, ?)
+			on conflict(api_key_hash) do update set alias=excluded.alias, updated_at_ms=excluded.updated_at_ms`,
+			"sha256:"+policyplus.SHA256Hex(rawKey), alias, time.Now().UnixMilli()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	upsertAlias("sk-native-qq", "QQ专用")
+	upsertAlias("sk-native-wei", "阿伟专用")
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	writeNativeConfig("sk-native-qq", "sk-native-wei")
+
+	legacy := policyplus.KeyRecord{
+		ID:            "cpa_legacy_policy",
+		Name:          "旧 CPI 下划线 Key",
+		KeyHash:       "sha256:" + policyplus.SHA256Hex("cpa_legacy_policy"),
+		Enabled:       true,
+		Preview:       policyplus.HashPreview(policyplus.SHA256Hex("cpa_legacy_policy")),
+		Source:        policyplus.LegacyPlusSource,
+		SourcePresent: false,
+		Hidden:        true,
+	}
+	if err := loadedStore().UpsertKey(context.Background(), legacy); err != nil {
+		t.Fatal(err)
+	}
+	state.mu.Lock()
+	state.cfg.NativeKeysConfigPath = configPath
+	state.cfg.CPAMPAliasDBPath = aliasPath
+	state.mu.Unlock()
+
+	raw, err := adminKeys(managementRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var first struct {
+		OK   bool                       `json:"ok"`
+		Keys []map[string]any           `json:"keys"`
+		Meta map[string]json.RawMessage `json:"codexcont"`
+	}
+	if err := json.Unmarshal(decodeManagementBody(t, raw), &first); err != nil {
+		t.Fatal(err)
+	}
+	if len(first.Keys) != 2 {
+		t.Fatalf("default admin list should mirror only current native keys: %#v", first.Keys)
+	}
+	names := map[string]bool{}
+	for _, key := range first.Keys {
+		names[fmt.Sprint(key["name"])] = true
+		if key["source"] != policyplus.NativeCPASource || key["source_present"] != true || key["hidden"] == true {
+			t.Fatalf("default row should be active native key only: %#v", key)
+		}
+	}
+	if !names["QQ专用"] || !names["阿伟专用"] || names["旧 CPI 下划线 Key"] {
+		t.Fatalf("unexpected admin key names: %#v rows=%#v", names, first.Keys)
+	}
+
+	db, err = sql.Open("sqlite", aliasPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`update api_key_aliases set alias=? where api_key_hash=?`, "QQ官Key改名", "sha256:"+policyplus.SHA256Hex("sk-native-qq")); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	writeNativeConfig("sk-native-qq")
+	raw, err = adminKeys(managementRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var second struct {
+		Keys []map[string]any `json:"keys"`
+	}
+	if err := json.Unmarshal(decodeManagementBody(t, raw), &second); err != nil {
+		t.Fatal(err)
+	}
+	if len(second.Keys) != 1 || second.Keys[0]["name"] != "QQ官Key改名" {
+		t.Fatalf("admin list should refresh alias changes and official deletions: %#v", second.Keys)
+	}
+
+	raw, err = adminKeys(managementRequest{Query: map[string][]string{"include_removed": {"1"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var withRemoved struct {
+		Keys []map[string]any `json:"keys"`
+	}
+	if err := json.Unmarshal(decodeManagementBody(t, raw), &withRemoved); err != nil {
+		t.Fatal(err)
+	}
+	if len(withRemoved.Keys) < 2 {
+		t.Fatalf("include_removed should expose removed native diagnostics: %#v", withRemoved.Keys)
+	}
+	seenRemovedQQ := false
+	for _, key := range withRemoved.Keys {
+		if key["source"] != policyplus.NativeCPASource || key["name"] == "旧 CPI 下划线 Key" {
+			t.Fatalf("include_removed leaked non-native row: %#v", key)
+		}
+		if key["name"] == "阿伟专用" && key["source_present"] == false {
+			seenRemovedQQ = true
+		}
+	}
+	if !seenRemovedQQ {
+		t.Fatalf("include_removed did not expose the official key removed by sync: %#v", withRemoved.Keys)
 	}
 }
 

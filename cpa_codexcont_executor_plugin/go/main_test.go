@@ -120,7 +120,7 @@ func TestReconfigureReturnsFullRegistration(t *testing.T) {
 		t.Fatalf("reconfigure must return full registration for CPA active snapshot: %#v", reg)
 	}
 	cfg := loadedConfig()
-	if cfg.UpstreamModelAliases["gpt-5.4"] != "gpt-5.3-codex-spark" {
+	if cfg.UpstreamModelAliases["gpt-5.4"] != "gpt-5.3-codex-spark" || cfg.UpstreamModelAliases["gpt-5.5"] != "gpt-5.3-codex-spark" {
 		t.Fatalf("upstream aliases not loaded: %#v", cfg.UpstreamModelAliases)
 	}
 }
@@ -315,6 +315,7 @@ func TestExecuteStreamAcceptsOfficialFlattenedRPCPayload(t *testing.T) {
 	}
 	var mu sync.Mutex
 	var openedBody []byte
+	var openedModel string
 	var openedProtocol string
 	var openedHostCallbackID string
 	var emitted strings.Builder
@@ -327,6 +328,7 @@ func TestExecuteStreamAcceptsOfficialFlattenedRPCPayload(t *testing.T) {
 		switch method {
 		case methodHostModelExecuteStream:
 			req := payload.(hostModelExecutionRequest)
+			openedModel = req.Model
 			openedBody = append([]byte(nil), req.Body...)
 			openedProtocol = req.EntryProtocol + "->" + req.ExitProtocol
 			openedHostCallbackID = req.HostCallbackID
@@ -387,8 +389,8 @@ func TestExecuteStreamAcceptsOfficialFlattenedRPCPayload(t *testing.T) {
 	if err := json.Unmarshal(openedBody, &opened); err != nil {
 		t.Fatalf("opened body is not JSON: %v body=%q", err, openedBody)
 	}
-	if opened["model"] != "gpt-5.5" || len(openedBody) == 0 || strings.Contains(string(openedBody), "reasoning.encrypted_content") {
-		t.Fatalf("opened body did not preserve flattened payload fields: %s", string(openedBody))
+	if openedModel != "gpt-5.3-codex-spark" || opened["model"] != "gpt-5.3-codex-spark" || len(openedBody) == 0 || strings.Contains(string(openedBody), "reasoning.encrypted_content") {
+		t.Fatalf("opened upstream request did not use stable model alias: request=%q body=%s", openedModel, string(openedBody))
 	}
 	if openedProtocol != "openai-response->openai-response" {
 		t.Fatalf("opened protocol = %q, want openai-response->openai-response", openedProtocol)
@@ -428,6 +430,9 @@ func TestExecuteStreamAcceptsOfficialFlattenedRPCPayload(t *testing.T) {
 		t.Fatalf("summary diagnostics missing: %#v", gotSummary)
 	}
 	firstDiag, _ := diagRounds[0].(map[string]any)
+	if firstDiag["model"] != "gpt-5.3-codex-spark" || firstDiag["requested_model"] != "gpt-5.5" || firstDiag["body_model"] != "gpt-5.3-codex-spark" {
+		t.Fatalf("diagnostics should record gpt-5.5 alias routing: %#v", firstDiag)
+	}
 	if firstDiag["host_callback"] != true || firstDiag["stream_id_present"] != true {
 		t.Fatalf("unsafe or incomplete diagnostics: %#v", firstDiag)
 	}
