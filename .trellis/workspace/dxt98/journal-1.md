@@ -409,3 +409,36 @@ Implemented and deployed CPA Key Policy+ as a passive policy layer over CPA nati
 ### Next Steps
 
 - None - task complete
+
+
+## Session 13: Native key sync and Codex auth recovery
+
+**Date**: 2026-07-04
+**Task**: Native key sync and Codex auth recovery
+**Branch**: `codex/codexcont-executor-migration`
+
+### Summary
+
+Completed the native CPA key sync and gpt-5.5 routing rollout, then restored production /v1/responses by replacing the invalidated CPA Codex OAuth auth file with a fresh login-derived auth file. Verified non-stream and stream gpt-5.5 smokes, Plus usage page, and public admin-route blocks.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `837b48a` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
