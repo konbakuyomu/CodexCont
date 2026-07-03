@@ -475,3 +475,36 @@ Hardened Plus SQLite access, made native CPA keys a current-state mirror with de
 ### Next Steps
 
 - None - task complete
+
+
+## Session 15: Executor tool routing and native alias fix
+
+**Date**: 2026-07-04
+**Task**: Executor tool routing and native alias fix
+**Branch**: `codex/codexcont-executor-migration`
+
+### Summary
+
+Fixed CodexCont Executor upstream tool filtering for gpt-5.5 alias routing, fixed Plus native key alias fallback for CPAMP WAL-backed alias DB, deployed and verified SJC smokes.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `737befe` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

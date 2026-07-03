@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 14
+- **Total Sessions**: 15
 - **Last Active**: 2026-07-04
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~477 | Active |
+| `journal-1.md` | ~510 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 15 | 2026-07-04 | Executor tool routing and native alias fix | `737befe` | `codex/codexcont-executor-migration` |
 | 14 | 2026-07-04 | CPA Key Policy Plus SQLite/native key stabilization | `c799e47` | `codex/codexcont-executor-migration` |
 | 13 | 2026-07-04 | Native key sync and Codex auth recovery | `837b48a` | `codex/codexcont-executor-migration` |
 | 12 | 2026-07-03 | Migrate Key Policy Plus to native CPA keys | `b46c4d5` | `codex/codexcont-executor-migration` |
