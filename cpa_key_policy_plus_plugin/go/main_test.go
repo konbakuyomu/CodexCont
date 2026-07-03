@@ -393,6 +393,11 @@ func TestAdminKeysMirrorsCurrentNativeCPAKeys(t *testing.T) {
 	if !names["QQ专用"] || !names["阿伟专用"] || names["旧 CPI 下划线 Key"] {
 		t.Fatalf("unexpected admin key names: %#v rows=%#v", names, first.Keys)
 	}
+	for _, key := range first.Keys {
+		if key["enabled"] != true {
+			t.Fatalf("new official native keys should be enabled by default: %#v", key)
+		}
+	}
 
 	db, err = sql.Open("sqlite", aliasPath)
 	if err != nil {
@@ -923,10 +928,13 @@ func TestAdminHTMLHasRenderedSharedCSS(t *testing.T) {
 			t.Fatalf("admin html should not expose Plus-side key lifecycle control %q", removed)
 		}
 	}
-	for _, want := range []string{"Key 策略", "显示官方已移除", "保存策略"} {
+	for _, want := range []string{"Key 策略", "保存策略", "当前官方 Key", "新原生 Key 默认启用", "未配置限额"} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("admin html missing native policy UI marker %q", want)
 		}
+	}
+	if strings.Contains(html, "新原生 Key 默认禁用") || strings.Contains(html, "策略总数") || strings.Contains(html, "显示官方已移除") || strings.Contains(html, "include_removed") {
+		t.Fatal("admin html should not advertise old disabled/default, historical count, or removed-row controls")
 	}
 }
 

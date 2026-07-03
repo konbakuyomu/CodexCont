@@ -239,7 +239,6 @@
       </div>
       <div class="toolbar">
         <span id="sync" class="chip stream info"><span class="dot"></span>准备同步</span>
-        <label class="toggle-line"><input id="show-removed" type="checkbox">显示官方已移除</label>
         <button id="save" class="btn primary" type="button">保存策略</button>
         <button id="refresh" class="btn" type="button">刷新</button>
       </div>
@@ -352,7 +351,6 @@ const state = {
   modelWarnings: [],
   selectedId: "",
   dirty: false,
-  showRemoved: false,
   editor: null
 };
 const windows = [
@@ -419,6 +417,20 @@ function quotaOf(k, name){
   if (percent == null && limit != null && Number(limit) > 0) percent = used / Number(limit);
   return {used, limit, remaining, percent};
 }
+function hasAnyLimit(k){
+  const limits = limitsOf(k);
+  return ["five_hour_usd","daily_usd","weekly_usd","monthly_usd"].some(f => limits[f] !== null && limits[f] !== undefined && limits[f] !== "");
+}
+function policyWarnings(k){
+  const warnings = [];
+  if (Number(k.rpm || 0) <= 0) warnings.push("未配置 RPM");
+  if (!hasAnyLimit(k)) warnings.push("未配置费用限额");
+  return warnings;
+}
+function limitHint(k){
+  const warnings = policyWarnings(k);
+  return warnings.length ? warnings.join(" · ") : "限额已配置";
+}
 function hasPrice(p){
   if (!p) return false;
   return ["input_per_million","output_per_million","cache_read_per_million","cache_creation_per_million"].some(f => Number(p[f] || 0) > 0);
@@ -448,12 +460,14 @@ function statusTags(k){
   else tags.push(`<span class="tag ok">CPA 原生</span>`);
   if (k.enabled) tags.push(`<span class="tag ok">启用</span>`);
   else tags.push(`<span class="tag bad">禁用</span>`);
+  const warnings = policyWarnings(k);
+  if (warnings.length) tags.push(`<span class="tag warn">未配置限额</span>`);
   if (k.inherited_from) tags.push(`<span class="tag warn">已继承</span>`);
   if (k.inherit_conflict) tags.push(`<span class="tag warn">需选模板</span>`);
   return tags.join("");
 }
 function visibleKeys(){
-  return state.keys.filter(k => state.showRemoved || !k.hidden);
+  return state.keys.filter(k => !k.hidden && k.source_present !== false);
 }
 function findKey(id){ return state.keys.find(k => k.id === id); }
 function ensureSelection(){
@@ -523,14 +537,14 @@ function keyPayload(k){
 
 function renderMetrics(){
   const total = state.keys.length;
-  const removed = state.keys.filter(k => k.source_present === false).length;
   const enabled = state.keys.filter(k => k.enabled && k.source_present !== false).length;
+  const unlimited = state.keys.filter(k => policyWarnings(k).length).length;
   const cost = state.keys.reduce((s,k) => s + Number(usageOf(k)["24h"] || 0), 0);
   $("metrics").innerHTML = `
-    <article class="metric"><div class="label">策略总数</div><div class="value">${total}</div><div class="hint">官方已移除 ${removed}</div></article>
-    <article class="metric"><div class="label">启用策略</div><div class="value">${enabled}</div><div class="hint">新原生 Key 默认禁用</div></article>
+    <article class="metric"><div class="label">当前官方 Key</div><div class="value">${total}</div><div class="hint">跟随 CPA/CPAMP 当前配置</div></article>
+    <article class="metric"><div class="label">启用策略</div><div class="value">${enabled}</div><div class="hint">新原生 Key 默认启用</div></article>
     <article class="metric"><div class="label">24H 费用</div><div class="value">$${cost.toFixed(3)}</div><div class="hint">按 Plus 价格估算</div></article>
-    <article class="metric"><div class="label">模型来源</div><div class="value">${state.modelOptions.length}</div><div class="hint">${state.modelWarnings.length ? "有兜底提示" : "已同步"}</div></article>`;
+    <article class="metric"><div class="label">未配置限额</div><div class="value">${unlimited}</div><div class="hint">${unlimited ? "请补 RPM 或费用窗口" : "全部已配置"}</div></article>`;
 }
 function renderQuotaMini(k, name, label){
   const q = quotaOf(k, name);
@@ -554,7 +568,7 @@ function renderKeyList(){
       <td><div class="key-title"><strong>${escapeHTML(k.name || k.alias || "-")}</strong><small class="mono">${escapeHTML(displayPreview(k.preview || k.id || ""))}</small></div></td>
       <td><div class="tag-row">${statusTags(k)}</div></td>
       <td><div class="mini-grid">${renderQuotaMini(k,"5h","5H")}${renderQuotaMini(k,"24h","24H")}${renderQuotaMini(k,"7d","7D")}${renderQuotaMini(k,"month","月")}</div></td>
-      <td><div class="stack"><span>RPM ${Number(k.rpm || 0)}</span><small>请求频率限制</small></div></td>
+      <td><div class="stack"><span>RPM ${Number(k.rpm || 0)}</span><small>${escapeHTML(limitHint(k))}</small></div></td>
       <td><div class="stack"><div class="tag-row"><span class="tag ${selectedModels(k).length ? "" : "warn"}">${escapeHTML(modelCountText(k))}</span><span class="tag ${priceCoverage(k).startsWith("0/") || priceCoverage(k) === "无价格" ? "warn" : "ok"}">${escapeHTML(priceCoverage(k))}</span></div><small>${escapeHTML(modelPreview(k))}</small></div></td>
     </tr>`).join("");
   body.querySelectorAll("[data-select]").forEach(row => row.onclick = () => {
@@ -574,7 +588,7 @@ function renderDetail(){
   const disabled = key.source_present === false ? "disabled" : "";
   body.innerHTML = `
     <div class="tag-row">${statusTags(key)}<span class="tag">RPM ${Number(key.rpm || 0)}</span><span class="tag">${escapeHTML(modelCountText(key))}</span></div>
-    <div class="notice">别名只读，来自 CPAMP；如需改名请在 CPA/CPAMP 原生 Key 管理里修改。</div>
+    <div class="notice">别名只读，来自 CPAMP；如需改名请在 CPA/CPAMP 原生 Key 管理里修改。${policyWarnings(key).length ? " 当前 Key 未配置 RPM 或费用限额，新增即启用时可能无限额使用。" : ""}</div>
     <div class="section-title"><h3>基础策略</h3></div>
     <div class="field-grid">
       <label class="span-2">Key 别名<input value="${escapeHTML(key.name || key.alias || "")}" disabled></label>
@@ -634,8 +648,7 @@ function render(){
 async function load(){
   try {
     setSync("同步中", "info");
-    const suffix = state.showRemoved ? "?include_removed=1" : "";
-    const [keys, models] = await Promise.all([api("/keys" + suffix), api("/models").catch(e => ({ok:false, models:[], warnings:[e.message]}))]);
+    const [keys, models] = await Promise.all([api("/keys"), api("/models").catch(e => ({ok:false, models:[], warnings:[e.message]}))]);
     state.keys = keys.keys || [];
     state.modelOptions = models.models || [];
     state.modelWarnings = models.warnings || [];
@@ -799,10 +812,6 @@ function closeModal(id){
 $("save").onclick = saveAll;
 $("refresh").onclick = load;
 $("reload-models").onclick = async () => { await load(); };
-$("show-removed").onchange = () => {
-  state.showRemoved = $("show-removed").checked;
-  load();
-};
 $("edit-model-search").oninput = renderEditor;
 $("edit-add-model-btn").onclick = addEditorModel;
 $("edit-select-visible").onclick = () => {

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -62,6 +63,8 @@ type LegacyImportResult struct {
 	Resets int
 }
 
+const sqliteBusyTimeoutMS = 5000
+
 func OpenStore(path string) (*Store, error) {
 	if path == "" {
 		path = "cpa-policyplus.sqlite"
@@ -69,16 +72,53 @@ func OpenStore(path string) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil && filepath.Dir(path) != "." {
 		return nil, err
 	}
-	db, err := sql.Open("sqlite", path)
+	db, err := openSQLite(path, false)
 	if err != nil {
 		return nil, err
 	}
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
 	store := &Store{db: db}
 	if err := store.EnsureSchema(context.Background()); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
 	return store, nil
+}
+
+func openSQLite(path string, readOnly bool) (*sql.DB, error) {
+	dsn := sqliteDSN(path, readOnly)
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		return nil, err
+	}
+	if readOnly {
+		db.SetMaxOpenConns(2)
+		db.SetMaxIdleConns(1)
+	}
+	return db, nil
+}
+
+func sqliteDSN(path string, readOnly bool) string {
+	path = strings.TrimSpace(path)
+	query := url.Values{}
+	query.Add("_pragma", fmt.Sprintf("busy_timeout(%d)", sqliteBusyTimeoutMS))
+	if readOnly {
+		query.Set("mode", "ro")
+	} else {
+		query.Add("_pragma", "journal_mode(WAL)")
+	}
+	if strings.HasPrefix(path, "file:") {
+		sep := "?"
+		if strings.Contains(path, "?") {
+			sep = "&"
+		}
+		return path + sep + query.Encode()
+	}
+	if readOnly {
+		return "file:" + filepath.ToSlash(path) + "?" + query.Encode()
+	}
+	return path + "?" + query.Encode()
 }
 
 func (s *Store) Close() error {
@@ -330,7 +370,7 @@ func (s *Store) ImportLegacyQuotaSQLite(ctx context.Context, path, source string
 	if path == "" {
 		return LegacyImportResult{}, nil
 	}
-	db, err := sql.Open("sqlite", path)
+	db, err := openSQLite(path, true)
 	if err != nil {
 		return LegacyImportResult{}, err
 	}
@@ -749,6 +789,10 @@ func (s *Store) SyncNativeKeys(ctx context.Context, inputs []NativeKeySyncInput)
 		}
 		seen[next.ID] = true
 		if current, exists := byID[next.ID]; exists {
+			enabled := current.Enabled
+			if isDefaultEmptyNativePolicy(current) {
+				enabled = true
+			}
 			current.KeyHash = next.KeyHash
 			current.Preview = next.Preview
 			current.Source = NativeCPASource
@@ -757,9 +801,9 @@ func (s *Store) SyncNativeKeys(ctx context.Context, inputs []NativeKeySyncInput)
 			current.Alias = next.Alias
 			current.Name = next.Name
 			if _, err := s.db.ExecContext(ctx, `update keys set
-				name=?, key_hash=?, preview=?, source=?, source_present=1, hidden=0, alias=?, updated_at=?
+				name=?, key_hash=?, preview=?, enabled=?, source=?, source_present=1, hidden=0, alias=?, updated_at=?
 				where id=?`,
-				current.Name, current.KeyHash, current.Preview, current.Source, current.Alias, now, current.ID); err != nil {
+				current.Name, current.KeyHash, current.Preview, boolInt(enabled), current.Source, current.Alias, now, current.ID); err != nil {
 				return err
 			}
 			continue
@@ -794,6 +838,23 @@ func (s *Store) SyncNativeKeys(ctx context.Context, inputs []NativeKeySyncInput)
 	return nil
 }
 
+func isDefaultEmptyNativePolicy(key KeyRecord) bool {
+	return key.Source == NativeCPASource &&
+		key.SourcePresent &&
+		!key.Enabled &&
+		!key.LastEnabled &&
+		key.RPM == 0 &&
+		key.Concurrency == 0 &&
+		key.MaxActiveSessions == 0 &&
+		len(key.Models) == 0 &&
+		len(key.Prices) == 0 &&
+		key.FiveHourUSD == nil &&
+		key.DailyLimitUSD == nil &&
+		key.WeeklyLimitUSD == nil &&
+		key.MonthlyLimitUSD == nil &&
+		!key.InheritConflict
+}
+
 func policyTemplatesByAlias(keys []KeyRecord, alias string) []KeyRecord {
 	alias = strings.ToLower(strings.TrimSpace(alias))
 	if alias == "" {
@@ -824,21 +885,32 @@ func (s *Store) retireInheritedLegacyTemplates(ctx context.Context, now int64) e
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
+	var ids []string
 	for rows.Next() {
 		var id string
 		if err := rows.Scan(&id); err != nil {
+			_ = rows.Close()
 			return err
 		}
 		if strings.TrimSpace(id) == "" {
 			continue
 		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	for _, id := range ids {
 		if _, err := s.db.ExecContext(ctx, `update keys set enabled=0, source=?, source_present=0, hidden=1, last_enabled=case when last_enabled != 0 then last_enabled else enabled end, updated_at=? where id=? and coalesce(source, '')=''`,
 			LegacyPlusSource, now, id); err != nil {
 			return err
 		}
 	}
-	return rows.Err()
+	return nil
 }
 
 func LoadNativeKeysFromCPAConfig(path string) ([]string, error) {
@@ -875,7 +947,7 @@ func LoadAPIKeyAliasesFromSQLite(ctx context.Context, path string) (map[string]s
 	if _, err := os.Stat(path); err != nil {
 		return nil, err
 	}
-	db, err := sql.Open("sqlite", path)
+	db, err := openSQLite(path, true)
 	if err != nil {
 		return nil, err
 	}
@@ -1156,7 +1228,7 @@ func RecentCodexSummariesFromSQLite(ctx context.Context, path, keyID string, lim
 	if _, err := os.Stat(path); err != nil {
 		return nil, err
 	}
-	db, err := sql.Open("sqlite", path)
+	db, err := openSQLite(path, true)
 	if err != nil {
 		return nil, err
 	}

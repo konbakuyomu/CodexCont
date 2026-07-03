@@ -224,7 +224,7 @@ func NativeKeyRecord(rawKey, alias string) (KeyRecord, bool) {
 		ID:            NativeKeyIDFromHash(normalized),
 		Name:          name,
 		KeyHash:       "sha256:" + normalized,
-		Enabled:       false,
+		Enabled:       true,
 		Preview:       preview,
 		Source:        NativeCPASource,
 		SourcePresent: true,

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -13,6 +14,100 @@ import (
 )
 
 func ptr(v float64) *float64 { return &v }
+
+func TestSQLiteOpenStoreUsesSingleConnectionAndBusyTimeout(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "policyplus.sqlite")
+	store, err := OpenStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if got := store.db.Stats().MaxOpenConnections; got != 1 {
+		t.Fatalf("main store should use one DB connection, got %d", got)
+	}
+	var timeout int
+	if err := store.db.QueryRowContext(ctx, `pragma busy_timeout`).Scan(&timeout); err != nil {
+		t.Fatal(err)
+	}
+	if timeout != sqliteBusyTimeoutMS {
+		t.Fatalf("busy_timeout=%d want %d", timeout, sqliteBusyTimeoutMS)
+	}
+}
+
+func TestSQLiteBusyTimeoutWaitsForTransientWriteLock(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "policyplus.sqlite")
+	store, err := OpenStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	locker, err := openSQLite(path, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer locker.Close()
+	tx, err := locker.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.ExecContext(ctx, `insert into keys(id, name, key_hash, enabled, updated_at) values('lock-row', 'Lock', 'sha256:lock', 1, ?)`, time.Now().Unix()); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		done <- store.UpsertKey(ctx, KeyRecord{
+			ID:            "native-wait",
+			Name:          "Wait",
+			KeyHash:       "sha256:" + SHA256Hex("sk-wait"),
+			Enabled:       true,
+			Preview:       HashPreview(SHA256Hex("sk-wait")),
+			Source:        NativeCPASource,
+			SourcePresent: true,
+		})
+	}()
+	time.Sleep(150 * time.Millisecond)
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			if strings.Contains(err.Error(), "SQLITE_BUSY") || strings.Contains(err.Error(), "database is locked") {
+				t.Fatalf("operation should wait for transient lock, got %v", err)
+			}
+			t.Fatal(err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("operation did not complete after lock release")
+	}
+}
+
+func TestReadOnlySQLiteHelperRejectsWrites(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "aliases.sqlite")
+	writer, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := writer.ExecContext(ctx, `create table api_key_aliases(api_key_hash text primary key, alias text)`); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	db, err := openSQLite(path, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.ExecContext(ctx, `insert into api_key_aliases(api_key_hash, alias) values('sha256:x', 'x')`); err == nil {
+		t.Fatal("read-only helper should reject writes")
+	} else if !errors.Is(err, sql.ErrNoRows) && !strings.Contains(strings.ToLower(err.Error()), "readonly") && !strings.Contains(strings.ToLower(err.Error()), "read-only") {
+		t.Fatalf("write rejected with unexpected error: %v", err)
+	}
+}
 
 func writePolicyState(t *testing.T, dir string, rawKey string) string {
 	t.Helper()
@@ -455,8 +550,8 @@ func TestSyncNativeKeysLifecycleInheritanceAndHistory(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("old native key err=%v ok=%v", err, ok)
 	}
-	if old.ID != oldID || old.Enabled || old.Name != "QQ专用" || old.Alias != "QQ专用" || old.Source != NativeCPASource || !old.SourcePresent || old.Hidden {
-		t.Fatalf("new native key should be disabled safe policy row: %#v", old)
+	if old.ID != oldID || !old.Enabled || old.Name != "QQ专用" || old.Alias != "QQ专用" || old.Source != NativeCPASource || !old.SourcePresent || old.Hidden {
+		t.Fatalf("new native key should be enabled current official policy row: %#v", old)
 	}
 	old.Enabled = true
 	old.RPM = 7
@@ -536,6 +631,54 @@ func TestSyncNativeKeysDisablesAmbiguousSameAliasInheritance(t *testing.T) {
 	}
 	if key.Enabled || !key.InheritConflict || key.InheritedFrom != "" {
 		t.Fatalf("ambiguous same-alias inheritance should require manual template: %#v", key)
+	}
+}
+
+func TestSyncNativeKeysUpgradesExistingDefaultEmptyNativePolicy(t *testing.T) {
+	ctx := context.Background()
+	store, err := OpenStore(filepath.Join(t.TempDir(), "policyplus.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	rec, ok := NativeKeyRecord("sk-empty-existing", "")
+	if !ok {
+		t.Fatal("failed to build native record")
+	}
+	rec.Enabled = false
+	rec.LastEnabled = false
+	if err := store.UpsertKey(ctx, rec); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(ctx, `update keys set enabled=0, last_enabled=0 where id=?`, rec.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SyncNativeKeys(ctx, []NativeKeySyncInput{{RawKey: "sk-empty-existing"}}); err != nil {
+		t.Fatal(err)
+	}
+	upgraded, ok, err := store.FindKeyByHash(ctx, SHA256Hex("sk-empty-existing"))
+	if err != nil || !ok {
+		t.Fatalf("upgraded key err=%v ok=%v", err, ok)
+	}
+	if !upgraded.Enabled {
+		t.Fatalf("default empty native policy should be upgraded to enabled: %#v", upgraded)
+	}
+
+	upgraded.Enabled = false
+	upgraded.LastEnabled = false
+	upgraded.RPM = 30
+	if err := store.SaveKeySettings(ctx, upgraded); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SyncNativeKeys(ctx, []NativeKeySyncInput{{RawKey: "sk-empty-existing"}}); err != nil {
+		t.Fatal(err)
+	}
+	manual, ok, err := store.FindKeyByHash(ctx, SHA256Hex("sk-empty-existing"))
+	if err != nil || !ok {
+		t.Fatalf("manual key err=%v ok=%v", err, ok)
+	}
+	if manual.Enabled {
+		t.Fatalf("manual disabled policy with settings should not be auto-enabled: %#v", manual)
 	}
 }
 

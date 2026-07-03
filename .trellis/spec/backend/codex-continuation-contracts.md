@@ -487,18 +487,26 @@ credential, while CPAMP remains admin-only.
 - Plus policy IDs for native keys use the native hash-derived
   `native_<preview>` form. Alias is display/template metadata and must not be
   the ledger primary key.
-- New native keys default to disabled. If exactly one removed historical row
-  has the same alias, Plus may inherit policy fields and enabled state into the
-  new native row, but usage history remains under the old row.
+- New native keys default to enabled by current product decision. If exactly
+  one removed historical row has the same alias, Plus may inherit policy fields
+  and enabled state into the new native row, but usage history remains under
+  the old row. If the new row has no RPM or fee-window limits, the admin UI
+  must label it as missing/unlimited limits instead of hiding the risk.
 - Removed native keys are marked `source_present=false`, disabled, hidden by
   default, and retained for historical usage/protection summaries.
 - Plus admin key reads must trigger native-key sync before listing, then default
   to only current official native rows:
   `source == native_cpa`, `source_present == true`, and `hidden == false`.
   Legacy Plus rows and removed native rows may remain in SQLite for history or
-  diagnostics, but must not appear in the ordinary strategy table. A diagnostic
-  `include_removed`/`show_removed` mode may expose removed native rows, but it
-  still must not expose legacy `cpa_...` rows as active strategy items.
+  diagnostics, but must not appear in the ordinary strategy table. The ordinary
+  admin page must request `/keys` without `include_removed`/`show_removed` and
+  must not expose a visible removed-row toggle.
+- Plus SQLite access must use a shared opener with `busy_timeout` for both the
+  writable Plus DB and read-only auxiliary DBs. The writable Plus DB must limit
+  the Go `database/sql` pool to one open connection; CPAMP alias DB, executor
+  summary DB, and legacy import DB reads must use read-only opens where
+  possible. When using one writable connection, do not keep `Rows` open while
+  issuing writes on the same DB; collect IDs, close rows, then update.
 - CPAMP alias sync must normalize `api_key_aliases.api_key_hash` whether it is
   stored as bare SHA256 hex or with a case-insensitive `sha256:` prefix.
 - Plus user login now accepts CPA native `sk-...` keys. Retired Plus
@@ -515,12 +523,15 @@ credential, while CPAMP remains admin-only.
   client-facing contract unless CPA core is changed.
 
 ### 4. Validation & Error Matrix
-- Native key appears in CPA config without a Plus policy -> insert disabled
-  strategy row.
+- Native key appears in CPA config without a Plus policy -> insert enabled
+  strategy row and mark missing RPM/fee-window limits in the admin UI.
 - Native key appears with one same-alias removed template -> copy policy fields
   and enabled state; do not copy ledger usage.
 - Native key appears with multiple same-alias removed templates -> insert
   disabled row with conflict state for manual review.
+- Existing native row that is only the old empty/default-disabled placeholder
+  -> upgrade to enabled on sync. A manually disabled row with actual strategy
+  settings must stay disabled.
 - Native key disappears from CPA config -> set `source_present=false`,
   `enabled=false`, `hidden=true`; do not delete history.
 - Official key alias changes or deletions in CPAMP -> refreshing the Plus admin
@@ -549,7 +560,7 @@ credential, while CPAMP remains admin-only.
   `/v1/responses` return an OpenAI-compatible error body naming the key and
   `5小时费用限额`, then restoring the previous limit re-enables normal calls.
 - Base: A newly created CPA native key has no alias/history; Plus shows it
-  disabled until the admin assigns policy.
+  enabled and clearly warns that RPM or fee-window limits are not configured.
 - Bad: Plus stores raw `sk-...` keys or exposes a full-key copy button. CPAMP
   already owns raw key lifecycle.
 - Bad: Tests assert HTTP 429/header propagation from executor output under the
@@ -557,6 +568,9 @@ credential, while CPAMP remains admin-only.
 
 ### 6. Tests Required
 - Go unit: native CPA config parsing and CPAMP `api_key_aliases` loading.
+- Go unit: Plus SQLite opener applies busy timeout, writable DB uses one open
+  connection, read-only auxiliary opens reject writes, and transient writer
+  locks wait instead of immediately returning `SQLITE_BUSY`.
 - Go unit: admin key listing triggers native sync, reflects alias/deletion
   changes, hides legacy rows by default, and keeps removed-native diagnostics
   separate from the ordinary table.
@@ -565,7 +579,8 @@ credential, while CPAMP remains admin-only.
 - Go unit: policy denials cover missing policy, source removed, disabled,
   model allowlist, RPM, 5H, 24H, 7D, month, and explicit zero limits.
 - Go unit: admin HTML has no create/delete/rotate/raw-key-copy lifecycle
-  controls; user HTML points to native `sk-...` keys.
+  controls, no removed-row toggle, and visible missing-limit hints; user HTML
+  points to native `sk-...` keys.
 - Integration: production user API session/me/usage/events/codexcont works with
   an enabled native key.
 - Integration: normal `/v1/models` and `/v1/responses` succeed with an enabled
@@ -588,13 +603,36 @@ CPA config api-keys + CPAMP aliases -> Plus native-key sync
 
 Plus owns policy and accounting, not the raw key lifecycle.
 
-## Scenario: CPA Key Policy Plus unified key authority
+#### Wrong
+```go
+db.SetMaxOpenConns(1)
+rows, _ := db.QueryContext(ctx, "select id from keys")
+for rows.Next() {
+    db.ExecContext(ctx, "update keys set hidden=1 where id=?", id)
+}
+```
+
+This can self-deadlock when the single writable SQLite connection is still
+owned by the active query.
+
+#### Correct
+```go
+rows, _ := db.QueryContext(ctx, "select id from keys")
+ids := collectIDsAndClose(rows)
+for _, id := range ids {
+    db.ExecContext(ctx, "update keys set hidden=1 where id=?", id)
+}
+```
+
+Close read cursors before writes on the same single-connection Plus DB.
+
+## Scenario: CPA Key Policy Plus historical key authority migration
 
 ### 1. Scope / Trigger
 - Trigger this spec whenever work touches `cpa_key_policy_plus_plugin/`, the
   `cpa-key-policy-plus` CPA plugin config, `cpa-usage.konbakuyomu.us`, per-key
-  quota windows, hard key deletion, or migration from the old `cpa-key-policy`
-  plugin.
+  quota windows, retired Plus-owned `cpa_...` key compatibility, or migration
+  cleanup from the old `cpa-key-policy` plugin.
 - This is cross-layer work: CPA dynamic plugin loading, old Key Policy JSON
   import, Plus SQLite state, Caddy public/admin routing, user cookies, and
   CodexCont/Governor deployment boundaries must agree.
@@ -637,13 +675,13 @@ Plus owns policy and accounting, not the raw key lifecycle.
   do not survive a successful login.
 
 ### 3. Contracts
-- Plus is the ordinary `cpa_...` key authority after cutover. The old
-  `cpa-key-policy` plugin must be disabled in config; old state is imported by
-  hash/name/preview/model/RPM/limit/price fields so current full keys continue
-  to work.
+- This scenario is historical-migration context. In the current native-key
+  design, CPA/CPAMP owns raw native `sk-...` keys and aliases; Plus owns only
+  policy, quota, prices, resets, user sessions, and user usage projections.
+  The old `cpa-key-policy` plugin must stay disabled in config.
 - Plus may load old Key Policy JSON and legacy Governor/usage-admin SQLite
-  watermarks, but after cutover it owns all per-key limits, prices, resets,
-  user sessions, and user usage projections.
+  watermarks as import/audit material, but ordinary admin/user surfaces must not
+  present retired Plus-owned `cpa_...` rows as current keys.
 - Plus must never store or return raw API keys, Authorization headers, full key
   hashes, cookies, request bodies, response bodies, OAuth tokens, or encrypted
   reasoning content.
@@ -681,12 +719,11 @@ Plus owns policy and accounting, not the raw key lifecycle.
   `concurrency` and `max_active_sessions` payload fields are compatibility
   fields only: create/save handlers must accept stale payloads but persist and
   return both values as `0`, and frontend auth must not read them.
-- Deleting a key is a hard-delete of the permission/config row:
-  `POST /key-policy-plus/api/keys/delete` with body
-  `{"id":"...","confirm":"delete"}` must remove rows from `keys`,
-  `reset_watermarks`, and `active_sessions`, append a `delete_key` audit entry,
-  and preserve `usage_events` plus `codexcont_summaries` for billing and
-  troubleshooting history.
+- Plus no longer owns native key deletion. Deleting a current key happens in
+  CPA/CPAMP; the next Plus sync marks the native row removed/hidden for
+  ordinary views while preserving `usage_events` plus `codexcont_summaries` for
+  billing and troubleshooting history. Any legacy Plus-owned hard-delete route
+  is compatibility-only and must not be used for native key lifecycle.
 - Archive/restore has been retired. Stale archive routes may remain as
   compatibility guards, but must return `410 archive_removed_use_delete`
   instead of mutating key state.
@@ -694,9 +731,10 @@ Plus owns policy and accounting, not the raw key lifecycle.
   current CPA host, policy rejection may be surfaced as CPA's generic `401`
   `Missing API key` response because `frontendAuth` returns unauthenticated.
   Treat that as an expected wrapper unless CPA adds typed auth-denial payloads.
-- Keep the public `/v1/responses -> CodexCont sidecar -> CPA` route until
-  Governor has a verified executor-level continuation supervisor. Enabling Plus
-  is not by itself approval to route public `/v1/responses` directly to CPA.
+- Current production request chain is `Codex -> Caddy -> CPA -> Plus policy ->
+  cpa-codexcont-executor -> upstream`. Do not reintroduce the Docker
+  CodexCont sidecar or Governor into the public `/v1/responses` path after the
+  executor plugin has passed production smoke.
 - `cpa-admin.konbakuyomu.us/usage-admin/` must no longer serve stale local
   limit controls after Plus cutover; return `404` or redirect to the Plus admin
   page.
@@ -706,19 +744,22 @@ Plus owns policy and accounting, not the raw key lifecycle.
   `plugin loaded plugin_id=cpa-key-policy-plus`; deployment is not accepted.
 - Old Key Policy enabled alongside Plus exclusive auth -> ordinary key
   authority is ambiguous; disable old Key Policy before accepting cutover.
-- Valid full `cpa_...` key -> `/v1/models` and user session login succeed.
+- Current valid native `sk-...` key -> `/v1/models`, `/v1/responses`, and user
+  session login succeed. Retired `cpa_...` keys should fail with migrated or
+  retired guidance.
 - Valid full `cpa_...` key plus a stale same-name path-specific session cookie
   -> user session login and `/user/api/me` still succeed; stale cookies must
   not create a persistent `not_authenticated` loop after a successful login.
 - Shortened key preview or rotated full key -> login fails; only the full key
   shown at create/rotation can match the stored hash.
-- Disabled/deleted/disallowed/over-RPM/over-quota request -> CPA rejects before
-  upstream execution. The public sidecar route may still touch CodexCont during
-  migration, but CPA must not execute the upstream provider.
+- Disabled/removed/disallowed/over-RPM/over-quota request -> CPA/Plus rejects
+  before upstream execution; the executor must not call the upstream provider
+  for a denied key.
 - Stale create/save payload includes `concurrency` or `max_active_sessions` ->
   Plus ignores the requested values and persists `0`.
 - Stale archive route call -> `410 archive_removed_use_delete`.
-- Delete without `confirm:"delete"` -> `400 delete_confirmation_required`.
+- Native key removal in CPA/CPAMP -> Plus default admin key list no longer
+  returns that key after sync; history remains internal.
 - `POST/PUT /v0/resource/plugins/cpa-key-policy-plus/admin/api/*` -> fails
   before reaching plugin logic; this is a deployment/config bug if the admin
   page depends on it.
@@ -734,9 +775,9 @@ Plus owns policy and accounting, not the raw key lifecycle.
   `/admin*` -> `404`.
 
 ### 5. Good/Base/Bad Cases
-- Good: CPA logs show Governor plus `cpa-key-policy-plus` loaded, Plus DB has
-  imported keys, `cpa-usage` login works with a current full key, and
-  `/v1/responses` still succeeds through the known-good CodexCont sidecar.
+- Good: CPA logs show `cpa-key-policy-plus` loaded, Plus default admin key list
+  mirrors current CPA native keys, `cpa-usage` login works with a current native
+  key, and `/v1/responses` succeeds through the CPA -> Plus -> executor chain.
 - Good: A browser with an old
   `Path=/v0/resource/plugins/cpa-key-policy-plus/user` session cookie can log
   in again; the new response refreshes all compatible paths and `/api/me`
@@ -746,9 +787,9 @@ Plus owns policy and accounting, not the raw key lifecycle.
 - Good: The admin page is a resource HTML page, while its mutations use
   `/key-policy-plus/api/*` and reach Plus management handlers with the CPA
   management key injected by the admin proxy.
-- Good: An unwanted key is removed through `/key-policy-plus/api/keys/delete`;
-  the key can no longer log in or authenticate requests, while historical usage
-  and CodexCont summaries still exist by safe `key_id`.
+- Good: An unwanted key is removed in CPA/CPAMP; Plus ordinary key list drops it
+  after sync, the key can no longer log in or authenticate requests, while
+  historical usage and CodexCont summaries still exist by safe `key_id`.
 - Bad: `cpa-usage` still reads `cpa_usage_portal` SQLite as the authority after
   Plus is enabled. That preserves the split-brain limit problem.
 - Bad: A retired key is only hidden or archived. That keeps a confusing second
@@ -762,10 +803,11 @@ Plus owns policy and accounting, not the raw key lifecycle.
   mitigation.
 
 ### 6. Tests Required
-- Go unit: old state import, Plus-native key preservation, raw-key hash login,
-  rotation invalidation, negative value validation, model allowlist, RPM,
-  rolling/natural-month quota windows, soft reset, hard delete, retired
-  concurrency/session fields forced to zero, and cost projection.
+- Go unit: old state import remains history-only, native key preservation,
+  raw-key hash login, rotation/deletion invalidation through native sync,
+  negative value validation, model allowlist, RPM, rolling/natural-month quota
+  windows, soft reset, retired concurrency/session fields forced to zero, and
+  cost projection.
 - Go unit: admin/user HTML resources are `no-store`, user login uses
   `X-CPA-Key-Policy-Plus-Key`, and responses do not leak raw keys/full hashes.
 - Go unit: user session creation sets `cpa_key_policy_plus_session` cookies on
@@ -779,36 +821,33 @@ Plus owns policy and accounting, not the raw key lifecycle.
 - Go unit: admin HTML points mutations at `/key-policy-plus/api`, model
   normalization preserves unknown configured models, and create/save/reset
   through the admin alias persist settings.
-- Go unit: `/keys/delete` removes key/reset/active-session rows, preserves
-  usage and Codex summaries, writes `delete_key` audit, and stale archive routes
+- Go unit: native deletion from CPA config hides the key from ordinary Plus
+  admin responses, preserves usage and Codex summaries, and stale archive routes
   return `410 archive_removed_use_delete`.
 - Frontend/Playwright: Plus admin can create a key, select discovered models,
   edit per-model prices, save, hard-delete a key, reload, and keep dense tables
   horizontally scrollable on 390px without page-level overflow.
 - Production smoke: plugin SHA256 matches the built artifact, CPA logs show
-  Plus loaded, Plus DB key count is nonzero, `cpa-usage` login works, admin
-  backend `/key-policy-plus/` and `/key-policy-plus/api/models` work, a
-  disabled smoke key can be created through `/key-policy-plus/api/keys/create`,
-  `usage-admin` backend returns `404`, and public blocked paths return `404`.
+  Plus loaded, Plus default admin key count matches current CPA native keys,
+  `cpa-usage` login works, admin backend `/key-policy-plus/` and
+  `/key-policy-plus/api/models` work, `usage-admin` backend returns `404`, and
+  public blocked paths return `404`.
 - Production smoke: a tiny authenticated `/v1/responses` request succeeds
-  through the current sidecar route; do not claim CPA-first public routing until
-  a separate executor-level continuation test passes.
+  through the current CPA -> Plus -> executor route before handoff.
 
 ### 7. Wrong vs Correct
 
 #### Wrong
 ```text
-Plus enabled -> immediately route public /v1/responses to CPA -> Governor
+Plus enabled -> public /v1/responses -> Governor or Docker sidecar
 ```
 
-This treats key-policy cutover as continuation-engine cutover and can bypass
-the verified Python folding path.
+This reintroduces a retired control plane and makes the request path harder to
+reason about.
 
 #### Correct
 ```text
-Plus enabled as key/quota authority
-public /v1/responses -> CodexCont sidecar -> CPA
-future executor-level folding task -> then consider CPA-first public routing
+Codex -> Caddy -> CPA -> Plus policy -> cpa-codexcont-executor -> upstream
 ```
 
 #### Wrong
@@ -1093,6 +1132,8 @@ the Plus user portal or key/quota controls.
   `/mnt/d/Dev/20_Software/_LocalRuntime/go/downloads/go1.22.6.linux-amd64.tar.gz`.
 - Expected version for the current CPA plugin builds:
   `go version go1.22.6 linux/amd64`.
+- CPA plugin artifact build command shape:
+  `CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -tags cliproxy_plugin -buildmode=c-shared -o <plugin>.so .`
 
 ### 3. Contracts
 - Do not repeatedly download Go into WSL or `/tmp` for plugin builds when the
@@ -1105,6 +1146,12 @@ the Plus user portal or key/quota controls.
   before re-extracting and place it under `_LocalRuntime`, not a throwaway
   `/tmp/codex-go*` directory.
 - Record plugin artifact SHA256 hashes after every production-bound rebuild.
+- CLIProxyAPI CPA plugins are C ABI shared objects built with
+  `-tags cliproxy_plugin -buildmode=c-shared`. Do not use Go
+  `-buildmode=plugin`; that produces the wrong plugin ABI for this host.
+- Do not commit local build directories or generated `.so` / `.h` files from
+  plugin builds. Keep them ignored and record only the production SHA evidence
+  in the Trellis task.
 
 ### 4. Validation & Error Matrix
 - Preferred Go path exists and reports `go1.22.6 linux/amd64` -> use it for
@@ -1116,6 +1163,8 @@ the Plus user portal or key/quota controls.
 - Both extracted toolchains missing -> pause before network download; check the
   cached tarball and confirm the intended `_LocalRuntime` extraction target.
 - Build artifact SHA not recorded -> rollout evidence is incomplete.
+- Build uses `-buildmode=plugin` instead of `-buildmode=c-shared` -> artifact
+  is invalid for CPA deployment even if `go build` exits successfully.
 
 ### 5. Good/Base/Bad Cases
 - Good: A Linux plugin build uses
@@ -1124,6 +1173,8 @@ the Plus user portal or key/quota controls.
 - Base: WSL has no global `go`; explicit `_LocalRuntime` Go still works.
 - Bad: A helper script silently downloads Go again into `/tmp` because
   `command -v go` returned empty.
+- Bad: A local `build/` directory or generated plugin `.so` / `.h` appears in
+  `git status` as an untracked production artifact.
 
 ### 6. Tests Required
 - Shell smoke: `command -v go || true` plus the preferred explicit Go path
@@ -1131,6 +1182,7 @@ the Plus user portal or key/quota controls.
 - Go unit: run `go test ./...` in both plugin packages with the selected Go
   binary.
 - Artifact check: run `file` and `sha256sum` on production-bound `.so` files.
+- Git check: `git status --short` must not include plugin build artifacts.
 
 ### 7. Wrong vs Correct
 
