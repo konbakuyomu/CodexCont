@@ -56,6 +56,12 @@ func BuildRoundPayload(base map[string]any, input []any, cfg Config, dropPreviou
 	return out
 }
 
+func BuildFirstPayload(base map[string]any) map[string]any {
+	out := cloneMap(base)
+	out["stream"] = true
+	return out
+}
+
 func mergeInclude(raw any, forceEncrypted bool) []any {
 	seen := map[string]bool{}
 	var out []any

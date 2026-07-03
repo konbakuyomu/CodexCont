@@ -26,6 +26,10 @@ const (
 	plusSessionCookieName = "cpa_key_policy_plus_session"
 )
 
+var executorUsageModelAliases = map[string]string{
+	"gpt-5.3-codex-spark": "gpt-5.4",
+}
+
 //go:embed assets/admin.html
 var adminHTMLTemplate string
 
@@ -851,10 +855,14 @@ func usageHandle(raw []byte) ([]byte, error) {
 	for _, key := range keys {
 		keyByID[key.ID] = key
 	}
-	key := keyByID[rec.APIKey]
+	key := keyByID[rec.AuthID]
+	if key.ID == "" {
+		key = keyByID[rec.APIKey]
+	}
 	if key.ID == "" {
 		key = keyByID[rec.Source]
 	}
+	visibleModel := visibleUsageModel(key, rec)
 	usage := policyplus.TokenUsage{
 		InputTokens:         rec.Detail.InputTokens,
 		OutputTokens:        rec.Detail.OutputTokens,
@@ -867,8 +875,8 @@ func usageHandle(raw []byte) ([]byte, error) {
 	var cost float64
 	var breakdown policyplus.CostBreakdown
 	if key.ID != "" {
-		if price, ok := policyplus.PriceForModel(key.Prices, firstNonEmpty(rec.Alias, rec.Model)); ok {
-			breakdown = policyplus.CostForUsage(price, usage, firstNonEmpty(rec.Alias, rec.Model))
+		if price, ok := policyplus.PriceForModel(key.Prices, visibleModel); ok {
+			breakdown = policyplus.CostForUsage(price, usage, visibleModel)
 			cost = breakdown.Costs["total"]
 		}
 	}
@@ -876,8 +884,8 @@ func usageHandle(raw []byte) ([]byte, error) {
 		RequestID:       firstNonEmpty(rec.ResponseHeaders.Get("x-request-id"), rec.ResponseHeaders.Get("x-openai-request-id")),
 		KeyID:           key.ID,
 		KeyPreview:      key.Preview,
-		Model:           firstNonEmpty(rec.Alias, rec.Model),
-		RequestedModel:  firstNonEmpty(rec.Alias, rec.Model),
+		Model:           visibleModel,
+		RequestedModel:  visibleModel,
 		ActualModel:     rec.Model,
 		Provider:        rec.Provider,
 		ExecutorType:    rec.ExecutorType,
@@ -896,6 +904,64 @@ func usageHandle(raw []byte) ([]byte, error) {
 	}
 	_ = store.InsertUsage(context.Background(), event)
 	return okEnvelope(map[string]any{})
+}
+
+func visibleUsageModel(key policyplus.KeyRecord, rec usageRecord) string {
+	if model := strings.TrimSpace(rec.Alias); model != "" {
+		if alias := visibleExecutorAliasForReportedModel(model); alias != "" {
+			return alias
+		}
+		return model
+	}
+	reported := strings.TrimSpace(rec.Model)
+	if reported == "" || key.ID == "" {
+		return reported
+	}
+	allowed := cleanStrings(key.Models)
+	for _, model := range allowed {
+		if strings.EqualFold(model, reported) {
+			return reported
+		}
+	}
+	if alias := visibleExecutorAliasForReportedModel(reported); alias != "" {
+		return alias
+	}
+	if len(allowed) == 1 {
+		return allowed[0]
+	}
+	priceModels := make([]string, 0, len(key.Prices))
+	for name, price := range key.Prices {
+		model := strings.TrimSpace(price.Model)
+		if model == "" {
+			model = strings.TrimSpace(name)
+		}
+		if model != "" {
+			priceModels = append(priceModels, model)
+		}
+	}
+	priceModels = cleanStrings(priceModels)
+	for _, model := range priceModels {
+		if strings.EqualFold(model, reported) {
+			return reported
+		}
+	}
+	if len(priceModels) == 1 {
+		return priceModels[0]
+	}
+	return reported
+}
+
+func visibleExecutorAliasForReportedModel(reported string) string {
+	reported = strings.TrimSpace(reported)
+	if reported == "" {
+		return ""
+	}
+	for actual, visible := range executorUsageModelAliases {
+		if strings.EqualFold(strings.TrimSpace(actual), reported) {
+			return strings.TrimSpace(visible)
+		}
+	}
+	return ""
 }
 
 func managementRegister() ([]byte, error) {

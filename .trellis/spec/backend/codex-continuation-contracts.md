@@ -244,6 +244,16 @@ This spreads the event contract into JavaScript and makes the beginner-facing st
 - CPAMP `api_key_stats` must be projected before returning it to the browser.
   Do not pass CPAMP rows through directly because they may include full
   `api_key_hash` values.
+- When Plus receives CPA usage records from executor/host-callback paths, it
+  must resolve the user key by `AuthID` first, then `APIKey`, then `Source`.
+  Executor records can carry the Key Policy id in `AuthID` while `Source` or
+  provider fields name an upstream account file. Mapping only by raw API/source
+  fields drops valid usage from `cpa-usage.konbakuyomu.us`.
+- Plus usage projection must keep the user-visible model separate from the
+  internal upstream model. If CPA usage callbacks report the executor's
+  internal model instead of a client alias, Plus must project known executor
+  aliases such as `gpt-5.3-codex-spark -> gpt-5.4` into `model` and
+  `requested_model`, while preserving the internal value in `actual_model`.
 - Key Policy model entries may be structured objects under `models[]`, not only
   strings. The portal must parse clean aliases from `alias` / `model` /
   `target_model` fields instead of rendering dicts as strings.
@@ -357,6 +367,13 @@ This spreads the event contract into JavaScript and makes the beginner-facing st
 - `GET /admin/api/keys` without the proxy-injected admin header -> `404`.
 - `GET /api/usage` must not include the full raw-key hash or full policy-id
   hash anywhere in the JSON response.
+- CPA usage record with `AuthID=<key.id>`, `Source=<provider file>`, and
+  `Alias=<client-visible model>` -> Plus stores a `usage_events` row for
+  `<key.id>`, keeps the client-visible alias as `Model`/`RequestedModel`, and
+  keeps the provider/internal model as `ActualModel`.
+- CPA usage record with `Model=<executor internal model>` and no usable visible
+  alias -> Plus applies the known executor usage alias table before pricing or
+  user-event projection.
 - DNS for `cpa-usage.konbakuyomu.us` may be absent while the sidecar and Caddy
   route are ready; verify with explicit host resolution before declaring the
   route broken.
@@ -387,6 +404,11 @@ This spreads the event contract into JavaScript and makes the beginner-facing st
   safe daily/weekly limits, and per-model prices.
 - Unit: `/api/usage` and `/api/events` recompute nonzero costs from Key Policy
   prices when CPAMP cost fields are zero.
+- Unit: `usage.handle` maps executor/host-callback records by `AuthID` before
+  falling back to `APIKey` or `Source`, and preserves alias/internal-model
+  projection in the stored event.
+- Unit: `usage.handle` maps known executor internal models to visible aliases
+  even when CPA fills both `Model` and `Alias` with the internal model.
 - Unit: portal local SQLite stores 5H/month limits, applies reset watermarks,
   and closes connections cleanly on Windows.
 - Unit: `/admin/*` routes reject requests without the proxy-injected admin
@@ -725,12 +747,19 @@ Separate the key authority migration from the continuation-owner migration.
 - CPA plugin id: `cpa-codexcont-executor`.
 - Artifact: `/CLIProxyAPI/plugins/linux/amd64/cpa-codexcont-executor.so`.
 - Config keys: `enabled`, `route_enabled`, `state_db_path`, `fail_mode`,
-  `truncation_step`, `max_continue`, and `marker_text`.
+  `upstream_model`, `upstream_model_aliases`, `truncation_step`,
+  `max_continue`, and `marker_text`.
 - Plus optional read-only bridge:
   `plugins.configs.cpa-key-policy-plus.codex_summary_db_path`.
 - Management routes are internal observability only:
   `GET /plugins/cpa-codexcont-executor/status` and
   `GET /plugins/cpa-codexcont-executor/summaries`.
+- CPAMP/admin resource:
+  `GET /v0/resource/plugins/cpa-codexcont-executor/admin` renders a read-only
+  realtime rolling monitor for executor health and safe summaries.
+- Resource API aliases for that monitor:
+  `GET /v0/resource/plugins/cpa-codexcont-executor/admin/api/status` and
+  `GET /v0/resource/plugins/cpa-codexcont-executor/admin/api/summaries`.
 
 ### 3. Contracts
 - `route_enabled=false` -> `model.route` returns unhandled. CPA keeps the
@@ -741,31 +770,92 @@ Separate the key authority migration from the continuation-owner migration.
 - The executor stream owner opens upstream rounds through CPA host callbacks,
   folds them into one downstream SSE stream, and preserves one logical terminal
   event for the client.
+- Upstream model aliasing belongs inside the executor plugin. If
+  `upstream_model` or `upstream_model_aliases` maps a client-visible model to a
+  provider-registered internal model, the host callback model and request body
+  model must be rewritten for upstream, while downstream SSE and safe summaries
+  keep the client-visible model.
+- CPA host callbacks may return SSE as line-sized chunks without trailing
+  newlines. The executor parser must accept standalone `event:`, `data:`,
+  comment, and blank line chunks as complete SSE lines.
 - The executor may persist only safe summaries: request id, key id, model,
   protection state, round counters, reasoning counters, continuation count,
-  stopped/failure reason, and timestamps. It must not persist or return request
-  bodies, response bodies, raw keys, Authorization headers, OAuth tokens,
-  cookies, or encrypted reasoning.
+  stopped/failure reason, timestamps, and safe diagnostics such as model alias
+  evidence and read byte counts. It must not persist or return request bodies,
+  response bodies, raw keys, Authorization headers, OAuth tokens, cookies, or
+  encrypted reasoning.
+- The executor may register a CPAMP admin menu/resource for read-only
+  monitoring. This is the replacement for Governor's CodexCont protection
+  monitor only; it must not expose `/user`, `/user/api/*`, key editing, quota
+  editing, or ordinary user self-service.
+- CPAMP must show exactly one executor sidebar entry. Internal management
+  routes such as `/plugins/cpa-codexcont-executor/status` and `/summaries`
+  must not set `Menu`; only the `/admin` resource may set
+  `Menu: CodexCont Executor`.
+- If CPA/CPAMP requires resource-adjacent capabilities for resource menu
+  registration, the executor may declare non-exclusive
+  `frontend_auth_provider=true` and `usage_plugin=true` only as compatibility
+  shims. In that case `frontend_auth.authenticate` must always return
+  unauthenticated and `usage.handle` must be a no-op response. These shims must
+  not authenticate requests, persist usage events, calculate costs, mutate
+  quota windows, or become billing sources.
+- CPA calls `plugin.reconfigure` after the initial `plugin.register` and
+  decodes the response through the same registration path. Executor plugins
+  must return full metadata and capabilities from both methods; returning only a
+  lightweight configured acknowledgement makes CPA mark the plugin
+  unregistered and drops CPAMP resource routes.
 - Plus may read the executor SQLite store through `codex_summary_db_path` for
   `/user/api/codexcont`; read failures degrade only protection summaries and
   must not affect login, quota, `/user/api/usage`, or `/user/api/events`.
+- After production traffic is verified on the executor plugin, the old Docker
+  sidecar chain must be retired all the way through operational entry points:
+  remove the stopped `codexcont` container and image explicitly, disable or
+  rename the default CodexCont compose file so it cannot be recreated by a
+  plain `docker compose up`, remove admin proxy routes that target
+  `codexcont:8787` or `cpa-governor`, and set Plus `codexcont_enabled: false`
+  so user-summary reads use the executor SQLite bridge instead of the old
+  sidecar admin API. Keep legacy Governor state only as read-only import/audit
+  material when Plus still needs it.
 
 ### 4. Validation & Error Matrix
 - Plugin registers frontend auth or user resources -> reject the change; Plus
   owns the user portal.
+- Plugin registers key/quota mutations or ordinary user resource APIs -> reject
+  the change; the CPAMP resource is observability-only.
+- Any non-admin executor management route sets a CPAMP `Menu` label -> reject;
+  this creates duplicate sidebar entries and can expose raw JSON as a page.
+- `frontend_auth.authenticate` authenticates a request, or `usage.handle` stores
+  records / changes quota or cost state -> reject; these capabilities are only
+  menu-registration shims.
 - `route_enabled=false` but `model.route` handles a request -> reject; the
   switch is not one-click safe.
 - Missing executor summary DB -> Plus falls back to sidecar/local summaries or
   returns an empty protection list, while usage APIs continue to pass.
 - Upstream EOF before terminal event -> executor emits `response.incomplete`
   and must not leak buffered tentative message/function-call output.
+- Host stream returns line-sized SSE chunks -> executor must still emit the
+  terminal event; treating this as EOF/incomplete is a regression.
+- Upstream alias configured -> upstream host callback uses the internal model
+  in callback metadata and body; downstream stream and summaries keep the
+  client-visible model.
 - Truncation fingerprint without encrypted reasoning -> executor must not open
   a continuation round and must report `no_encrypted_content` metadata.
+- After final sidecar cleanup, any live production config still containing
+  `reverse_proxy codexcont:8787`, a default
+  `/opt/codex-stacks/codexcont/docker-compose.yaml`, a `codexcont` Docker
+  container/image, or Plus `codexcont_enabled: true` is a rollback hazard and
+  must be fixed before calling the migration closed.
 
 ### 5. Good/Base/Bad Cases
 - Good: `cpa-usage.konbakuyomu.us` still serves Plus, while public
   `/v1/responses` can later route through CPA and the executor plugin for
   continuation protection.
+- Good: The CPAMP plugin menu has `CodexCont Executor`, and it shows a
+  polling realtime monitor backed by executor status/summaries without key or
+  quota controls.
+- Good: `/v0/resource/plugins/cpa-codexcont-executor/admin` is routable inside
+  the admin boundary, while `/v0/resource/plugins/cpa-codexcont-executor/status`
+  is not a resource page and returns `404` through resource dispatch.
 - Base: executor plugin loaded with `route_enabled=false`; no request is
   handled by the executor, and CPA remains usable without continuation folding.
 - Bad: executor plugin registers `/user` or `/user/api/session`. That creates a
@@ -774,7 +864,21 @@ Separate the key authority migration from the continuation-owner migration.
 ### 6. Tests Required
 - Go unit: registration has executor/model-router capability but no frontend
   auth, usage plugin, or user resources.
+- Go unit: CPAMP admin monitor resource exists, returns `no-store` HTML, polls
+  status/summaries, and does not contain user/key/quota control endpoints.
+- Go unit: executor management registration exposes exactly one CPAMP menu
+  entry, and non-admin management routes have empty `Menu` fields.
+- Go unit: `plugin.reconfigure` returns full registration metadata and
+  capabilities, not only `{"configured": true}`.
+- Go unit: executor `usage.handle` returns an observability-only no-op and does
+  not store billing or quota data.
+- Go unit: executor `frontend_auth.authenticate` returns unauthenticated and is
+  non-exclusive.
 - Go unit: route switch disabled/enabled behavior and non-stream fallback.
+- Go unit: upstream model aliasing rewrites host callback metadata/body while
+  preserving downstream client-visible model and safe diagnostics.
+- Go unit: SSE parser accepts host callback line-chunked streams without
+  trailing newlines.
 - Go unit: stream folding covers auto continuation, max continuation, missing
   encrypted reasoning, upstream EOF, upstream error, monotonic sequence
   numbers, and reconstructed proxy metadata.
@@ -795,11 +899,87 @@ engine.
 #### Correct
 ```text
 cpa-key-policy-plus -> owns cpa-usage and /user/api/*
-cpa-codexcont-executor -> owns streaming Responses continuation only
+cpa-codexcont-executor -> owns streaming Responses continuation and read-only CPAMP monitor only
 Plus -> optional read-only summary bridge for display
 ```
 
-The executor replaces the Docker sidecar, not the Plus user portal.
+The executor replaces the Docker sidecar and Governor's CodexCont monitor, not
+the Plus user portal or key/quota controls.
+
+## Scenario: Local linux/amd64 Go plugin build toolchain
+
+### 1. Scope / Trigger
+- Trigger this spec whenever building or rebuilding the Linux CPA plugin
+  artifacts for `cpa-codexcont-executor` or `cpa-key-policy-plus` from this
+  Windows/WSL workspace.
+- This is an infra contract because build reproducibility, WSL placement, disk
+  usage, and production artifact SHA evidence all affect rollout safety.
+
+### 2. Signatures
+- Preferred WSL Go binary:
+  `/mnt/d/Dev/20_Software/_LocalRuntime/go/go1.22.6-linux-amd64/go/bin/go`.
+- Project-scoped fallback WSL Go binary:
+  `/mnt/d/Dev/20_Software/_LocalRuntime/CodexCont/go-sdk-1.22.6/bin/go`.
+- Cached Go tarball, if re-extraction is ever needed:
+  `/mnt/d/Dev/20_Software/_LocalRuntime/go/downloads/go1.22.6.linux-amd64.tar.gz`.
+- Expected version for the current CPA plugin builds:
+  `go version go1.22.6 linux/amd64`.
+
+### 3. Contracts
+- Do not repeatedly download Go into WSL or `/tmp` for plugin builds when the
+  `_LocalRuntime` toolchain exists.
+- Build/test commands must either call the preferred Go binary explicitly or
+  prepend its `bin` directory to `PATH` for that one command/session.
+- If plain `go` is not in WSL `PATH`, that is not a blocker and must not start
+  a new download. Use the explicit `_LocalRuntime` path instead.
+- If the extracted toolchain is missing but the cached tarball exists, ask
+  before re-extracting and place it under `_LocalRuntime`, not a throwaway
+  `/tmp/codex-go*` directory.
+- Record plugin artifact SHA256 hashes after every production-bound rebuild.
+
+### 4. Validation & Error Matrix
+- Preferred Go path exists and reports `go1.22.6 linux/amd64` -> use it for
+  `go test ./...` and plugin builds.
+- Plain WSL `go` is absent -> continue with the explicit `_LocalRuntime` Go
+  path; do not download.
+- Preferred path missing but fallback path exists and reports the expected
+  version -> use the fallback and record that choice in task evidence.
+- Both extracted toolchains missing -> pause before network download; check the
+  cached tarball and confirm the intended `_LocalRuntime` extraction target.
+- Build artifact SHA not recorded -> rollout evidence is incomplete.
+
+### 5. Good/Base/Bad Cases
+- Good: A Linux plugin build uses
+  `/mnt/d/Dev/20_Software/_LocalRuntime/go/go1.22.6-linux-amd64/go/bin/go`,
+  tests pass, `file` reports an ELF x86-64 shared object, and SHA256 is logged.
+- Base: WSL has no global `go`; explicit `_LocalRuntime` Go still works.
+- Bad: A helper script silently downloads Go again into `/tmp` because
+  `command -v go` returned empty.
+
+### 6. Tests Required
+- Shell smoke: `command -v go || true` plus the preferred explicit Go path
+  `version` check before any WSL plugin build.
+- Go unit: run `go test ./...` in both plugin packages with the selected Go
+  binary.
+- Artifact check: run `file` and `sha256sum` on production-bound `.so` files.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+```bash
+command -v go || curl -fsSL https://go.dev/dl/go1.22.6.linux-amd64.tar.gz | tar -xz -C /tmp
+```
+
+This redownloads a large toolchain, hides the chosen compiler path, and leaves
+throwaway state outside the project runtime convention.
+
+#### Correct
+```bash
+/mnt/d/Dev/20_Software/_LocalRuntime/go/go1.22.6-linux-amd64/go/bin/go test ./...
+```
+
+The build uses the already-provisioned local runtime toolchain and produces
+repeatable evidence.
 
 ## Scenario: CPA Governor plugin and CodexCont Engine rollout
 

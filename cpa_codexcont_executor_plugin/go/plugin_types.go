@@ -9,21 +9,25 @@ const (
 	abiVersion    uint32 = 1
 	schemaVersion uint32 = 1
 
-	methodPluginRegister         = "plugin.register"
-	methodPluginReconfigure      = "plugin.reconfigure"
-	methodModelRoute             = "model.route"
-	methodExecutorIdentifier     = "executor.identifier"
-	methodExecutorExecute        = "executor.execute"
-	methodExecutorExecuteStream  = "executor.execute_stream"
-	methodExecutorCountTokens    = "executor.count_tokens"
-	methodManagementRegister     = "management.register"
-	methodManagementHandle       = "management.handle"
-	methodHostModelExecute       = "host.model.execute"
-	methodHostModelExecuteStream = "host.model.execute_stream"
-	methodHostModelStreamRead    = "host.model.stream_read"
-	methodHostModelStreamClose   = "host.model.stream_close"
-	methodHostStreamEmit         = "host.stream.emit"
-	methodHostStreamClose        = "host.stream.close"
+	methodPluginRegister           = "plugin.register"
+	methodPluginReconfigure        = "plugin.reconfigure"
+	methodFrontendAuthIdentifier   = "frontend_auth.identifier"
+	methodFrontendAuthAuthenticate = "frontend_auth.authenticate"
+	methodModelRoute               = "model.route"
+	methodExecutorIdentifier       = "executor.identifier"
+	methodExecutorExecute          = "executor.execute"
+	methodExecutorExecuteStream    = "executor.execute_stream"
+	methodExecutorCountTokens      = "executor.count_tokens"
+	methodUsageHandle              = "usage.handle"
+	methodManagementRegister       = "management.register"
+	methodManagementHandle         = "management.handle"
+	methodHostModelExecute         = "host.model.execute"
+	methodHostModelExecuteStream   = "host.model.execute_stream"
+	methodHostModelStreamRead      = "host.model.stream_read"
+	methodHostModelStreamClose     = "host.model.stream_close"
+	methodHostStreamEmit           = "host.stream.emit"
+	methodHostStreamClose          = "host.stream.close"
+	methodHostLog                  = "host.log"
 )
 
 const (
@@ -40,6 +44,20 @@ type configField struct {
 	Type        string   `json:"Type"`
 	EnumValues  []string `json:"EnumValues,omitempty"`
 	Description string   `json:"Description"`
+}
+
+type frontendAuthRequest struct {
+	Method  string      `json:"Method"`
+	Path    string      `json:"Path"`
+	Headers http.Header `json:"Headers"`
+	Query   url.Values  `json:"Query"`
+	Body    []byte      `json:"Body"`
+}
+
+type frontendAuthResponse struct {
+	Authenticated bool              `json:"Authenticated"`
+	Principal     string            `json:"Principal,omitempty"`
+	Metadata      map[string]string `json:"Metadata,omitempty"`
 }
 
 type modelRouteRequest struct {
@@ -112,9 +130,10 @@ type executorRequest struct {
 }
 
 type executorCallRequest struct {
-	ExecutorRequest executorRequest `json:"ExecutorRequest"`
-	StreamID        string          `json:"stream_id,omitempty"`
-	HostCallbackID  string          `json:"host_callback_id,omitempty"`
+	executorRequest
+	NestedExecutorRequest executorRequest `json:"ExecutorRequest,omitempty"`
+	StreamID              string          `json:"stream_id,omitempty"`
+	HostCallbackID        string          `json:"host_callback_id,omitempty"`
 }
 
 type executorResponse struct {
@@ -173,4 +192,11 @@ type hostStreamEmitRequest struct {
 type hostStreamCloseRequest struct {
 	StreamID string `json:"stream_id"`
 	Error    string `json:"error,omitempty"`
+}
+
+type hostLogRequest struct {
+	Level          string         `json:"level,omitempty"`
+	Message        string         `json:"message,omitempty"`
+	Fields         map[string]any `json:"fields,omitempty"`
+	HostCallbackID string         `json:"host_callback_id,omitempty"`
 }

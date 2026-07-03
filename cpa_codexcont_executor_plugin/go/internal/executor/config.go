@@ -8,18 +8,20 @@ import (
 const EncryptedInclude = "reasoning.encrypted_content"
 
 type Config struct {
-	Enabled               bool   `yaml:"enabled"`
-	RouteEnabled          bool   `yaml:"route_enabled"`
-	StateDBPath           string `yaml:"state_db_path"`
-	FailMode              string `yaml:"fail_mode"`
-	TruncationStep        int    `yaml:"truncation_step"`
-	MaxContinue           int    `yaml:"max_continue"`
-	MinN                  int    `yaml:"min_n"`
-	MaxN                  int    `yaml:"max_n"`
-	MarkerText            string `yaml:"marker_text"`
-	ForceIncludeEncrypted bool   `yaml:"force_include_encrypted"`
-	MaxTotalOutputTokens  int    `yaml:"max_total_output_tokens"`
-	PollIntervalMS        int    `yaml:"poll_interval_ms"`
+	Enabled               bool              `yaml:"enabled"`
+	RouteEnabled          bool              `yaml:"route_enabled"`
+	StateDBPath           string            `yaml:"state_db_path"`
+	FailMode              string            `yaml:"fail_mode"`
+	UpstreamModel         string            `yaml:"upstream_model"`
+	UpstreamModelAliases  map[string]string `yaml:"upstream_model_aliases"`
+	TruncationStep        int               `yaml:"truncation_step"`
+	MaxContinue           int               `yaml:"max_continue"`
+	MinN                  int               `yaml:"min_n"`
+	MaxN                  int               `yaml:"max_n"`
+	MarkerText            string            `yaml:"marker_text"`
+	ForceIncludeEncrypted bool              `yaml:"force_include_encrypted"`
+	MaxTotalOutputTokens  int               `yaml:"max_total_output_tokens"`
+	PollIntervalMS        int               `yaml:"poll_interval_ms"`
 }
 
 func DefaultConfig() Config {
@@ -44,6 +46,19 @@ func (c Config) Normalize() Config {
 	c.FailMode = strings.ToLower(strings.TrimSpace(c.FailMode))
 	if c.FailMode == "" {
 		c.FailMode = "fallback"
+	}
+	c.UpstreamModel = strings.TrimSpace(c.UpstreamModel)
+	if len(c.UpstreamModelAliases) > 0 {
+		clean := make(map[string]string, len(c.UpstreamModelAliases))
+		for alias, target := range c.UpstreamModelAliases {
+			alias = strings.TrimSpace(alias)
+			target = strings.TrimSpace(target)
+			if alias == "" || target == "" {
+				continue
+			}
+			clean[alias] = target
+		}
+		c.UpstreamModelAliases = clean
 	}
 	if c.TruncationStep <= 0 {
 		c.TruncationStep = DefaultConfig().TruncationStep

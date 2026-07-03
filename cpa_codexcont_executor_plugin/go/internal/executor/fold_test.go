@@ -170,6 +170,67 @@ func TestFoldStreamAutoContinuesAndReconstructsTerminal(t *testing.T) {
 	assertSequenceMonotonic(t, events)
 }
 
+func TestFoldStreamFirstRoundPreservesStringInput(t *testing.T) {
+	cfg := DefaultConfig()
+	base := map[string]any{"model": "gpt-5.5", "stream": true, "input": "say hi"}
+	events := []map[string]any{created("resp-a"), completed(42, 60)}
+	var opened [][]byte
+	var emitted bytes.Buffer
+	_, err := FoldStream(context.Background(), cfg, base, func(_ context.Context, body []byte, _ int) (StreamReader, error) {
+		opened = append(opened, body)
+		return &fakeRoundReader{chunks: round(events...)}, nil
+	}, func(_ context.Context, payload []byte) error {
+		_, _ = emitted.Write(payload)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(opened) != 1 {
+		t.Fatalf("opened rounds = %d", len(opened))
+	}
+	var firstBody map[string]any
+	if err := json.Unmarshal(opened[0], &firstBody); err != nil {
+		t.Fatal(err)
+	}
+	if firstBody["input"] != "say hi" {
+		t.Fatalf("first round input was rewritten: %#v", firstBody["input"])
+	}
+	if !strings.Contains(emitted.String(), "response.completed") {
+		t.Fatalf("terminal missing:\n%s", emitted.String())
+	}
+}
+
+func TestFoldStreamAcceptsLineChunkedSSE(t *testing.T) {
+	cfg := DefaultConfig()
+	base := map[string]any{"model": "gpt-5.5", "stream": true, "input": []any{}}
+	events := []map[string]any{created("resp-a"), completed(42, 60)}
+	var chunks [][]byte
+	for _, ev := range events {
+		raw := SerializeEvent(ev)
+		for _, line := range strings.Split(strings.TrimSuffix(string(raw), "\n"), "\n") {
+			chunks = append(chunks, []byte(line))
+		}
+	}
+	var emitted bytes.Buffer
+	result, err := FoldStream(context.Background(), cfg, base, func(context.Context, []byte, int) (StreamReader, error) {
+		return &fakeRoundReader{chunks: chunks}, nil
+	}, func(_ context.Context, payload []byte) error {
+		_, _ = emitted.Write(payload)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Protection != "protected_clean" {
+		t.Fatalf("protection=%s summary=%#v stream=%s", result.Protection, result.Summary, emitted.String())
+	}
+	term := terminalEvent(t, parseEvents(t, emitted.Bytes()))
+	if term["type"] != "response.completed" {
+		t.Fatalf("terminal = %#v", term)
+	}
+}
+
 func TestFoldStreamMissingEncryptedDoesNotContinue(t *testing.T) {
 	cfg := DefaultConfig()
 	base := map[string]any{"model": "gpt-5.5", "stream": true, "input": []any{}}

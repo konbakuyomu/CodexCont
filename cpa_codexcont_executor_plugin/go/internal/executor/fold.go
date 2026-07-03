@@ -48,6 +48,7 @@ type bufferEntry struct {
 func FoldStream(ctx context.Context, cfg Config, baseBody map[string]any, open StreamOpener, emit Emitter) (*FoldResult, error) {
 	cfg = cfg.Normalize()
 	startedAt := time.Now()
+	displayModel := toString(baseBody["model"])
 	origInput := anyList(baseBody["input"])
 	replayTail := []any{}
 	finalOutput := []any{}
@@ -69,7 +70,7 @@ func FoldStream(ctx context.Context, cfg Config, baseBody map[string]any, open S
 	var baseResponse map[string]any
 	var requestID string
 
-	firstPayload := BuildRoundPayload(baseBody, origInput, cfg, false)
+	firstPayload := BuildFirstPayload(baseBody)
 	firstRaw, err := marshalPayload(firstPayload)
 	if err != nil {
 		return nil, err
@@ -111,6 +112,11 @@ func FoldStream(ctx context.Context, cfg Config, baseBody map[string]any, open S
 				typ := toString(ev["type"])
 				if typ == "response.created" || typ == "response.in_progress" {
 					if roundNo == 1 {
+						if displayModel != "" {
+							if resp := mapValue(ev, "response"); resp != nil {
+								resp["model"] = displayModel
+							}
+						}
 						if typ == "response.created" {
 							baseResponse = mapValue(ev, "response")
 							requestID = firstString(baseResponse["id"], requestID)

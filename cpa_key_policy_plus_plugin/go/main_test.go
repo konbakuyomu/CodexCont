@@ -337,6 +337,76 @@ func TestAdminKeysIncludesQuotaProjection(t *testing.T) {
 	}
 }
 
+func TestUsageHandleMapsExecutorRecordsByAuthID(t *testing.T) {
+	key := setupTestState(t)
+	key.Models = []string{"gpt-5.4"}
+	key.Prices = map[string]policyplus.ModelPrice{
+		"gpt-5.4": {Model: "gpt-5.4", InputPerMillion: 10, OutputPerMillion: 20},
+	}
+	if err := loadedStore().SaveKeySettings(context.Background(), key); err != nil {
+		t.Fatal(err)
+	}
+	body, _ := json.Marshal(usageRecord{
+		Provider:     "codex-account-3.json",
+		ExecutorType: "codex",
+		Model:        "gpt-5.3-codex-spark",
+		AuthID:       key.ID,
+		Source:       "codex-account-3.json",
+		RequestedAt:  time.Now(),
+		Detail: usageDetail{
+			InputTokens:     10,
+			OutputTokens:    5,
+			ReasoningTokens: 2,
+			TotalTokens:     15,
+		},
+	})
+	raw, err := usageHandle(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var env envelope
+	if err := json.Unmarshal(raw, &env); err != nil {
+		t.Fatal(err)
+	}
+	if !env.OK {
+		t.Fatalf("usage response = %s", raw)
+	}
+	events, err := loadedStore().RecentEvents(context.Background(), key.ID, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("events = %#v", events)
+	}
+	got := events[0]
+	if got.KeyID != key.ID || got.Model != "gpt-5.4" || got.RequestedModel != "gpt-5.4" || got.ActualModel != "gpt-5.3-codex-spark" {
+		t.Fatalf("usage event did not preserve auth/alias mapping: %#v", got)
+	}
+	if got.Cost <= 0 {
+		t.Fatalf("usage event should use visible model price book, got cost=%f event=%#v", got.Cost, got)
+	}
+}
+
+func TestVisibleUsageModelDoesNotGuessForMultiModelKeys(t *testing.T) {
+	key := policyplus.KeyRecord{ID: "key-1", Models: []string{"gpt-5.4", "gpt-5.5"}}
+	got := visibleUsageModel(key, usageRecord{Model: "provider-internal-unknown"})
+	if got != "provider-internal-unknown" {
+		t.Fatalf("multi-model key should not guess visible alias, got %q", got)
+	}
+	got = visibleUsageModel(key, usageRecord{Model: "gpt-5.3-codex-spark"})
+	if got != "gpt-5.4" {
+		t.Fatalf("known executor alias should be projected to visible model, got %q", got)
+	}
+	got = visibleUsageModel(key, usageRecord{Model: "gpt-5.3-codex-spark", Alias: "gpt-5.3-codex-spark"})
+	if got != "gpt-5.4" {
+		t.Fatalf("internal alias field should be projected to visible model, got %q", got)
+	}
+	got = visibleUsageModel(key, usageRecord{Model: "gpt-5.3-codex-spark", Alias: "gpt-5.4"})
+	if got != "gpt-5.4" {
+		t.Fatalf("explicit alias should win, got %q", got)
+	}
+}
+
 func TestAdminModelsFallsBackToConfiguredModels(t *testing.T) {
 	key := setupTestState(t)
 	key.Models = []string{"gpt-5.5", "legacy-custom"}

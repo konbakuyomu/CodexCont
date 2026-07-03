@@ -15,8 +15,9 @@ not enforce them.
 
 Plus is safe to deploy as the exclusive user-key auth and quota authority. The
 public `/v1/responses` route should stay on the current known-good CodexCont
-sidecar path until Governor has a verified executor-level continuation
-supervisor. The current CodexCont Engine API is status/summary only.
+sidecar path until the separate `cpa-codexcont-executor` plugin has passed a
+controlled server validation. The current CodexCont Engine API is
+status/summary only.
 
 ## Local Test
 

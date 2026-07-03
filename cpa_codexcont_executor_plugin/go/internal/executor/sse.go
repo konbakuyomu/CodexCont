@@ -20,6 +20,12 @@ func (p *SSEParser) Feed(chunk []byte) []SSEEvent {
 	if len(chunk) == 0 {
 		return nil
 	}
+	if len(p.buffer) == 0 && !bytes.ContainsAny(chunk, "\r\n") {
+		line := strings.TrimSuffix(string(chunk), "\r")
+		if isSSELineChunk(line) {
+			return p.processLine(line)
+		}
+	}
 	p.buffer = append(p.buffer, chunk...)
 	var out []SSEEvent
 	for {
@@ -30,37 +36,55 @@ func (p *SSEParser) Feed(chunk []byte) []SSEEvent {
 		raw := p.buffer[:idx]
 		p.buffer = p.buffer[idx+1:]
 		line := strings.TrimSuffix(string(raw), "\r")
-		if line == "" {
-			if ev, ok := p.flush(); ok {
-				out = append(out, ev)
-			}
-			continue
-		}
-		if strings.HasPrefix(line, ":") {
-			continue
-		}
-		if strings.HasPrefix(line, "data:") {
-			value := line[5:]
-			value = strings.TrimPrefix(value, " ")
-			p.dataLines = append(p.dataLines, value)
-		}
+		out = append(out, p.processLine(line)...)
 	}
 	return out
 }
 
 func (p *SSEParser) Close() []SSEEvent {
+	var out []SSEEvent
 	if len(p.buffer) > 0 {
 		line := strings.TrimSuffix(string(p.buffer), "\r")
 		p.buffer = nil
-		if strings.HasPrefix(line, "data:") {
-			value := strings.TrimPrefix(line[5:], " ")
-			p.dataLines = append(p.dataLines, value)
-		}
+		out = append(out, p.processLine(line)...)
 	}
 	if ev, ok := p.flush(); ok {
-		return []SSEEvent{ev}
+		out = append(out, ev)
+	}
+	return out
+}
+
+func (p *SSEParser) processLine(line string) []SSEEvent {
+	if line == "" {
+		if ev, ok := p.flush(); ok {
+			return []SSEEvent{ev}
+		}
+		return nil
+	}
+	if strings.HasPrefix(line, ":") {
+		return nil
+	}
+	if strings.HasPrefix(line, "event:") {
+		if len(p.dataLines) > 0 {
+			if ev, ok := p.flush(); ok {
+				return []SSEEvent{ev}
+			}
+		}
+		return nil
+	}
+	if strings.HasPrefix(line, "data:") {
+		value := line[5:]
+		value = strings.TrimPrefix(value, " ")
+		p.dataLines = append(p.dataLines, value)
 	}
 	return nil
+}
+
+func isSSELineChunk(line string) bool {
+	return line == "" ||
+		strings.HasPrefix(line, ":") ||
+		strings.HasPrefix(line, "event:") ||
+		strings.HasPrefix(line, "data:")
 }
 
 func (p *SSEParser) flush() (SSEEvent, bool) {

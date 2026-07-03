@@ -23,29 +23,39 @@ keys, quotas, RPM, and usage APIs.
 - The executor plugin must have a single on/off config switch. When disabled,
   CPA should continue using the normal upstream path without continuation
   protection.
+- The executor plugin should replace Governor's CPAMP-side CodexCont realtime
+  monitoring role with a read-only admin monitor resource. This monitor may
+  show safe rolling request summaries and executor health, but must not become
+  a user portal or key/quota control plane.
 - Safe protection summaries may be shown through Plus, but summary transport
   must not change ownership of `cpa-usage` and must not expose request bodies,
   response bodies, keys, cookies, OAuth tokens, or encrypted reasoning.
 
 ## Acceptance Criteria
 
-- [ ] A CPA plugin named for CodexCont executor behavior exists separately from
+- [x] A CPA plugin named for CodexCont executor behavior exists separately from
       `cpa-key-policy-plus` and does not register user/admin portal resources
       beyond internal/management observability needed for executor health.
-- [ ] With the executor switch disabled, model routing returns unhandled and
+- [x] The executor plugin exposes a CPAMP admin menu/resource for read-only
+      realtime rolling CodexCont monitoring, replacing Governor's daily
+      protection-monitoring role without exposing `/user` or `/user/api/*`.
+- [x] With the executor switch disabled, model routing returns unhandled and
       existing CPA behavior remains available.
-- [ ] With the executor switch enabled, streaming Responses requests are routed
+- [x] With the executor switch enabled, streaming Responses requests are routed
       to the plugin executor and folded into one downstream stream.
-- [ ] Unit tests cover clean passthrough, auto-continued two-round folding,
+- [x] Unit tests cover clean passthrough, auto-continued two-round folding,
       `max_continue`, missing encrypted reasoning, upstream EOF, upstream
       error, sequence-number monotonicity, and reconstructed metadata.
-- [ ] Plus user page/API contracts remain unchanged:
+- [x] Plus user page/API contracts remain unchanged:
       `/user/api/session`, `/user/api/me`, `/user/api/usage?range=24h`,
       `/user/api/events?range=24h&limit=100`, and `/user/api/codexcont`.
-- [ ] Protection summary failures degrade only the summary display; user login,
+- [x] Protection summary failures degrade only the summary display; user login,
       quota, usage, and events still work.
-- [ ] `go test ./...` passes in both the executor plugin and Key Policy Plus
+- [x] `go test ./...` passes in both the executor plugin and Key Policy Plus
       plugin packages.
+- [x] Public Caddy `/v1/responses` is cut over to CPA-first executor routing,
+      then the old Docker CodexCont sidecar is stopped. This is intentionally
+      a separate production approval gate.
 
 ## Notes
 
