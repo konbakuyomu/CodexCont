@@ -477,7 +477,7 @@ function renderProtection(force=false){
       <td><button class="ghost compact" data-protection="${esc(id)}" type="button">${open ? "收起" : "展开"}</button></td>
     </tr>`;
     return main + (open ? protectionDetail(req) : "");
-  }).join("") || `<tr><td colspan="8"><div class="empty">暂无属于当前 Key 的保护记录</div></td></tr>`;
+  }).join("") || `<tr><td colspan="8"><div class="empty">暂无归属于当前 Key 的保护记录</div></td></tr>`;
   const continued = items.filter(x => x.protection === "auto_continued").length;
   const risk = items.filter(x => x.protection === "risk_uncontinued").length;
   const failed = items.filter(x => x.protection === "failed").length;

@@ -3,6 +3,9 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -12,10 +15,12 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"codexcont/cpa-codexcont-executor-plugin/internal/executor"
 	_ "embed"
 	"gopkg.in/yaml.v3"
+	_ "modernc.org/sqlite"
 )
 
 const pluginID = "cpa-codexcont-executor"
@@ -144,6 +149,8 @@ func pluginRegistration() registration {
 				{Name: "enabled", Type: configBoolean, Description: "Enable the plugin."},
 				{Name: "route_enabled", Type: configBoolean, Description: "Route streaming Responses requests to the CodexCont executor."},
 				{Name: "state_db_path", Type: configString, Description: "SQLite path for safe executor summaries."},
+				{Name: "cpamp_alias_db_path", Type: configString, Description: "Optional CPAMP SQLite path for safe api_key_aliases lookup."},
+				{Name: "cpamp_alias_db_paths", Type: configString, Description: "Optional comma/semicolon-separated CPAMP SQLite alias DB fallbacks."},
 				{Name: "fail_mode", Type: configEnum, EnumValues: []string{"fallback", "fail_closed"}, Description: "Fallback behavior when the executor is disabled."},
 				{Name: "upstream_model", Type: configString, Description: "Optional provider-registered model used for internal upstream rounds."},
 				{Name: "upstream_model_aliases", Type: configString, Description: "Optional YAML map from client-visible model aliases to internal upstream models."},
@@ -435,9 +442,10 @@ func saveFoldSummary(req executorRequest, result *executor.FoldResult, diagnosti
 		return nil
 	}
 	summary := cloneSummary(result.Summary)
-	keyID := strings.TrimSpace(req.AuthID)
-	if keyID != "" {
-		summary["key_identity"] = map[string]any{"known": true, "id": keyID}
+	identity := keyIdentityFromRequest(req)
+	keyID := keyIdentityID(identity)
+	if len(identity) > 0 {
+		summary["key_identity"] = identity
 	}
 	model := firstNonEmpty(req.Model, fmt.Sprint(summary["model"]))
 	if model != "" {
@@ -453,6 +461,251 @@ func saveFoldSummary(req executorRequest, result *executor.FoldResult, diagnosti
 	}
 	_ = store.SaveCodexSummary(context.Background(), requestID, keyID, model, result.Protection, summary)
 	return summary
+}
+
+func keyIdentityFromRequest(req executorRequest) map[string]any {
+	identity := map[string]string{}
+	mergeIdentityMap(identity, req.AuthMetadata)
+	mergeIdentityStringMap(identity, req.AuthAttributes)
+	mergeIdentityMap(identity, req.Metadata)
+	mergeIdentityStringMap(identity, identityFromAuthorization(req.Headers))
+	setIdentityField(identity, "id", req.AuthID)
+	if identity["name"] == "" {
+		identity["name"] = identity["alias"]
+	}
+	if len(identity) == 0 {
+		return nil
+	}
+	out := map[string]any{"known": true}
+	for _, key := range []string{"id", "name", "alias", "preview", "source"} {
+		if value := strings.TrimSpace(identity[key]); value != "" {
+			out[key] = value
+		}
+	}
+	if len(out) == 1 {
+		return nil
+	}
+	return out
+}
+
+func identityFromAuthorization(headers http.Header) map[string]string {
+	rawKey := normalizedBearer(headerFirst(headers, "Authorization"))
+	if rawKey == "" || !strings.HasPrefix(strings.ToLower(rawKey), "sk-") && !strings.HasPrefix(strings.ToLower(rawKey), "sk_") {
+		return nil
+	}
+	hash := sha256Hex(rawKey)
+	preview := hashPreview(hash)
+	alias := aliasForKeyHash(hash)
+	name := alias
+	if name == "" {
+		name = preview
+	}
+	return map[string]string{
+		"id":      "native_" + sanitizeIDPart(preview),
+		"name":    name,
+		"alias":   alias,
+		"preview": preview,
+		"source":  "native_cpa",
+	}
+}
+
+func normalizedBearer(value string) string {
+	value = normalizeSubmittedKey(value)
+	lower := strings.ToLower(value)
+	if strings.HasPrefix(lower, "bearer ") {
+		return strings.TrimSpace(value[7:])
+	}
+	return value
+}
+
+func normalizeSubmittedKey(value string) string {
+	text := strings.TrimSpace(value)
+	text = strings.Map(func(r rune) rune {
+		if unicode.Is(unicode.Cf, r) {
+			return -1
+		}
+		return r
+	}, text)
+	text = strings.TrimSpace(strings.Trim(text, `"'`+"`"+`“”‘’「」『』<>`))
+	lower := strings.ToLower(text)
+	if strings.HasPrefix(lower, "authorization:") {
+		text = strings.TrimSpace(text[len("authorization:"):])
+		lower = strings.ToLower(text)
+	}
+	for strings.HasPrefix(lower, "bearer ") {
+		text = strings.TrimSpace(text[7:])
+		lower = strings.ToLower(text)
+	}
+	return strings.TrimSpace(strings.Trim(text, `"'`+"`"+`“”‘’「」『』<>`))
+}
+
+func sha256Hex(value string) string {
+	sum := sha256.Sum256([]byte(normalizeSubmittedKey(value)))
+	return hex.EncodeToString(sum[:])
+}
+
+func hashPreview(hash string) string {
+	hash = strings.TrimSpace(strings.TrimPrefix(strings.ToLower(hash), "sha256:"))
+	if len(hash) <= 16 {
+		return hash
+	}
+	return hash[:8] + "..." + hash[len(hash)-6:]
+}
+
+func sanitizeIDPart(value string) string {
+	value = strings.ReplaceAll(value, "...", "_")
+	value = strings.ReplaceAll(value, "…", "_")
+	var b strings.Builder
+	for _, r := range value {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-' {
+			b.WriteRune(r)
+		} else {
+			b.WriteByte('_')
+		}
+	}
+	out := strings.Trim(b.String(), "_")
+	if out == "" {
+		return "unknown"
+	}
+	return out
+}
+
+func aliasForKeyHash(hash string) string {
+	cfg := loadedConfig()
+	for _, path := range aliasDBPaths(cfg) {
+		if alias := aliasFromSQLite(path, hash); alias != "" {
+			return alias
+		}
+	}
+	return ""
+}
+
+func aliasDBPaths(cfg executor.Config) []string {
+	seen := map[string]bool{}
+	var out []string
+	add := func(raw string) {
+		for _, part := range strings.FieldsFunc(raw, func(r rune) bool { return r == ',' || r == ';' || r == '\n' || r == '\r' || r == '\t' }) {
+			part = strings.TrimSpace(part)
+			if part == "" || seen[part] {
+				continue
+			}
+			seen[part] = true
+			out = append(out, part)
+		}
+	}
+	add(cfg.CPAMPAliasDBPath)
+	add(cfg.CPAMPAliasDBPaths)
+	return out
+}
+
+func aliasFromSQLite(path, hash string) string {
+	path = strings.TrimSpace(path)
+	hash = strings.TrimSpace(strings.TrimPrefix(strings.ToLower(hash), "sha256:"))
+	if path == "" || hash == "" {
+		return ""
+	}
+	if _, err := os.Stat(path); err != nil {
+		return ""
+	}
+	db, err := sql.Open("sqlite", "file:"+path+"?mode=ro&_pragma=busy_timeout(5000)")
+	if err != nil {
+		return ""
+	}
+	defer db.Close()
+	row := db.QueryRowContext(context.Background(), `select alias from api_key_aliases where replace(lower(api_key_hash), 'sha256:', '') = ? limit 1`, hash)
+	var alias string
+	if err := row.Scan(&alias); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(alias)
+}
+
+func mergeIdentityMap(identity map[string]string, values map[string]any) {
+	for key, value := range values {
+		setIdentityField(identity, identityFieldName(key), fmt.Sprint(value))
+	}
+}
+
+func mergeIdentityStringMap(identity map[string]string, values map[string]string) {
+	for key, value := range values {
+		setIdentityField(identity, identityFieldName(key), value)
+	}
+}
+
+func identityFieldName(key string) string {
+	switch strings.ToLower(strings.TrimSpace(key)) {
+	case "key_id", "id":
+		return "id"
+	case "key_name", "name", "display_name":
+		return "name"
+	case "key_alias", "alias":
+		return "alias"
+	case "preview", "key_preview":
+		return "preview"
+	case "source", "key_source":
+		return "source"
+	default:
+		return ""
+	}
+}
+
+func setIdentityField(identity map[string]string, key, value string) {
+	key = strings.TrimSpace(key)
+	value = strings.TrimSpace(value)
+	if key == "" || value == "" || identity[key] != "" || unsafeIdentityValue(value) {
+		return
+	}
+	identity[key] = brief(value, 120)
+}
+
+func unsafeIdentityValue(value string) bool {
+	raw := strings.TrimSpace(value)
+	lower := strings.ToLower(raw)
+	if strings.Contains(lower, "authorization") || strings.Contains(lower, "bearer ") ||
+		strings.Contains(lower, "sk-") || strings.Contains(lower, "sk_") ||
+		strings.HasPrefix(lower, "cpa_") || strings.HasPrefix(lower, "sha256:") {
+		return true
+	}
+	if len(raw) == 64 {
+		for _, r := range raw {
+			if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F')) {
+				return false
+			}
+		}
+		return true
+	}
+	return false
+}
+
+func keyIdentityID(identity map[string]any) string {
+	if identity == nil {
+		return ""
+	}
+	id := strings.TrimSpace(fmt.Sprint(identity["id"]))
+	if id == "<nil>" {
+		return ""
+	}
+	return id
+}
+
+func headerFirst(headers http.Header, name string) string {
+	if headers == nil {
+		return ""
+	}
+	if value := strings.TrimSpace(headers.Get(name)); value != "" {
+		return value
+	}
+	for key, values := range headers {
+		if !strings.EqualFold(key, name) {
+			continue
+		}
+		for _, value := range values {
+			if strings.TrimSpace(value) != "" {
+				return strings.TrimSpace(value)
+			}
+		}
+	}
+	return ""
 }
 
 func usageHandle(_ []byte) ([]byte, error) {
@@ -955,8 +1208,8 @@ func (m *summaryMonitor) Start(req executorRequest, base map[string]any) string 
 		"continuation_count": 0,
 		"rounds":             []map[string]any{},
 	}
-	if keyID := strings.TrimSpace(req.AuthID); keyID != "" {
-		item["key_identity"] = map[string]any{"known": true, "id": keyID}
+	if identity := keyIdentityFromRequest(req); len(identity) > 0 {
+		item["key_identity"] = identity
 	}
 	m.upsert(id, item)
 	return id

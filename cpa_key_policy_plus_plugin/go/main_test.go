@@ -961,6 +961,101 @@ func TestCodexRequestsPreferExecutorSummaryBridge(t *testing.T) {
 	}
 }
 
+func TestCodexRequestsAllowExecutorPreviewMatchAndHideOtherKeys(t *testing.T) {
+	key := setupTestState(t)
+	execPath := filepath.Join(t.TempDir(), "executor.sqlite")
+	execStore, err := policyplus.OpenStore(execPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := execStore.SaveCodexSummary(context.Background(), "exec-preview", key.ID, "gpt-5.5", "protected_clean", map[string]any{
+		"request_id":   "exec-preview",
+		"model":        "gpt-5.5",
+		"protection":   "protected_clean",
+		"key_identity": map[string]any{"known": true, "preview": key.Preview},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := execStore.SaveCodexSummary(context.Background(), "exec-other-preview", "other-key", "gpt-5.5", "auto_continued", map[string]any{
+		"request_id":   "exec-other-preview",
+		"model":        "gpt-5.5",
+		"protection":   "auto_continued",
+		"key_identity": map[string]any{"known": true, "id": "other-key", "preview": "other...preview"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := execStore.Close(); err != nil {
+		t.Fatal(err)
+	}
+	state.mu.Lock()
+	state.cfg.CodexSummaryDBPath = execPath
+	state.cfg.CodexContEnabled = false
+	state.mu.Unlock()
+	requests, source := codexRequestsForKey(key, 10)
+	if source != "codexcont_executor_store" || len(requests) != 1 || requests[0]["request_id"] != "exec-preview" {
+		t.Fatalf("source=%s requests=%#v", source, requests)
+	}
+}
+
+func TestCodexRequestsExecutorBridgeEmptyCurrentKeyIsNotError(t *testing.T) {
+	key := setupTestState(t)
+	execPath := filepath.Join(t.TempDir(), "executor.sqlite")
+	execStore, err := policyplus.OpenStore(execPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := execStore.SaveCodexSummary(context.Background(), "exec-other", "other-key", "gpt-5.5", "protected_clean", map[string]any{
+		"request_id":   "exec-other",
+		"model":        "gpt-5.5",
+		"protection":   "protected_clean",
+		"key_identity": map[string]any{"known": true, "id": "other-key"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := execStore.Close(); err != nil {
+		t.Fatal(err)
+	}
+	state.mu.Lock()
+	state.cfg.CodexSummaryDBPath = execPath
+	state.cfg.CodexContEnabled = false
+	state.mu.Unlock()
+	requests, source := codexRequestsForKey(key, 10)
+	if source != "codexcont_executor_store" || len(requests) != 0 {
+		t.Fatalf("empty current-key executor feed should not be an error: source=%s requests=%#v", source, requests)
+	}
+}
+
+func TestFrontendAuthMetadataIncludesSafeAlias(t *testing.T) {
+	key := setupTestState(t)
+	key.Alias = "alicea"
+	if err := loadedStore().UpsertKey(context.Background(), key); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := frontendAuth(mustJSON(t, frontendAuthRequest{
+		Path:    "/v1/responses",
+		Headers: http.Header{"Authorization": []string{"Bearer sk-alice-secret"}},
+		Body:    []byte(`{"model":"gpt-5.5"}`),
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var env envelope
+	if err := json.Unmarshal(raw, &env); err != nil {
+		t.Fatal(err)
+	}
+	var resp frontendAuthResponse
+	if err := json.Unmarshal(env.Result, &resp); err != nil {
+		t.Fatal(err)
+	}
+	if !resp.Authenticated || resp.Metadata["key_alias"] != "alicea" || resp.Metadata["key_id"] != key.ID {
+		t.Fatalf("frontend auth metadata missing safe identity: %#v", resp)
+	}
+	encoded, _ := json.Marshal(resp.Metadata)
+	if strings.Contains(string(encoded), "sk-alice-secret") || strings.Contains(string(encoded), key.KeyHash) {
+		t.Fatalf("frontend auth metadata leaked key material: %s", encoded)
+	}
+}
+
 func TestAdminHTMLHasRenderedSharedCSS(t *testing.T) {
 	html := adminHTML()
 	if strings.Contains(html, "{{CSS}}") || strings.Contains(html, "{{SHARED_CSS}}") {

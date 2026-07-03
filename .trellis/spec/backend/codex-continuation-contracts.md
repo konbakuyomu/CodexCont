@@ -981,6 +981,24 @@ Separate the key authority migration from the continuation-owner migration.
   evidence and read byte counts. It must not persist or return request bodies,
   response bodies, raw keys, Authorization headers, OAuth tokens, cookies, or
   encrypted reasoning.
+- Plus `frontend_auth` metadata is the safe key-identity bridge for executor
+  summaries. It may include `key_id`, `key_name`, `key_alias`, `preview`,
+  `source`, and `source_present`, but never the raw native key or full hash.
+  The executor must normalize these fields into summary `key_identity` and
+  persist the matching `key_id` column so Plus can filter `/user/api/codexcont`
+  by the current logged-in key.
+- In the current CPA self-executor route, `ExecutorRequest.AuthID` may refer to
+  the upstream Codex auth account and `AuthMetadata` may be absent. The executor
+  must therefore treat Plus metadata as preferred identity when present, but
+  fall back to deriving only safe native-key identity from the inbound
+  `Authorization` header: `sha256(normalized sk-key)` -> Plus-compatible
+  `native_<preview>` id, hash preview, and optional CPAMP
+  `api_key_aliases` display name through `cpamp_alias_db_path`. The raw key and
+  full hash must be discarded immediately and never persisted.
+- Executor admin rows should use safe key identity plus protection status as
+  the primary request label, with a shortened request id as secondary text. Full
+  request ids are admin-only details; raw API keys and full hashes must never be
+  used as UI labels.
 - The executor may register a CPAMP admin menu/resource for read-only
   monitoring. This is the replacement for Governor's CodexCont protection
   monitor only; it must not expose `/user`, `/user/api/*`, key editing, quota
@@ -1004,6 +1022,10 @@ Separate the key authority migration from the continuation-owner migration.
 - Plus may read the executor SQLite store through `codex_summary_db_path` for
   `/user/api/codexcont`; read failures degrade only protection summaries and
   must not affect login, quota, `/user/api/usage`, or `/user/api/events`.
+- `/user/api/codexcont` is current-key scoped. It may match executor summaries
+  by trusted row `key_id` and by safe summary `key_identity.id` or
+  `key_identity.preview`, but must not show other-key rows or guess ownership
+  for summaries with no identity.
 - After production traffic is verified on the executor plugin, the old Docker
   sidecar chain must be retired all the way through operational entry points:
   remove the stopped `codexcont` container and image explicitly, disable or

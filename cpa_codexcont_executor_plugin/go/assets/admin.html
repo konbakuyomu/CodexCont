@@ -159,7 +159,7 @@
         <thead>
           <tr>
             <th style="width:170px">时间</th>
-            <th style="width:170px">请求</th>
+            <th style="width:230px">调用者 / 请求</th>
             <th style="width:128px">保护</th>
             <th style="width:150px">模型</th>
             <th style="width:110px">耗时</th>
@@ -197,6 +197,19 @@ function chip(value){
   const item = labels[value] || [value || "未知", ""];
   return `<span class="chip ${item[1]}"><span class="dot"></span>${esc(item[0])}</span>`;
 }
+function protectionLabel(value){
+  return (labels[value] || [value || "未知", ""])[0];
+}
+function keyDisplay(identity){
+  const item = identity || {};
+  return item.name || item.alias || item.preview || item.id || "未知 Key";
+}
+function shortID(value){
+  const raw = String(value || "");
+  if (!raw) return "-";
+  if (raw.length <= 24) return raw;
+  return raw.slice(0, 11) + "..." + raw.slice(-6);
+}
 function setLive(kind, text){
   const el = document.getElementById("live-chip");
   el.className = `chip ${kind}`;
@@ -228,9 +241,10 @@ function renderMetrics(status){
 }
 function detail(row){
   const rounds = Array.isArray(row.rounds) ? row.rounds : [];
+  const identity = row.key_identity || {};
   const roundText = rounds.length ? rounds.map(r => `#${esc(r.round)} reasoning ${esc(r.reasoning_tokens ?? "-")} / ${esc(r.decision || "-")}`).join("<br>") : "无轮次摘要";
   return `<tr><td colspan="9"><div class="detail">
-    <section><h3>请求</h3><dl><dt>ID</dt><dd class="mono">${esc(row.request_id)}</dd><dt>Key</dt><dd>${esc((row.key_identity || {}).id || "-")}</dd><dt>状态</dt><dd>${esc(row.final_status || row.status || "-")}</dd></dl></section>
+    <section><h3>请求</h3><dl><dt>ID</dt><dd class="mono">${esc(row.request_id)}</dd><dt>Key</dt><dd>${esc(keyDisplay(identity))}</dd><dt>Preview</dt><dd class="mono">${esc(identity.preview || "-")}</dd><dt>状态</dt><dd>${esc(row.final_status || row.status || "-")}</dd></dl></section>
     <section><h3>触发</h3><dl><dt>命中轮</dt><dd>${esc(row.first_truncation_round ?? "-")}</dd><dt>命中 tokens</dt><dd>${esc(row.first_truncation_reasoning_tokens ?? "-")}</dd><dt>决策</dt><dd>${esc(row.first_truncation_decision || "-")}</dd></dl></section>
     <section><h3>轮次</h3><p class="muted">${roundText}</p></section>
     <section><h3>停止 / 失败</h3><dl><dt>停止原因</dt><dd>${esc(row.stopped_reason || "-")}</dd><dt>失败原因</dt><dd>${esc(row.failure_reason || "-")}</dd><dt>耗时</dt><dd>${row.duration_ms == null ? "-" : num(row.duration_ms) + " ms"}</dd></dl></section>
@@ -250,9 +264,11 @@ function renderRows(){
     const open = state.expanded.has(id);
     const fresh = !state.seen.has(id);
     state.seen.add(id);
+    const caller = keyDisplay(row.key_identity);
+    const requestTitle = `${caller} · ${protectionLabel(row.protection)}`;
     const main = `<tr class="${fresh ? "new-row" : ""}">
       <td>${dt(row.updated_at || row.started_at)}<small class="mono">${esc(row.status || row.final_status || "")}</small></td>
-      <td class="mono">${esc(id)}</td>
+      <td><strong>${esc(requestTitle)}</strong><small class="mono">${esc(shortID(id))}</small></td>
       <td>${chip(row.protection)}</td>
       <td>${esc(row.model || "-")}</td>
       <td>${row.duration_ms == null ? "-" : num(row.duration_ms) + " ms"}</td>

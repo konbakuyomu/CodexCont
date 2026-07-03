@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"database/sql"
 	"encoding/json"
 	"net/http"
 	"path/filepath"
@@ -10,6 +12,7 @@ import (
 	"time"
 
 	"codexcont/cpa-codexcont-executor-plugin/internal/executor"
+	_ "modernc.org/sqlite"
 )
 
 func unwrapEnvelope(t *testing.T, raw []byte, out any) {
@@ -230,6 +233,11 @@ func TestManagementAdminMonitorHTML(t *testing.T) {
 			t.Fatalf("admin monitor html missing %q", want)
 		}
 	}
+	for _, want := range []string{"keyDisplay", "shortID", "调用者 / 请求", "未知 Key"} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("admin monitor html missing readable request marker %q", want)
+		}
+	}
 	for _, forbidden := range []string{"/user/api", "keys/create", "quota"} {
 		if strings.Contains(html, forbidden) {
 			t.Fatalf("admin monitor html should not expose %q", forbidden)
@@ -263,7 +271,16 @@ func TestFrontendAuthIsObservabilityOnlyNoop(t *testing.T) {
 
 func TestSummariesIncludeProcessingMonitor(t *testing.T) {
 	configureTestState(t, true)
-	id := monitor.Start(executorRequest{AuthID: "key-1", Model: "gpt-5.5"}, map[string]any{"model": "gpt-5.5"})
+	id := monitor.Start(executorRequest{
+		AuthID: "key-1",
+		Model:  "gpt-5.5",
+		AuthMetadata: map[string]any{
+			"key_name":  "kuma的官key",
+			"key_alias": "kuma专用",
+			"preview":   "abcd1234...ef5678",
+			"source":    "native_cpa",
+		},
+	}, map[string]any{"model": "gpt-5.5"})
 	if id == "" {
 		t.Fatal("processing monitor id is empty")
 	}
@@ -289,6 +306,105 @@ func TestSummariesIncludeProcessingMonitor(t *testing.T) {
 	}
 	if body.Summaries[0]["request_id"] != id {
 		t.Fatalf("request id = %#v, want %s", body.Summaries[0]["request_id"], id)
+	}
+	identity, _ := body.Summaries[0]["key_identity"].(map[string]any)
+	if identity["id"] != "key-1" || identity["name"] != "kuma的官key" || identity["alias"] != "kuma专用" || identity["preview"] != "abcd1234...ef5678" {
+		t.Fatalf("processing summary should include safe key identity: %#v", identity)
+	}
+}
+
+func TestKeyIdentityFromRequestUsesSafeMetadata(t *testing.T) {
+	req := executorRequest{
+		AuthID: "codex-upstream-auth",
+		AuthMetadata: map[string]any{
+			"key_id":    "native_abc_123",
+			"key_name":  "QQ的官key",
+			"key_alias": "QQ专用",
+			"preview":   "abc123...def456",
+			"source":    "native_cpa",
+			"ignored":   "sk-should-not-leak",
+		},
+		AuthAttributes: map[string]string{
+			"preview": "later-preview",
+		},
+		Metadata: map[string]any{
+			"key_alias": "later-alias",
+		},
+	}
+	identity := keyIdentityFromRequest(req)
+	if identity["id"] != "native_abc_123" || identity["name"] != "QQ的官key" || identity["alias"] != "QQ专用" || identity["preview"] != "abc123...def456" || identity["source"] != "native_cpa" {
+		t.Fatalf("unexpected identity: %#v", identity)
+	}
+	raw, _ := json.Marshal(identity)
+	if strings.Contains(string(raw), "sk-") || strings.Contains(string(raw), "sha256:") {
+		t.Fatalf("identity leaked unsafe value: %s", raw)
+	}
+}
+
+func TestKeyIdentityFromAuthorizationUsesNativePreviewAndAlias(t *testing.T) {
+	rawKey := "sk-test-native-identity"
+	aliasPath := filepath.Join(t.TempDir(), "cpamp.sqlite")
+	db, err := sql.Open("sqlite", aliasPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`create table api_key_aliases(api_key_hash text primary key, alias text)`); err != nil {
+		t.Fatal(err)
+	}
+	hash := sha256Hex(rawKey)
+	if _, err := db.Exec(`insert into api_key_aliases(api_key_hash, alias) values(?, ?)`, "SHA256:"+hash, "kuma的官key"); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	configureTestStateWithConfig(t, func(cfg *executor.Config) {
+		cfg.RouteEnabled = true
+		cfg.CPAMPAliasDBPath = aliasPath
+	})
+	identity := keyIdentityFromRequest(executorRequest{
+		AuthID:  "codex-upstream-auth",
+		Headers: http.Header{"Authorization": []string{"Bearer " + rawKey}},
+	})
+	if identity["id"] != "native_"+sanitizeIDPart(hashPreview(hash)) || identity["name"] != "kuma的官key" || identity["alias"] != "kuma的官key" || identity["preview"] != hashPreview(hash) || identity["source"] != "native_cpa" {
+		t.Fatalf("unexpected authorization identity: %#v", identity)
+	}
+	encoded, _ := json.Marshal(identity)
+	if strings.Contains(string(encoded), rawKey) || strings.Contains(string(encoded), hash) {
+		t.Fatalf("authorization identity leaked raw key/hash: %s", encoded)
+	}
+}
+
+func TestSaveFoldSummaryPersistsSafeKeyIdentity(t *testing.T) {
+	configureTestState(t, true)
+	result := &executor.FoldResult{
+		RequestID:  "resp-identity",
+		Protection: "protected_clean",
+		Summary: map[string]any{
+			"request_id": "resp-identity",
+			"protection": "protected_clean",
+		},
+	}
+	summary := saveFoldSummary(executorRequest{
+		AuthID: "native_key",
+		Model:  "gpt-5.5",
+		AuthMetadata: map[string]any{
+			"key_name":  "阿伟的官key",
+			"key_alias": "阿伟专用",
+			"preview":   "12345678...abcdef",
+			"source":    "native_cpa",
+		},
+	}, result, nil)
+	identity, _ := summary["key_identity"].(map[string]any)
+	if identity["id"] != "native_key" || identity["name"] != "阿伟的官key" {
+		t.Fatalf("summary identity = %#v", identity)
+	}
+	items, err := state.store.RecentCodexSummaries(context.Background(), "native_key", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].KeyID != "native_key" {
+		t.Fatalf("persisted summaries = %#v", items)
 	}
 }
 

@@ -12,6 +12,8 @@ type Config struct {
 	Enabled               bool              `yaml:"enabled"`
 	RouteEnabled          bool              `yaml:"route_enabled"`
 	StateDBPath           string            `yaml:"state_db_path"`
+	CPAMPAliasDBPath      string            `yaml:"cpamp_alias_db_path"`
+	CPAMPAliasDBPaths     string            `yaml:"cpamp_alias_db_paths"`
 	FailMode              string            `yaml:"fail_mode"`
 	UpstreamModel         string            `yaml:"upstream_model"`
 	UpstreamModelAliases  map[string]string `yaml:"upstream_model_aliases"`
@@ -48,6 +50,8 @@ func (c Config) Normalize() Config {
 	if strings.TrimSpace(c.StateDBPath) == "" {
 		c.StateDBPath = DefaultConfig().StateDBPath
 	}
+	c.CPAMPAliasDBPath = strings.TrimSpace(c.CPAMPAliasDBPath)
+	c.CPAMPAliasDBPaths = strings.TrimSpace(c.CPAMPAliasDBPaths)
 	c.FailMode = strings.ToLower(strings.TrimSpace(c.FailMode))
 	if c.FailMode == "" {
 		c.FailMode = "fallback"

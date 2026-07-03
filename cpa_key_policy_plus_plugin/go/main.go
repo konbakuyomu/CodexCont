@@ -695,6 +695,7 @@ func authMetadata(record policyplus.KeyRecord) map[string]string {
 		"provider":       "cpa-key-policy-plus",
 		"key_id":         record.ID,
 		"key_name":       record.Name,
+		"key_alias":      record.Alias,
 		"preview":        record.Preview,
 		"source":         record.Source,
 		"source_present": strconv.FormatBool(record.SourcePresent),
@@ -2057,14 +2058,49 @@ func fetchExecutorCodexSummaries(key policyplus.KeyRecord, limit int) ([]map[str
 	}
 	out := make([]map[string]any, 0, len(items))
 	for _, item := range items {
-		safe := safeCodexSummary(item.Summary, key)
+		safe := safeCodexSummaryWithTrustedRow(item, key)
 		if safe == nil {
 			continue
 		}
 		out = append(out, safe)
 	}
+	if len(out) == 0 {
+		fallback, err := policyplus.RecentCodexSummariesFromSQLite(context.Background(), path, "all", limit)
+		if err == nil {
+			for _, item := range fallback {
+				safe := safeCodexSummary(item.Summary, key)
+				if safe == nil {
+					continue
+				}
+				out = append(out, safe)
+				if len(out) >= limit {
+					break
+				}
+			}
+		}
+	}
 	sortCodexSummariesNewestFirst(out)
 	return out, true
+}
+
+func safeCodexSummaryWithTrustedRow(item policyplus.CodexSummary, key policyplus.KeyRecord) map[string]any {
+	summary := item.Summary
+	if summary == nil {
+		summary = map[string]any{}
+	}
+	if _, ok := summary["key_identity"].(map[string]any); !ok && strings.TrimSpace(item.KeyID) == key.ID {
+		summary = cloneAnyMap(summary)
+		summary["key_identity"] = map[string]any{"known": true, "id": key.ID, "preview": key.Preview}
+	}
+	return safeCodexSummary(summary, key)
+}
+
+func cloneAnyMap(in map[string]any) map[string]any {
+	out := make(map[string]any, len(in))
+	for key, value := range in {
+		out[key] = value
+	}
+	return out
 }
 
 func fetchCodexContRequests(key policyplus.KeyRecord, limit int) ([]map[string]any, bool) {

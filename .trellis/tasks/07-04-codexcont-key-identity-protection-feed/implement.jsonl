@@ -1,0 +1,4 @@
+{"path":".trellis/spec/backend/codex-continuation-contracts.md","reason":"CPA/Executor/Plus identity and protection-feed contracts"}
+{"path":"cpa_codexcont_executor_plugin/go/main.go","reason":"Executor summary identity persistence"}
+{"path":"cpa_codexcont_executor_plugin/go/assets/admin.html","reason":"Executor admin table request label"}
+{"path":"cpa_key_policy_plus_plugin/go/main.go","reason":"Plus auth metadata and user codex feed"}
