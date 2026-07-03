@@ -442,3 +442,36 @@ Completed the native CPA key sync and gpt-5.5 routing rollout, then restored pro
 ### Next Steps
 
 - None - task complete
+
+
+## Session 14: CPA Key Policy Plus SQLite/native key stabilization
+
+**Date**: 2026-07-04
+**Task**: CPA Key Policy Plus SQLite/native key stabilization
+**Branch**: `codex/codexcont-executor-migration`
+
+### Summary
+
+Hardened Plus SQLite access, made native CPA keys a current-state mirror with default-enabled rows and missing-limit UI hints, deployed the c-shared plugin to SJC, and verified cpa-usage plus real gpt-5.5 /v1/responses end to end.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `c799e47` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
