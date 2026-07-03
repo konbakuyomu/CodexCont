@@ -508,3 +508,36 @@ Fixed CodexCont Executor upstream tool filtering for gpt-5.5 alias routing, fixe
 ### Next Steps
 
 - None - task complete
+
+
+## Session 16: CodexCont key identity protection feed
+
+**Date**: 2026-07-04
+**Task**: CodexCont key identity protection feed
+**Branch**: `codex/codexcont-executor-migration`
+
+### Summary
+
+Executor protection summaries now carry safe native key identity, admin rows show key alias/status, Plus current-key protection feed reads executor summaries, and SJC deployment was verified with a live gpt-5.5 Responses request.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `e7dcd7d` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
