@@ -30,9 +30,9 @@
   <section class="panel login" id="login">
     <div class="panel-head"><h2>登录</h2></div>
     <div class="panel-body">
-      <p class="muted">请使用 Key Policy 创建或轮换时弹窗里的完整 cpa_ Key。</p>
+      <p class="muted">请使用 CPA/CPAMP 中管理的完整原生 sk- Key。</p>
       <div class="login-row">
-        <input id="key" type="password" autocomplete="off" spellcheck="false" placeholder="粘贴完整 cpa_ 用户 Key">
+        <input id="key" type="password" autocomplete="off" spellcheck="false" placeholder="粘贴完整 sk- 原生 Key">
         <button id="loginBtn" class="primary" type="button">登录</button>
       </div>
       <p id="err"></p>
@@ -181,9 +181,10 @@ function enteredKey(){
   return $("key").value.trim().replace(/^authorization\s*:\s*/i,"").replace(/^(bearer\s+)+/i,"").trim();
 }
 function localKeyHint(v){
-  if (!v) return "请粘贴完整的 cpa_ 用户 Key。";
-  if (/^sk[-_]/i.test(v)) return "这是 CPA 原生 sk Key，不能登录用量自助页。";
-  if (v.includes("...") || v.includes("…") || (/^cpa_/i.test(v) && v.length < 40)) return "这是列表里的 Key 预览，不是完整 Key。请在 Key Policy 里点击“轮换”，复制弹窗中新生成的完整 Key。";
+  if (!v) return "请粘贴完整的 CPA 原生 sk- Key。";
+  if (/^cpa_/i.test(v)) return "旧的 cpa_ Key 已迁移下线。现在请使用 CPA/CPAMP 管理的原生 sk- Key。";
+  if (v.includes("...") || v.includes("…")) return "这是列表里的 Key 预览，不是完整 Key。请使用 CPAMP 里的完整 sk- Key。";
+  if (!/^sk[-_]/i.test(v)) return "用量自助页现在只接受 CPA 原生 sk- Key。";
   return "";
 }
 async function api(path, opts={}){

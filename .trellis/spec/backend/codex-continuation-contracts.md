@@ -440,6 +440,136 @@ admin -> Key Policy creates cpa_... key -> user uses cpa_... for Codex and usage
 The `cpa_...` key is both the request credential and the self-service usage
 credential, while CPAMP remains admin-only.
 
+## Scenario: CPA Key Policy Plus native-key policy layer
+
+### 1. Scope / Trigger
+- Trigger this spec whenever work touches `cpa_key_policy_plus_plugin/`, CPA
+  native `api-keys`, CPAMP alias integration, Plus policy/quota decisions,
+  user usage portal login, or over-limit `/v1/responses` behavior.
+- This is cross-layer work: CPA config and CPAMP aliases feed Plus SQLite,
+  Plus frontend-auth metadata feeds model routing/executor behavior, usage
+  callbacks feed quota windows, and `cpa-usage.konbakuyomu.us` renders the
+  user-facing view.
+
+### 2. Signatures
+- CPA config source: top-level `api-keys` in `/CLIProxyAPI/config.yaml`.
+- CPAMP alias source:
+  `/CLIProxyAPI/plugin-state/cpamp-usage.sqlite`, table
+  `api_key_aliases(api_key_hash, alias, updated_at_ms)`.
+- Plus config fields:
+  `native_keys_config_path`, `cpamp_alias_db_path`,
+  `codex_summary_db_path`, `codexcont_enabled`, and `codexcont_route`.
+- Plus user API resource path on production:
+  `/v0/resource/plugins/cpa-key-policy-plus/user/api/session`,
+  `/me`, `/usage?range=24h`, `/events?range=24h&limit=N`, and
+  `/codexcont?limit=N`.
+- Plus user page public host:
+  `https://cpa-usage.konbakuyomu.us/`.
+- Executor denial body:
+  ```json
+  {
+    "error": {
+      "message": "CPA Key Policy+ 已拦截：<key name> 触发 <window>费用限额，已用 $<used> / 上限 $<limit>。",
+      "type": "rate_limit_exceeded",
+      "code": "five_hour_quota_exceeded",
+      "param": "5h"
+    }
+  }
+  ```
+
+### 3. Contracts
+- CPA/CPAMP owns native `sk-...` key lifecycle: create, delete, copy, and alias.
+  Plus is a passive policy layer and must not expose raw-key creation,
+  deletion, rotation, full-key copy, or alias editing controls.
+- Plus stores only safe identity: `sha256:<hex>` hash, safe preview, source
+  flags, read-only alias/name, and strategy fields. It must not store raw
+  `sk-...` keys.
+- Plus policy IDs for native keys use the native hash-derived
+  `native_<preview>` form. Alias is display/template metadata and must not be
+  the ledger primary key.
+- New native keys default to disabled. If exactly one removed historical row
+  has the same alias, Plus may inherit policy fields and enabled state into the
+  new native row, but usage history remains under the old row.
+- Removed native keys are marked `source_present=false`, disabled, hidden by
+  default, and retained for historical usage/protection summaries.
+- Plus user login now accepts CPA native `sk-...` keys. Retired Plus
+  `cpa_...` keys should fail with migrated/retired guidance.
+- Plus user APIs and HTML must never return raw keys, full hashes, bearer
+  headers, cookies, request/response bodies, or encrypted reasoning.
+- `codexcont_enabled` and `codexcont_route` remain false for Plus. Plus may
+  read executor summaries through `codex_summary_db_path`, but the executor
+  plugin owns streaming continuation.
+- Over-limit model calls must return an OpenAI-compatible error body with
+  Chinese key/window/used/limit details. Under the current official CPA
+  executor ABI, plugins cannot guarantee the final public HTTP status or
+  response headers on `/v1/responses`; treat the JSON body as the reliable
+  client-facing contract unless CPA core is changed.
+
+### 4. Validation & Error Matrix
+- Native key appears in CPA config without a Plus policy -> insert disabled
+  strategy row.
+- Native key appears with one same-alias removed template -> copy policy fields
+  and enabled state; do not copy ledger usage.
+- Native key appears with multiple same-alias removed templates -> insert
+  disabled row with conflict state for manual review.
+- Native key disappears from CPA config -> set `source_present=false`,
+  `enabled=false`, `hidden=true`; do not delete history.
+- Missing policy, removed source, disabled key, disallowed model, RPM limit, or
+  5H/24H/7D/month fee limit -> structured policy denial with safe key name and
+  stable error code.
+- Fee quota uses post-accounting blocking: when current window usage is already
+  `>= limit`, the next request is denied. Do not pre-charge or predict the
+  current request cost.
+- A `$0.00` limit is explicit and must deny immediately; `nil` means unlimited.
+- Public `cpa.konbakuyomu.us` exposes plugin/admin/resource paths -> deployment
+  is not accepted.
+- Expecting true HTTP 429 from Plus executor without modifying CPA core ->
+  invalid assumption; production acceptance should check the error JSON body.
+
+### 5. Good/Base/Bad Cases
+- Good: CPAMP has aliases `QQ的官key`, `kuma的官key`, and `阿伟的官key`; Plus
+  syncs the corresponding native rows as enabled policy records and
+  `cpa-usage.konbakuyomu.us` logs in with a native `sk-...` key.
+- Good: Temporarily setting a key's 5H limit to `$0.00` makes the next
+  `/v1/responses` return an OpenAI-compatible error body naming the key and
+  `5小时费用限额`, then restoring the previous limit re-enables normal calls.
+- Base: A newly created CPA native key has no alias/history; Plus shows it
+  disabled until the admin assigns policy.
+- Bad: Plus stores raw `sk-...` keys or exposes a full-key copy button. CPAMP
+  already owns raw key lifecycle.
+- Bad: Tests assert HTTP 429/header propagation from executor output under the
+  current CPA ABI. That can pass only with a CPA core change.
+
+### 6. Tests Required
+- Go unit: native CPA config parsing and CPAMP `api_key_aliases` loading.
+- Go unit: sync lifecycle for new, removed, inherited, and ambiguous native
+  keys; historical usage does not move across native hash IDs.
+- Go unit: policy denials cover missing policy, source removed, disabled,
+  model allowlist, RPM, 5H, 24H, 7D, month, and explicit zero limits.
+- Go unit: admin HTML has no create/delete/rotate/raw-key-copy lifecycle
+  controls; user HTML points to native `sk-...` keys.
+- Integration: production user API session/me/usage/events/codexcont works with
+  an enabled native key.
+- Integration: normal `/v1/models` and `/v1/responses` succeed with an enabled
+  native key; over-limit `/v1/responses` returns the structured error body.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+```text
+CPA native key -> Plus raw-key store -> Plus alias/key lifecycle controls
+```
+
+This duplicates CPAMP's job and increases secret exposure.
+
+#### Correct
+```text
+CPA config api-keys + CPAMP aliases -> Plus native-key sync
+  -> Plus strategy/quota rows keyed by native hash -> cpa-usage user portal
+```
+
+Plus owns policy and accounting, not the raw key lifecycle.
+
 ## Scenario: CPA Key Policy Plus unified key authority
 
 ### 1. Scope / Trigger

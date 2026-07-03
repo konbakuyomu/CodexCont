@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"gopkg.in/yaml.v3"
 	_ "modernc.org/sqlite"
 )
 
@@ -107,6 +108,13 @@ func (s *Store) EnsureSchema(ctx context.Context) error {
 			monthly_limit_usd real,
 			archived integer not null default 0,
 			archived_at integer not null default 0,
+			source text default '',
+			source_present integer not null default 1,
+			alias text default '',
+			inherited_from text default '',
+			inherit_conflict integer not null default 0,
+			hidden integer not null default 0,
+			last_enabled integer not null default 0,
 			updated_at integer not null
 		)`,
 		`create table if not exists reset_watermarks (
@@ -195,6 +203,13 @@ func (s *Store) EnsureSchema(ctx context.Context) error {
 		"max_active_sessions": "integer default 0",
 		"archived":            "integer not null default 0",
 		"archived_at":         "integer not null default 0",
+		"source":              "text default ''",
+		"source_present":      "integer not null default 1",
+		"alias":               "text default ''",
+		"inherited_from":      "text default ''",
+		"inherit_conflict":    "integer not null default 0",
+		"hidden":              "integer not null default 0",
+		"last_enabled":        "integer not null default 0",
 	}); err != nil {
 		return err
 	}
@@ -237,14 +252,18 @@ func (s *Store) UpsertKey(ctx context.Context, key KeyRecord) error {
 	if err := ValidateKeyRecord(key); err != nil {
 		return err
 	}
+	if key.Source == "" {
+		key.SourcePresent = true
+	}
 	models, _ := json.Marshal(key.Models)
 	prices, _ := json.Marshal(key.Prices)
 	_, err := s.db.ExecContext(
 		ctx,
 		`insert into keys(
 			id, name, key_hash, enabled, preview, rpm, concurrency, max_active_sessions, models_json, prices_json,
-			five_hour_limit_usd, daily_limit_usd, weekly_limit_usd, monthly_limit_usd, archived, archived_at, updated_at
-		) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			five_hour_limit_usd, daily_limit_usd, weekly_limit_usd, monthly_limit_usd,
+			archived, archived_at, source, source_present, alias, inherited_from, inherit_conflict, hidden, last_enabled, updated_at
+		) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		on conflict(id) do update set
 			name=excluded.name,
 			key_hash=excluded.key_hash,
@@ -261,6 +280,13 @@ func (s *Store) UpsertKey(ctx context.Context, key KeyRecord) error {
 			monthly_limit_usd=coalesce(keys.monthly_limit_usd, excluded.monthly_limit_usd),
 			archived=case when excluded.archived != 0 then excluded.archived else keys.archived end,
 			archived_at=case when excluded.archived != 0 then excluded.archived_at else keys.archived_at end,
+			source=case when excluded.source != '' then excluded.source else keys.source end,
+			source_present=excluded.source_present,
+			alias=excluded.alias,
+			inherited_from=case when excluded.inherited_from != '' then excluded.inherited_from else keys.inherited_from end,
+			inherit_conflict=excluded.inherit_conflict,
+			hidden=excluded.hidden,
+			last_enabled=case when excluded.last_enabled != 0 then excluded.last_enabled else keys.last_enabled end,
 			updated_at=excluded.updated_at`,
 		key.ID,
 		key.Name,
@@ -278,6 +304,13 @@ func (s *Store) UpsertKey(ctx context.Context, key KeyRecord) error {
 		key.MonthlyLimitUSD,
 		boolInt(key.Archived),
 		key.ArchivedAt,
+		key.Source,
+		boolInt(key.SourcePresent),
+		key.Alias,
+		key.InheritedFrom,
+		boolInt(key.InheritConflict),
+		boolInt(key.Hidden),
+		boolInt(key.LastEnabled),
 		time.Now().Unix(),
 	)
 	return err
@@ -520,7 +553,10 @@ func (s *Store) syncDeletedKeys(ctx context.Context, seen map[string]bool) error
 
 func (s *Store) ListKeys(ctx context.Context) ([]KeyRecord, error) {
 	rows, err := s.db.QueryContext(ctx, `select id, name, key_hash, enabled, preview, rpm, concurrency, max_active_sessions, models_json, prices_json,
-		five_hour_limit_usd, daily_limit_usd, weekly_limit_usd, monthly_limit_usd, archived, archived_at from keys order by name collate nocase`)
+		five_hour_limit_usd, daily_limit_usd, weekly_limit_usd, monthly_limit_usd, archived, archived_at,
+			coalesce(source, ''), coalesce(source_present, 1), coalesce(alias, ''), coalesce(inherited_from, ''),
+		coalesce(inherit_conflict, 0), coalesce(hidden, 0), coalesce(last_enabled, enabled)
+		from keys order by hidden asc, name collate nocase`)
 	if err != nil {
 		return nil, err
 	}
@@ -528,18 +564,23 @@ func (s *Store) ListKeys(ctx context.Context) ([]KeyRecord, error) {
 	var out []KeyRecord
 	for rows.Next() {
 		var key KeyRecord
-		var enabled, archived int
+		var enabled, archived, sourcePresent, inheritConflict, hidden, lastEnabled int
 		var modelsJSON, pricesJSON string
 		var fiveHour, daily, weekly, monthly sql.NullFloat64
 		if err := rows.Scan(
 			&key.ID, &key.Name, &key.KeyHash, &enabled, &key.Preview, &key.RPM, &key.Concurrency, &key.MaxActiveSessions,
 			&modelsJSON, &pricesJSON, &fiveHour, &daily, &weekly, &monthly,
-			&archived, &key.ArchivedAt,
+			&archived, &key.ArchivedAt, &key.Source, &sourcePresent, &key.Alias, &key.InheritedFrom,
+			&inheritConflict, &hidden, &lastEnabled,
 		); err != nil {
 			return nil, err
 		}
 		key.Enabled = enabled != 0
 		key.Archived = archived != 0
+		key.SourcePresent = sourcePresent != 0
+		key.InheritConflict = inheritConflict != 0
+		key.Hidden = hidden != 0
+		key.LastEnabled = lastEnabled != 0
 		key.FiveHourUSD = nullFloatPtr(fiveHour)
 		key.DailyLimitUSD = nullFloatPtr(daily)
 		key.WeeklyLimitUSD = nullFloatPtr(weekly)
@@ -649,7 +690,6 @@ func (s *Store) SaveKeySettings(ctx context.Context, key KeyRecord) error {
 	models, _ := json.Marshal(key.Models)
 	prices, _ := json.Marshal(key.Prices)
 	res, err := s.db.ExecContext(ctx, `update keys set
-		name=?,
 		enabled=?,
 		rpm=?,
 		concurrency=?,
@@ -660,9 +700,9 @@ func (s *Store) SaveKeySettings(ctx context.Context, key KeyRecord) error {
 		daily_limit_usd=?,
 		weekly_limit_usd=?,
 		monthly_limit_usd=?,
+		last_enabled=?,
 		updated_at=?
 		where id=?`,
-		key.Name,
 		boolInt(key.Enabled),
 		key.RPM,
 		key.Concurrency,
@@ -673,6 +713,7 @@ func (s *Store) SaveKeySettings(ctx context.Context, key KeyRecord) error {
 		key.DailyLimitUSD,
 		key.WeeklyLimitUSD,
 		key.MonthlyLimitUSD,
+		boolInt(key.Enabled),
 		time.Now().Unix(),
 		key.ID,
 	)
@@ -688,6 +729,177 @@ func (s *Store) SaveKeySettings(ctx context.Context, key KeyRecord) error {
 		"concurrency":         key.Concurrency,
 		"max_active_sessions": key.MaxActiveSessions,
 	})
+}
+
+func (s *Store) SyncNativeKeys(ctx context.Context, inputs []NativeKeySyncInput) error {
+	existing, err := s.ListKeys(ctx)
+	if err != nil {
+		return err
+	}
+	byID := make(map[string]KeyRecord, len(existing))
+	for _, key := range existing {
+		byID[key.ID] = key
+	}
+	seen := map[string]bool{}
+	now := time.Now().Unix()
+	for _, input := range inputs {
+		next, ok := NativeKeyRecord(input.RawKey, input.Alias)
+		if !ok {
+			continue
+		}
+		seen[next.ID] = true
+		if current, exists := byID[next.ID]; exists {
+			current.KeyHash = next.KeyHash
+			current.Preview = next.Preview
+			current.Source = NativeCPASource
+			current.SourcePresent = true
+			current.Hidden = false
+			current.Alias = next.Alias
+			current.Name = next.Name
+			if _, err := s.db.ExecContext(ctx, `update keys set
+				name=?, key_hash=?, preview=?, source=?, source_present=1, hidden=0, alias=?, updated_at=?
+				where id=?`,
+				current.Name, current.KeyHash, current.Preview, current.Source, current.Alias, now, current.ID); err != nil {
+				return err
+			}
+			continue
+		}
+		templates := policyTemplatesByAlias(existing, next.Alias)
+		if len(templates) == 1 {
+			next = CopyPolicyFields(next, templates[0])
+			next.InheritedFrom = templates[0].ID
+		} else if len(templates) > 1 {
+			next.Enabled = false
+			next.InheritConflict = true
+		}
+		if err := s.UpsertKey(ctx, next); err != nil {
+			return err
+		}
+		if next.InheritedFrom != "" {
+			_ = s.Audit(ctx, "system", "native_key_policy_inherited", next.ID, map[string]any{"from": next.InheritedFrom, "alias": next.Alias})
+		}
+	}
+	for _, key := range existing {
+		if key.Source != NativeCPASource || seen[key.ID] || !key.SourcePresent {
+			continue
+		}
+		if _, err := s.db.ExecContext(ctx, `update keys set enabled=0, source_present=0, hidden=1, last_enabled=?, updated_at=? where id=?`, boolInt(key.Enabled), now, key.ID); err != nil {
+			return err
+		}
+		_ = s.Audit(ctx, "system", "native_key_source_removed", key.ID, map[string]any{"alias": key.Alias, "preview": key.Preview})
+	}
+	if err := s.retireInheritedLegacyTemplates(ctx, now); err != nil {
+		return err
+	}
+	return nil
+}
+
+func policyTemplatesByAlias(keys []KeyRecord, alias string) []KeyRecord {
+	alias = strings.ToLower(strings.TrimSpace(alias))
+	if alias == "" {
+		return nil
+	}
+	var out []KeyRecord
+	for _, key := range keys {
+		if templateAlias(key) != alias {
+			continue
+		}
+		if key.Source == NativeCPASource && !key.SourcePresent {
+			out = append(out, key)
+			continue
+		}
+		if key.Source == "" && key.SourcePresent && !key.Hidden {
+			out = append(out, key)
+		}
+	}
+	return out
+}
+
+func templateAlias(key KeyRecord) string {
+	return strings.ToLower(strings.TrimSpace(firstNonEmpty(key.Alias, key.Name)))
+}
+
+func (s *Store) retireInheritedLegacyTemplates(ctx context.Context, now int64) error {
+	rows, err := s.db.QueryContext(ctx, `select distinct inherited_from from keys where source=? and inherited_from != ''`, NativeCPASource)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return err
+		}
+		if strings.TrimSpace(id) == "" {
+			continue
+		}
+		if _, err := s.db.ExecContext(ctx, `update keys set enabled=0, source=?, source_present=0, hidden=1, last_enabled=case when last_enabled != 0 then last_enabled else enabled end, updated_at=? where id=? and coalesce(source, '')=''`,
+			LegacyPlusSource, now, id); err != nil {
+			return err
+		}
+	}
+	return rows.Err()
+}
+
+func LoadNativeKeysFromCPAConfig(path string) ([]string, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return nil, nil
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var body struct {
+		APIKeys []string `yaml:"api-keys"`
+	}
+	if err := yaml.Unmarshal(raw, &body); err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(body.APIKeys))
+	for _, key := range body.APIKeys {
+		key = NormalizeSubmittedKey(key)
+		if key == "" {
+			continue
+		}
+		out = append(out, key)
+	}
+	return out, nil
+}
+
+func LoadAPIKeyAliasesFromSQLite(ctx context.Context, path string) (map[string]string, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return nil, nil
+	}
+	if _, err := os.Stat(path); err != nil {
+		return nil, err
+	}
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		return nil, err
+	}
+	defer db.Close()
+	rows, err := db.QueryContext(ctx, `select api_key_hash, alias from api_key_aliases`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]string{}
+	for rows.Next() {
+		var hash, alias string
+		if err := rows.Scan(&hash, &alias); err != nil {
+			return nil, err
+		}
+		normalized, err := NormalizeHash(hash)
+		if err != nil {
+			continue
+		}
+		if alias = strings.TrimSpace(alias); alias != "" {
+			out[normalized] = alias
+		}
+	}
+	return out, rows.Err()
 }
 
 func (s *Store) Reset(ctx context.Context, id, window string, at time.Time) error {

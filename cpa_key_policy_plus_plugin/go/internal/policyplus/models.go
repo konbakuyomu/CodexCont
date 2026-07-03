@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 )
 
@@ -43,9 +44,20 @@ type KeyRecord struct {
 	MonthlyLimitUSD   *float64              `json:"monthly_limit_usd,omitempty"`
 	Archived          bool                  `json:"archived,omitempty"`
 	ArchivedAt        int64                 `json:"archived_at,omitempty"`
+	Source            string                `json:"source,omitempty"`
+	SourcePresent     bool                  `json:"source_present"`
+	Alias             string                `json:"alias,omitempty"`
+	InheritedFrom     string                `json:"inherited_from,omitempty"`
+	InheritConflict   bool                  `json:"inherit_conflict,omitempty"`
+	Hidden            bool                  `json:"hidden,omitempty"`
+	LastEnabled       bool                  `json:"last_enabled,omitempty"`
 }
 
 func (k KeyRecord) Safe() map[string]any {
+	sourcePresent := k.SourcePresent
+	if k.Source == "" {
+		sourcePresent = true
+	}
 	return map[string]any{
 		"id":                  k.ID,
 		"name":                k.Name,
@@ -57,6 +69,13 @@ func (k KeyRecord) Safe() map[string]any {
 		"models":              append([]string(nil), k.Models...),
 		"archived":            k.Archived,
 		"archived_at":         k.ArchivedAt,
+		"source":              k.Source,
+		"source_present":      sourcePresent,
+		"alias":               k.Alias,
+		"inherited_from":      k.InheritedFrom,
+		"inherit_conflict":    k.InheritConflict,
+		"hidden":              k.Hidden,
+		"last_enabled":        k.LastEnabled,
 		"limits": map[string]any{
 			"five_hour_usd": k.FiveHourUSD,
 			"daily_usd":     k.DailyLimitUSD,
@@ -165,6 +184,102 @@ func mapsFromArray(arr []any) []map[string]any {
 		}
 	}
 	return out
+}
+
+const (
+	NativeCPASource  = "native_cpa"
+	LegacyPlusSource = "legacy_plus"
+)
+
+type NativeKeySyncInput struct {
+	RawKey string
+	Alias  string
+}
+
+func NativeKeyIDFromHash(hash string) string {
+	return "native_" + sanitizeIDPart(HashPreview(hash))
+}
+
+func NativeKeyPreviewFromHash(hash string) string {
+	return HashPreview(hash)
+}
+
+func NativeKeyRecord(rawKey, alias string) (KeyRecord, bool) {
+	rawKey = NormalizeSubmittedKey(rawKey)
+	if rawKey == "" {
+		return KeyRecord{}, false
+	}
+	hash := SHA256Hex(rawKey)
+	normalized, err := NormalizeHash(hash)
+	if err != nil {
+		return KeyRecord{}, false
+	}
+	alias = strings.TrimSpace(alias)
+	preview := NativeKeyPreviewFromHash(normalized)
+	name := alias
+	if name == "" {
+		name = preview
+	}
+	return KeyRecord{
+		ID:            NativeKeyIDFromHash(normalized),
+		Name:          name,
+		KeyHash:       "sha256:" + normalized,
+		Enabled:       false,
+		Preview:       preview,
+		Source:        NativeCPASource,
+		SourcePresent: true,
+		Alias:         alias,
+		Hidden:        false,
+	}, true
+}
+
+func CopyPolicyFields(dst, src KeyRecord) KeyRecord {
+	dst.Enabled = src.Enabled
+	if (src.Source == NativeCPASource || src.Source == LegacyPlusSource) && !src.SourcePresent {
+		dst.Enabled = src.LastEnabled
+	}
+	dst.RPM = src.RPM
+	dst.Concurrency = 0
+	dst.MaxActiveSessions = 0
+	dst.Models = append([]string(nil), src.Models...)
+	dst.Prices = clonePrices(src.Prices)
+	dst.FiveHourUSD = cloneFloatPtr(src.FiveHourUSD)
+	dst.DailyLimitUSD = cloneFloatPtr(src.DailyLimitUSD)
+	dst.WeeklyLimitUSD = cloneFloatPtr(src.WeeklyLimitUSD)
+	dst.MonthlyLimitUSD = cloneFloatPtr(src.MonthlyLimitUSD)
+	return dst
+}
+
+func clonePrices(in map[string]ModelPrice) map[string]ModelPrice {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]ModelPrice, len(in))
+	for key, value := range in {
+		out[key] = value
+	}
+	return out
+}
+
+func cloneFloatPtr(in *float64) *float64 {
+	if in == nil {
+		return nil
+	}
+	out := *in
+	return &out
+}
+
+var idPartCleanup = regexp.MustCompile(`[^A-Za-z0-9_-]+`)
+
+func sanitizeIDPart(value string) string {
+	value = strings.ReplaceAll(value, "...", "_")
+	value = strings.ReplaceAll(value, "…", "_")
+	value = idPartCleanup.ReplaceAllString(value, "_")
+	value = strings.Trim(value, "_")
+	if value == "" {
+		return "unknown"
+	}
+	return value
 }
 
 func parseKey(raw map[string]any) (KeyRecord, bool) {

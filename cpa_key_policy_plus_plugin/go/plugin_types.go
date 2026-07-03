@@ -114,8 +114,9 @@ type managementResponse struct {
 }
 
 type executorResponse struct {
-	Payload []byte      `json:"Payload"`
-	Headers http.Header `json:"Headers,omitempty"`
+	Payload  []byte         `json:"Payload"`
+	Headers  http.Header    `json:"Headers,omitempty"`
+	Metadata map[string]any `json:"Metadata,omitempty"`
 }
 
 type usageRecord struct {
@@ -158,9 +159,10 @@ type executorRequest struct {
 }
 
 type executorCallRequest struct {
-	ExecutorRequest executorRequest `json:"ExecutorRequest"`
-	StreamID        string          `json:"stream_id,omitempty"`
-	HostCallbackID  string          `json:"host_callback_id,omitempty"`
+	executorRequest
+	NestedExecutorRequest executorRequest `json:"ExecutorRequest,omitempty"`
+	StreamID              string          `json:"stream_id,omitempty"`
+	HostCallbackID        string          `json:"host_callback_id,omitempty"`
 }
 
 type executorStreamResponse struct {

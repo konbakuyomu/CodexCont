@@ -45,17 +45,17 @@ func ExplainUnmatchedSubmittedKey(value string) SubmittedKeyHint {
 	lower := strings.ToLower(key)
 	switch {
 	case key == "":
-		return SubmittedKeyHint{Error: "missing_api_key", Message: "请粘贴完整的 cpa_ 开头用户 Key。"}
-	case strings.HasPrefix(lower, "sk-") || strings.HasPrefix(lower, "sk_"):
-		return SubmittedKeyHint{Error: "native_cpa_key_not_supported", Message: "这是 CPA 原生 sk Key，不能登录用量自助页。请使用 Key Policy 创建时弹窗里的完整 cpa_ 用户 Key。"}
+		return SubmittedKeyHint{Error: "missing_api_key", Message: "请粘贴完整的 CPA 原生 sk- Key。"}
 	case strings.Contains(key, "...") || strings.Contains(key, "…"):
-		return SubmittedKeyHint{Error: "key_preview_not_usable", Message: "你粘贴的是缩略预览，不是完整 Key。Key Policy 创建或轮换时弹窗里的完整 cpa_ Key 才能登录。"}
-	case !strings.HasPrefix(lower, "cpa_"):
-		return SubmittedKeyHint{Error: "unsupported_key_format", Message: "用量自助页只接受 Key Policy 的完整 cpa_ 用户 Key。"}
-	case len(key) < 40:
-		return SubmittedKeyHint{Error: "key_preview_not_usable", Message: "这个 cpa_ Key 太短，像是列表里的预览，不是完整 Key。请在 Key Policy 里点击“轮换”，复制弹窗中新生成的完整 Key。"}
+		return SubmittedKeyHint{Error: "key_preview_not_usable", Message: "你粘贴的是缩略预览，不是完整 Key。请使用 CPAMP 中完整的 CPA 原生 sk- Key。"}
+	case strings.HasPrefix(lower, "sk-") || strings.HasPrefix(lower, "sk_"):
+		return SubmittedKeyHint{Error: "invalid_api_key", Message: "这个 sk- Key 没有匹配到已同步并启用的 CPA Key Policy+ 策略。请先在 CPAMP 确认原生 Key 存在，并在 Plus 管理页启用对应策略。"}
+	case strings.HasPrefix(lower, "cpa_"):
+		return SubmittedKeyHint{Error: "legacy_cpa_key_retired", Message: "旧的 cpa_ Key 已迁移下线。现在请使用 CPA/CPAMP 管理的原生 sk- Key 登录用量页。"}
+	case !strings.HasPrefix(lower, "sk-") && !strings.HasPrefix(lower, "sk_"):
+		return SubmittedKeyHint{Error: "unsupported_key_format", Message: "用量自助页现在只接受 CPA 原生 sk- Key。"}
 	default:
-		return SubmittedKeyHint{Error: "invalid_api_key", Message: "这个 cpa_ Key 没有匹配到当前 Key Policy 记录。请确认粘贴的是创建或轮换弹窗里的完整 Key；列表里的 cpa_xxx...xxx 只是预览，旧 Key 关闭弹窗后无法找回，需要在 Key Policy 里轮换生成新的完整 Key。"}
+		return SubmittedKeyHint{Error: "invalid_api_key", Message: "这个 Key 没有匹配到当前 CPA Key Policy+ 策略。请确认原生 Key 仍存在并已同步。"}
 	}
 }
 

@@ -372,6 +372,222 @@ func TestStoreImportsLegacyQuotaSQLite(t *testing.T) {
 	}
 }
 
+func TestNativeKeyLoadersReadCPAConfigAndCPAMPAliases(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(configPath, []byte("api-keys:\n  - sk-native-one\n  - '  sk-native-two  '\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	keys, err := LoadNativeKeysFromCPAConfig(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(keys) != 2 || keys[0] != "sk-native-one" || keys[1] != "sk-native-two" {
+		t.Fatalf("native keys = %#v", keys)
+	}
+
+	dbPath := filepath.Join(dir, "cpamp.sqlite")
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`create table api_key_aliases(api_key_hash text primary key, alias text, updated_at_ms integer)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`insert into api_key_aliases(api_key_hash, alias, updated_at_ms) values(?, ?, ?)`, "sha256:"+SHA256Hex("sk-native-one"), "QQ专用", 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	aliases, err := LoadAPIKeyAliasesFromSQLite(ctx, dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if aliases[SHA256Hex("sk-native-one")] != "QQ专用" {
+		t.Fatalf("aliases = %#v", aliases)
+	}
+}
+
+func TestCheckLimitTreatsZeroAsExplicitLimit(t *testing.T) {
+	if decision := CheckLimit(0, nil); !decision.Allowed {
+		t.Fatalf("nil limit should mean unlimited: %#v", decision)
+	}
+	zero := 0.0
+	if decision := CheckLimit(0, &zero); decision.Allowed || decision.LimitUSD == nil || *decision.LimitUSD != 0 {
+		t.Fatalf("zero limit should deny post-accounting requests: %#v", decision)
+	}
+	positive := 1.0
+	if decision := CheckLimit(0.5, &positive); !decision.Allowed {
+		t.Fatalf("below positive limit should pass: %#v", decision)
+	}
+	if decision := CheckLimit(1, &positive); decision.Allowed {
+		t.Fatalf("used >= positive limit should deny: %#v", decision)
+	}
+}
+
+func TestSyncNativeKeysLifecycleInheritanceAndHistory(t *testing.T) {
+	ctx := context.Background()
+	store, err := OpenStore(filepath.Join(t.TempDir(), "policyplus.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	if err := store.SyncNativeKeys(ctx, []NativeKeySyncInput{{RawKey: "sk-native-old", Alias: "QQ专用"}}); err != nil {
+		t.Fatal(err)
+	}
+	oldID := NativeKeyIDFromHash(SHA256Hex("sk-native-old"))
+	old, ok, err := store.FindKeyByHash(ctx, SHA256Hex("sk-native-old"))
+	if err != nil || !ok {
+		t.Fatalf("old native key err=%v ok=%v", err, ok)
+	}
+	if old.ID != oldID || old.Enabled || old.Name != "QQ专用" || old.Alias != "QQ专用" || old.Source != NativeCPASource || !old.SourcePresent || old.Hidden {
+		t.Fatalf("new native key should be disabled safe policy row: %#v", old)
+	}
+	old.Enabled = true
+	old.RPM = 7
+	old.Models = []string{"gpt-5.5"}
+	old.Prices = map[string]ModelPrice{"gpt-5.5": {Model: "gpt-5.5", InputPerMillion: 1}}
+	old.FiveHourUSD = ptr(2)
+	old.WeeklyLimitUSD = ptr(12)
+	if err := store.SaveKeySettings(ctx, old); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.InsertUsage(ctx, UsageEvent{RequestID: "old-usage", KeyID: old.ID, RequestedAt: time.Now(), Cost: 1.25}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := store.SyncNativeKeys(ctx, nil); err != nil {
+		t.Fatal(err)
+	}
+	removed, ok, err := store.FindKeyByHash(ctx, SHA256Hex("sk-native-old"))
+	if err != nil || !ok {
+		t.Fatalf("removed native key err=%v ok=%v", err, ok)
+	}
+	if removed.Enabled || removed.SourcePresent || !removed.Hidden {
+		t.Fatalf("removed native key should be disabled and hidden: %#v", removed)
+	}
+	usage, err := store.UsageSummary(ctx, old.ID, WindowFor(Range24H, time.Now()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if usage.Calls != 1 || usage.TotalCost != 1.25 {
+		t.Fatalf("removed key history should remain: %#v", usage)
+	}
+
+	if err := store.SyncNativeKeys(ctx, []NativeKeySyncInput{{RawKey: "sk-native-new", Alias: "QQ专用"}}); err != nil {
+		t.Fatal(err)
+	}
+	newKey, ok, err := store.FindKeyByHash(ctx, SHA256Hex("sk-native-new"))
+	if err != nil || !ok {
+		t.Fatalf("new inherited native key err=%v ok=%v", err, ok)
+	}
+	if !newKey.Enabled || newKey.RPM != 7 || newKey.InheritedFrom != old.ID || len(newKey.Models) != 1 || newKey.Models[0] != "gpt-5.5" || newKey.FiveHourUSD == nil || *newKey.FiveHourUSD != 2 {
+		t.Fatalf("new same-alias key should inherit policy only: %#v", newKey)
+	}
+	newUsage, err := store.UsageSummary(ctx, newKey.ID, WindowFor(Range24H, time.Now()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if newUsage.Calls != 0 || newUsage.TotalCost != 0 {
+		t.Fatalf("new inherited key must start fresh ledger: %#v", newUsage)
+	}
+}
+
+func TestSyncNativeKeysDisablesAmbiguousSameAliasInheritance(t *testing.T) {
+	ctx := context.Background()
+	store, err := OpenStore(filepath.Join(t.TempDir(), "policyplus.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	for _, raw := range []string{"sk-old-a", "sk-old-b"} {
+		rec, ok := NativeKeyRecord(raw, "阿伟专用")
+		if !ok {
+			t.Fatalf("failed to build native record for %s", raw)
+		}
+		rec.SourcePresent = false
+		rec.Hidden = true
+		rec.Enabled = false
+		if err := store.UpsertKey(ctx, rec); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.SyncNativeKeys(ctx, []NativeKeySyncInput{{RawKey: "sk-new-c", Alias: "阿伟专用"}}); err != nil {
+		t.Fatal(err)
+	}
+	key, ok, err := store.FindKeyByHash(ctx, SHA256Hex("sk-new-c"))
+	if err != nil || !ok {
+		t.Fatalf("new key err=%v ok=%v", err, ok)
+	}
+	if key.Enabled || !key.InheritConflict || key.InheritedFrom != "" {
+		t.Fatalf("ambiguous same-alias inheritance should require manual template: %#v", key)
+	}
+}
+
+func TestSyncNativeKeysInheritsFromLegacyPlusPolicyByAlias(t *testing.T) {
+	ctx := context.Background()
+	store, err := OpenStore(filepath.Join(t.TempDir(), "policyplus.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	legacy := KeyRecord{
+		ID:              "legacy-qq",
+		Name:            "QQ专用",
+		KeyHash:         "sha256:" + SHA256Hex("cpa-old-qq"),
+		Enabled:         true,
+		Preview:         HashPreview(SHA256Hex("cpa-old-qq")),
+		RPM:             9,
+		Models:          []string{"gpt-5.5"},
+		WeeklyLimitUSD:  ptr(30),
+		MonthlyLimitUSD: ptr(100),
+	}
+	if err := store.UpsertKey(ctx, legacy); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.InsertUsage(ctx, UsageEvent{RequestID: "legacy-usage", KeyID: legacy.ID, RequestedAt: time.Now(), Cost: 2}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SyncNativeKeys(ctx, []NativeKeySyncInput{{RawKey: "sk-official-qq", Alias: "QQ专用"}}); err != nil {
+		t.Fatal(err)
+	}
+	native, ok, err := store.FindKeyByHash(ctx, SHA256Hex("sk-official-qq"))
+	if err != nil || !ok {
+		t.Fatalf("native key err=%v ok=%v", err, ok)
+	}
+	if native.InheritedFrom != legacy.ID || !native.Enabled || native.RPM != 9 || native.WeeklyLimitUSD == nil || *native.WeeklyLimitUSD != 30 {
+		t.Fatalf("native key should inherit legacy Plus policy: %#v", native)
+	}
+	keys, err := store.ListKeys(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var retired KeyRecord
+	for _, key := range keys {
+		if key.ID == legacy.ID {
+			retired = key
+			break
+		}
+	}
+	if retired.ID == "" || retired.Source != LegacyPlusSource || retired.Enabled || retired.SourcePresent || !retired.Hidden || !retired.LastEnabled {
+		t.Fatalf("legacy Plus template should retire after inheritance: %#v", retired)
+	}
+	legacyUsage, err := store.UsageSummary(ctx, legacy.ID, WindowFor(Range24H, time.Now()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	nativeUsage, err := store.UsageSummary(ctx, native.ID, WindowFor(Range24H, time.Now()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if legacyUsage.Calls != 1 || nativeUsage.Calls != 0 {
+		t.Fatalf("usage should stay on legacy ledger only: legacy=%#v native=%#v", legacyUsage, nativeUsage)
+	}
+}
+
 func TestStoreMigratesOldUsageEventsSchema(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "policyplus.sqlite")
 	db, err := sql.Open("sqlite", path)
@@ -570,11 +786,11 @@ func TestSubmittedKeyHints(t *testing.T) {
 		code string
 	}{
 		{name: "missing", in: " ", code: "missing_api_key"},
-		{name: "native", in: "sk-abc", code: "native_cpa_key_not_supported"},
+		{name: "native", in: "sk-abc", code: "invalid_api_key"},
 		{name: "preview", in: "cpa_abcd...efgh", code: "key_preview_not_usable"},
 		{name: "unsupported", in: "abc", code: "unsupported_key_format"},
-		{name: "short cpa", in: "Bearer cpa_live", code: "key_preview_not_usable"},
-		{name: "full cpa", in: "Bearer cpa_abcdefghijklmnopqrstuvwxyz0123456789", code: "invalid_api_key"},
+		{name: "short cpa", in: "Bearer cpa_live", code: "legacy_cpa_key_retired"},
+		{name: "full cpa", in: "Bearer cpa_abcdefghijklmnopqrstuvwxyz0123456789", code: "legacy_cpa_key_retired"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

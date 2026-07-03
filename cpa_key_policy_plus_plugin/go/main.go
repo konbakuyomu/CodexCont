@@ -2,8 +2,6 @@ package main
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -22,8 +20,11 @@ import (
 )
 
 const (
-	pluginID              = "cpa-key-policy-plus"
-	plusSessionCookieName = "cpa_key_policy_plus_session"
+	pluginID                     = "cpa-key-policy-plus"
+	plusSessionCookieName        = "cpa_key_policy_plus_session"
+	executorModelScopeBoth       = "both"
+	executorFormatOpenAIResponse = "openai-response"
+	policyDenyMetadataPrefix     = "policy_deny_"
 )
 
 var executorUsageModelAliases = map[string]string{
@@ -89,6 +90,22 @@ type runtimeState struct {
 	keyStateModTime   time.Time
 	keyStateLastCheck time.Time
 	rpmBuckets        map[string][]time.Time
+}
+
+type policyDecision struct {
+	Allowed    bool
+	StatusCode int
+	Type       string
+	Code       string
+	Message    string
+	Param      string
+	Window     string
+	UsedUSD    float64
+	LimitUSD   float64
+	UsedCount  int
+	LimitCount int
+	KeyID      string
+	KeyName    string
 }
 
 var state = runtimeState{
@@ -433,6 +450,7 @@ func configure(raw []byte) error {
 	}
 	importLegacySQLite(store, cfg.LegacyQuotaDBPath, "usage-admin")
 	importLegacySQLite(store, cfg.GovernorStateDBPath, "governor")
+	syncNativeKeysFromConfig(store, cfg)
 	state.mu.Lock()
 	old := state.store
 	state.cfg = cfg
@@ -446,6 +464,41 @@ func configure(raw []byte) error {
 		_ = old.Close()
 	}
 	_ = refreshKeyPolicyState(true)
+	_ = syncNativeKeysFromLoadedConfig()
+	return nil
+}
+
+func syncNativeKeysFromLoadedConfig() error {
+	state.mu.RLock()
+	cfg := state.cfg
+	store := state.store
+	state.mu.RUnlock()
+	return syncNativeKeysFromConfig(store, cfg)
+}
+
+func syncNativeKeysFromConfig(store *policyplus.Store, cfg policyplus.Config) error {
+	if store == nil || strings.TrimSpace(cfg.NativeKeysConfigPath) == "" {
+		return nil
+	}
+	rawKeys, err := policyplus.LoadNativeKeysFromCPAConfig(cfg.NativeKeysConfigPath)
+	if err != nil {
+		_ = store.Audit(context.Background(), "system", "native_key_sync_failed", "cpa_config", map[string]any{"error": policyplus.Brief(err.Error(), 240)})
+		return err
+	}
+	aliases, err := policyplus.LoadAPIKeyAliasesFromSQLite(context.Background(), cfg.CPAMPAliasDBPath)
+	if err != nil && strings.TrimSpace(cfg.CPAMPAliasDBPath) != "" {
+		_ = store.Audit(context.Background(), "system", "native_alias_read_failed", "cpamp", map[string]any{"error": policyplus.Brief(err.Error(), 240)})
+	}
+	inputs := make([]policyplus.NativeKeySyncInput, 0, len(rawKeys))
+	for _, rawKey := range rawKeys {
+		hash := policyplus.SHA256Hex(rawKey)
+		alias := aliases[hash]
+		inputs = append(inputs, policyplus.NativeKeySyncInput{RawKey: rawKey, Alias: alias})
+	}
+	if err := store.SyncNativeKeys(context.Background(), inputs); err != nil {
+		_ = store.Audit(context.Background(), "system", "native_key_sync_failed", "store", map[string]any{"error": policyplus.Brief(err.Error(), 240)})
+		return err
+	}
 	return nil
 }
 
@@ -517,6 +570,8 @@ func pluginRegistration() registration {
 				{Name: "legacy_quota_db_path", Type: configString, Description: "Optional old usage-admin SQLite path for one-way 5H/month limit and reset import."},
 				{Name: "governor_state_db_path", Type: configString, Description: "Optional old Governor SQLite path for one-way limit and reset import."},
 				{Name: "codex_summary_db_path", Type: configString, Description: "Optional read-only CodexCont executor SQLite path for safe protection summaries."},
+				{Name: "native_keys_config_path", Type: configString, Description: "Optional CPA config YAML path whose top-level api-keys are synced as native policy keys."},
+				{Name: "cpamp_alias_db_path", Type: configString, Description: "Optional CPAMP manager SQLite path for read-only api_key_aliases lookup."},
 				{Name: "session_secret", Type: configString, Description: "Secret used to sign user portal sessions."},
 				{Name: "codexcont_enabled", Type: configBoolean, Description: "Enable CodexCont status lookup for user summaries."},
 				{Name: "codexcont_route", Type: configBoolean, Description: "Deprecated in Key Policy Plus; keep false and let Governor own CodexCont routing."},
@@ -527,8 +582,11 @@ func pluginRegistration() registration {
 		Capabilities: capabilities{
 			FrontendAuthProvider:          true,
 			FrontendAuthProviderExclusive: cfg.ExclusiveAuth,
-			ModelRouter:                   false,
-			Executor:                      false,
+			ModelRouter:                   true,
+			Executor:                      true,
+			ExecutorModelScope:            executorModelScopeBoth,
+			ExecutorInputFormats:          []string{executorFormatOpenAIResponse},
+			ExecutorOutputFormats:         []string{executorFormatOpenAIResponse},
 			UsagePlugin:                   true,
 			ManagementAPI:                 true,
 		},
@@ -563,33 +621,95 @@ func frontendAuth(raw []byte) ([]byte, error) {
 	if key == "" {
 		return okEnvelope(frontendAuthResponse{Authenticated: false})
 	}
-	record, ok := findKeyByRaw(key)
-	if !ok || !record.Enabled || record.Archived {
-		return okEnvelope(frontendAuthResponse{Authenticated: false})
-	}
 	model := requestedModelFromBody(req.Body)
-	if model != "" && !policyplus.ModelAllowed(record.Models, model) {
+	record, decision, ok := policyDecisionForRawKey(key, model, true)
+	if !ok {
 		return okEnvelope(frontendAuthResponse{Authenticated: false})
 	}
-	if !allowRPM(record) {
-		return okEnvelope(frontendAuthResponse{Authenticated: false})
-	}
-	if !allowQuota(record) {
-		return okEnvelope(frontendAuthResponse{Authenticated: false})
+	metadata := authMetadata(record)
+	if !decision.Allowed {
+		if !shouldSurfacePolicyDeny(req) {
+			return okEnvelope(frontendAuthResponse{Authenticated: false})
+		}
+		metadata = decisionMetadata(metadata, decision)
 	}
 	return okEnvelope(frontendAuthResponse{
 		Authenticated: true,
 		Principal:     record.ID,
-		Metadata: map[string]string{
-			"provider": "cpa-key-policy-plus",
-			"key_id":   record.ID,
-			"key_name": record.Name,
-			"preview":  record.Preview,
-		},
+		Metadata:      metadata,
 	})
 }
 
+func shouldSurfacePolicyDeny(req frontendAuthRequest) bool {
+	path := strings.ToLower(strings.TrimSpace(req.Path))
+	if strings.Contains(path, "/v1/responses") || strings.Contains(path, "/responses") {
+		return true
+	}
+	return requestedModelFromBody(req.Body) != ""
+}
+
+func policyDecisionForRawKey(rawKey, model string, consumeRPM bool) (policyplus.KeyRecord, policyDecision, bool) {
+	submitted := policyplus.NormalizeSubmittedKey(rawKey)
+	if strings.HasPrefix(strings.ToLower(submitted), "cpa_") {
+		return policyplus.KeyRecord{}, policyDecision{}, false
+	}
+	record, ok := findKeyByRaw(rawKey)
+	if ok {
+		return record, evaluatePolicy(record, model, consumeRPM), true
+	}
+	if !isNativeSubmittedKey(submitted) {
+		return policyplus.KeyRecord{}, policyDecision{}, false
+	}
+	hash := policyplus.SHA256Hex(submitted)
+	preview := policyplus.HashPreview(hash)
+	record = policyplus.KeyRecord{
+		ID:            policyplus.NativeKeyIDFromHash(hash),
+		Name:          preview,
+		KeyHash:       "sha256:" + hash,
+		Preview:       preview,
+		Source:        policyplus.NativeCPASource,
+		SourcePresent: false,
+	}
+	base := policyDecision{
+		Allowed:    true,
+		StatusCode: http.StatusOK,
+		KeyID:      record.ID,
+		KeyName:    preview,
+	}
+	decision := denyDecision(base, "invalid_request_error", "policy_missing", "policy_missing", "", fmt.Sprintf("CPA Key Policy+ 已拦截：%s 没有对应的 Plus 策略，请先在管理页同步并启用策略。", preview))
+	return record, decision, true
+}
+
+func isNativeSubmittedKey(key string) bool {
+	lower := strings.ToLower(strings.TrimSpace(key))
+	return strings.HasPrefix(lower, "sk-") || strings.HasPrefix(lower, "sk_")
+}
+
+func authMetadata(record policyplus.KeyRecord) map[string]string {
+	return map[string]string{
+		"provider":       "cpa-key-policy-plus",
+		"key_id":         record.ID,
+		"key_name":       record.Name,
+		"preview":        record.Preview,
+		"source":         record.Source,
+		"source_present": strconv.FormatBool(record.SourcePresent),
+	}
+}
+
+func decisionMetadata(metadata map[string]string, decision policyDecision) map[string]string {
+	out := map[string]string{}
+	for k, v := range metadata {
+		out[k] = v
+	}
+	out[policyDenyMetadataPrefix+"code"] = decision.Code
+	out[policyDenyMetadataPrefix+"message"] = decision.Message
+	out[policyDenyMetadataPrefix+"window"] = decision.Window
+	out[policyDenyMetadataPrefix+"param"] = decision.Param
+	return out
+}
+
 func findKeyByRaw(rawKey string) (policyplus.KeyRecord, bool) {
+	_ = syncNativeKeysFromLoadedConfig()
 	_ = refreshKeyPolicyState(false)
 	if key, ok := lookupKeyByRaw(rawKey); ok {
 		return key, true
@@ -665,16 +785,17 @@ func routeModel(raw []byte) ([]byte, error) {
 		return nil, err
 	}
 	cfg := loadedConfig()
-	if !cfg.Enabled || !cfg.CodexContRoute {
+	if !cfg.Enabled {
 		return okEnvelope(modelRouteResponse{Handled: false})
 	}
-	if !isResponsesRequest(req.SourceFormat, req.Body) {
+	decision, ok := policyDecisionForHeaders(req.Headers, firstNonEmpty(req.RequestedModel, requestedModelFromBody(req.Body)), false)
+	if !ok || decision.Allowed {
 		return okEnvelope(modelRouteResponse{Handled: false})
 	}
 	return okEnvelope(modelRouteResponse{
 		Handled:    true,
 		TargetKind: routeTargetSelf,
-		Reason:     "cpa_key_policy_plus_codexcont_route_deprecated",
+		Reason:     "cpa_key_policy_plus_policy_denied",
 	})
 }
 
@@ -700,9 +821,103 @@ func requestedModelFromBody(body []byte) string {
 	return ""
 }
 
-func allowRPM(key policyplus.KeyRecord) bool {
+func policyDecisionForHeaders(headers http.Header, model string, consumeRPM bool) (policyDecision, bool) {
+	rawKey := bearer(headers.Get("Authorization"))
+	if rawKey == "" {
+		return policyDecision{}, false
+	}
+	_, decision, ok := policyDecisionForRawKey(rawKey, model, consumeRPM)
+	if !ok {
+		return policyDecision{}, false
+	}
+	return decision, true
+}
+
+func evaluatePolicy(key policyplus.KeyRecord, model string, consumeRPM bool) policyDecision {
+	base := policyDecision{
+		Allowed:    true,
+		StatusCode: http.StatusOK,
+		KeyID:      key.ID,
+		KeyName:    safeKeyDisplayName(key),
+	}
+	if key.ID == "" {
+		return denyDecision(base, "invalid_request_error", "missing_policy", "policy_missing", "", "CPA Key Policy+ 已拦截：当前 Key 没有对应的 Plus 策略。")
+	}
+	if key.Source == policyplus.NativeCPASource && !key.SourcePresent {
+		return denyDecision(base, "invalid_request_error", "api_key_source_removed", "source_removed", "", fmt.Sprintf("CPA Key Policy+ 已拦截：%s 已从 CPA 官方 Key 列表移除。", safeKeyDisplayName(key)))
+	}
+	if !key.Enabled || key.Archived {
+		return denyDecision(base, "invalid_request_error", "api_key_disabled", "disabled", "", fmt.Sprintf("CPA Key Policy+ 已拦截：%s 当前已禁用。", safeKeyDisplayName(key)))
+	}
+	if model != "" && !policyplus.ModelAllowed(key.Models, model) {
+		return denyDecision(base, "invalid_request_error", "model_not_allowed", "model", "", fmt.Sprintf("CPA Key Policy+ 已拦截：%s 不允许使用模型 %s。", safeKeyDisplayName(key), model))
+	}
+	if rpm := checkRPM(key, consumeRPM); !rpm.Allowed {
+		base.UsedCount = rpm.Used
+		base.LimitCount = rpm.Limit
+		base.Window = "rpm"
+		return denyDecision(base, "rate_limit_exceeded", "rpm_rate_limit_exceeded", "rpm", "", fmt.Sprintf("CPA Key Policy+ 已拦截：%s 触发 RPM 限制，最近 1 分钟请求 %d / 上限 %d。", safeKeyDisplayName(key), rpm.Used, rpm.Limit))
+	}
+	if quota := checkQuota(key); !quota.Allowed {
+		base.Window = quota.Window
+		base.Param = quota.Window
+		base.UsedUSD = quota.Used
+		base.LimitUSD = quota.Limit
+		return denyDecision(base, "rate_limit_exceeded", quota.Code, quota.Window, quota.Window, fmt.Sprintf("CPA Key Policy+ 已拦截：%s 触发 %s费用限额，已用 $%.2f / 上限 $%.2f。", safeKeyDisplayName(key), windowDisplayName(quota.Window), quota.Used, quota.Limit))
+	}
+	return base
+}
+
+func evaluateIdentityPolicy(key policyplus.KeyRecord) policyDecision {
+	base := policyDecision{
+		Allowed:    true,
+		StatusCode: http.StatusOK,
+		KeyID:      key.ID,
+		KeyName:    safeKeyDisplayName(key),
+	}
+	if key.ID == "" {
+		return denyDecision(base, "invalid_request_error", "missing_policy", "policy_missing", "", "CPA Key Policy+ 已拦截：当前 Key 没有对应的 Plus 策略。")
+	}
+	if key.Source == policyplus.NativeCPASource && !key.SourcePresent {
+		return denyDecision(base, "invalid_request_error", "api_key_source_removed", "source_removed", "", fmt.Sprintf("CPA Key Policy+ 已拦截：%s 已从 CPA 官方 Key 列表移除。", safeKeyDisplayName(key)))
+	}
+	if !key.Enabled || key.Archived {
+		return denyDecision(base, "invalid_request_error", "api_key_disabled", "disabled", "", fmt.Sprintf("CPA Key Policy+ 已拦截：%s 当前已禁用。", safeKeyDisplayName(key)))
+	}
+	return base
+}
+
+func denyDecision(base policyDecision, typ, code, reason, param, message string) policyDecision {
+	base.Allowed = false
+	base.StatusCode = http.StatusTooManyRequests
+	base.Type = typ
+	base.Code = code
+	base.Param = param
+	if base.Param == "" {
+		base.Param = reason
+	}
+	base.Message = message
+	return base
+}
+
+func safeKeyDisplayName(key policyplus.KeyRecord) string {
+	for _, value := range []string{key.Name, key.Alias, key.Preview, key.ID} {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return "当前 Key"
+}
+
+type rpmDecision struct {
+	Allowed bool
+	Used    int
+	Limit   int
+}
+
+func checkRPM(key policyplus.KeyRecord, consume bool) rpmDecision {
 	if key.RPM <= 0 {
-		return true
+		return rpmDecision{Allowed: true}
 	}
 	state.mu.Lock()
 	defer state.mu.Unlock()
@@ -717,38 +932,69 @@ func allowRPM(key policyplus.KeyRecord) bool {
 	}
 	if len(kept) >= key.RPM {
 		state.rpmBuckets[key.ID] = kept
-		return false
+		return rpmDecision{Allowed: false, Used: len(kept), Limit: key.RPM}
 	}
-	state.rpmBuckets[key.ID] = append(kept, now)
-	return true
+	if consume {
+		state.rpmBuckets[key.ID] = append(kept, now)
+	} else {
+		state.rpmBuckets[key.ID] = kept
+	}
+	return rpmDecision{Allowed: true, Used: len(kept), Limit: key.RPM}
 }
 
-func allowQuota(key policyplus.KeyRecord) bool {
+type quotaDecision struct {
+	Allowed bool
+	Window  string
+	Used    float64
+	Limit   float64
+	Code    string
+}
+
+func checkQuota(key policyplus.KeyRecord) quotaDecision {
 	store := loadedStore()
 	if store == nil {
-		return true
+		return quotaDecision{Allowed: true}
 	}
 	ctx := context.Background()
 	now := time.Now()
 	limits := []struct {
 		name  string
 		limit *float64
+		code  string
 	}{
-		{policyplus.Range5H, key.FiveHourUSD},
-		{policyplus.Range24H, key.DailyLimitUSD},
-		{policyplus.Range7D, key.WeeklyLimitUSD},
-		{policyplus.RangeMonth, key.MonthlyLimitUSD},
+		{policyplus.Range5H, key.FiveHourUSD, "five_hour_quota_exceeded"},
+		{policyplus.Range24H, key.DailyLimitUSD, "daily_quota_exceeded"},
+		{policyplus.Range7D, key.WeeklyLimitUSD, "weekly_quota_exceeded"},
+		{policyplus.RangeMonth, key.MonthlyLimitUSD, "monthly_quota_exceeded"},
 	}
 	for _, item := range limits {
+		if item.limit == nil {
+			continue
+		}
 		used, err := store.UsageSum(ctx, key.ID, policyplus.WindowFor(item.name, now))
 		if err != nil {
 			continue
 		}
 		if !policyplus.CheckLimit(used, item.limit).Allowed {
-			return false
+			return quotaDecision{Allowed: false, Window: item.name, Used: used, Limit: *item.limit, Code: item.code}
 		}
 	}
-	return true
+	return quotaDecision{Allowed: true}
+}
+
+func windowDisplayName(window string) string {
+	switch window {
+	case policyplus.Range5H:
+		return "5小时"
+	case policyplus.Range24H:
+		return "24小时"
+	case policyplus.Range7D:
+		return "7天"
+	case policyplus.RangeMonth:
+		return "本月"
+	default:
+		return window
+	}
 }
 
 func executorUnavailable() ([]byte, error) {
@@ -764,23 +1010,27 @@ func executorExecute(raw []byte) ([]byte, error) {
 	if err := json.Unmarshal(raw, &req); err != nil {
 		return nil, err
 	}
+	execReq := normalizedExecutorRequest(req)
+	if decision, ok := policyDenyForExecutor(execReq); ok {
+		return okEnvelope(policyDenyExecutorResponse(decision))
+	}
 	cfg := loadedConfig()
 	if !cfg.CodexContRoute {
 		return executorUnavailable()
 	}
-	payload := req.ExecutorRequest.Payload
+	payload := execReq.Payload
 	if len(payload) == 0 {
-		payload = req.ExecutorRequest.OriginalRequest
+		payload = execReq.OriginalRequest
 	}
 	result, err := callHost(methodHostModelExecute, hostModelExecutionRequest{
-		EntryProtocol:  firstNonEmpty(req.ExecutorRequest.SourceFormat, "openai"),
-		ExitProtocol:   firstNonEmpty(req.ExecutorRequest.Format, "openai"),
-		Model:          req.ExecutorRequest.Model,
+		EntryProtocol:  firstNonEmpty(execReq.SourceFormat, "openai"),
+		ExitProtocol:   firstNonEmpty(execReq.Format, "openai"),
+		Model:          execReq.Model,
 		Stream:         false,
 		Body:           payload,
-		Headers:        cloneHeader(req.ExecutorRequest.Headers),
-		Query:          cloneValues(req.ExecutorRequest.Query),
-		Alt:            req.ExecutorRequest.Alt,
+		Headers:        cloneHeader(execReq.Headers),
+		Query:          cloneValues(execReq.Query),
+		Alt:            execReq.Alt,
 		HostCallbackID: req.HostCallbackID,
 	})
 	if err != nil {
@@ -801,6 +1051,14 @@ func executorExecuteStream(raw []byte) ([]byte, error) {
 	if err := json.Unmarshal(raw, &req); err != nil {
 		return nil, err
 	}
+	execReq := normalizedExecutorRequest(req)
+	if decision, ok := policyDenyForExecutor(execReq); ok {
+		if strings.TrimSpace(req.StreamID) == "" {
+			return okEnvelope(executorStreamResponse{Headers: policyDenyHeaders(decision)})
+		}
+		go emitPolicyDenyStream(req.StreamID, decision)
+		return okEnvelope(executorStreamResponse{Headers: policyDenyHeaders(decision)})
+	}
 	cfg := loadedConfig()
 	if !cfg.CodexContRoute {
 		return executorUnavailable()
@@ -808,19 +1066,19 @@ func executorExecuteStream(raw []byte) ([]byte, error) {
 	if strings.TrimSpace(req.StreamID) == "" {
 		return errorEnvelope("stream_id_required", "stream_id is required for executor.execute_stream"), nil
 	}
-	payload := req.ExecutorRequest.Payload
+	payload := execReq.Payload
 	if len(payload) == 0 {
-		payload = req.ExecutorRequest.OriginalRequest
+		payload = execReq.OriginalRequest
 	}
 	result, err := callHost(methodHostModelExecuteStream, hostModelExecutionRequest{
-		EntryProtocol:  firstNonEmpty(req.ExecutorRequest.SourceFormat, "openai"),
-		ExitProtocol:   firstNonEmpty(req.ExecutorRequest.Format, "openai"),
-		Model:          req.ExecutorRequest.Model,
+		EntryProtocol:  firstNonEmpty(execReq.SourceFormat, "openai"),
+		ExitProtocol:   firstNonEmpty(execReq.Format, "openai"),
+		Model:          execReq.Model,
 		Stream:         true,
 		Body:           payload,
-		Headers:        cloneHeader(req.ExecutorRequest.Headers),
-		Query:          cloneValues(req.ExecutorRequest.Query),
-		Alt:            req.ExecutorRequest.Alt,
+		Headers:        cloneHeader(execReq.Headers),
+		Query:          cloneValues(execReq.Query),
+		Alt:            execReq.Alt,
 		HostCallbackID: req.HostCallbackID,
 	})
 	if err != nil {
@@ -838,6 +1096,87 @@ func executorExecuteStream(raw []byte) ([]byte, error) {
 	}
 	go forwardHostStream(req.StreamID, resp.StreamID)
 	return okEnvelope(executorStreamResponse{Headers: resp.Headers})
+}
+
+func policyDenyForExecutor(req executorRequest) (policyDecision, bool) {
+	model := firstNonEmpty(req.Model, requestedModelFromBody(req.OriginalRequest), requestedModelFromBody(req.Payload))
+	decision, ok := policyDecisionForHeaders(req.Headers, model, false)
+	if !ok || decision.Allowed {
+		return policyDecision{}, false
+	}
+	return decision, true
+}
+
+func normalizedExecutorRequest(req executorCallRequest) executorRequest {
+	if !isZeroExecutorRequest(req.executorRequest) {
+		return req.executorRequest
+	}
+	return req.NestedExecutorRequest
+}
+
+func isZeroExecutorRequest(req executorRequest) bool {
+	return strings.TrimSpace(req.AuthID) == "" &&
+		strings.TrimSpace(req.AuthProvider) == "" &&
+		strings.TrimSpace(req.Model) == "" &&
+		strings.TrimSpace(req.Format) == "" &&
+		!req.Stream &&
+		strings.TrimSpace(req.Alt) == "" &&
+		len(req.Headers) == 0 &&
+		len(req.Query) == 0 &&
+		len(req.OriginalRequest) == 0 &&
+		strings.TrimSpace(req.SourceFormat) == "" &&
+		len(req.Payload) == 0 &&
+		len(req.Metadata) == 0 &&
+		len(req.StorageJSON) == 0 &&
+		len(req.AuthMetadata) == 0 &&
+		len(req.AuthAttributes) == 0
+}
+
+func policyDenyExecutorResponse(decision policyDecision) executorResponse {
+	return executorResponse{
+		Payload:    policyDenyBody(decision),
+		Headers:    policyDenyHeaders(decision),
+		Metadata: map[string]any{
+			"policy_denied": true,
+			"code":          decision.Code,
+			"window":        decision.Window,
+		},
+	}
+}
+
+func policyDenyHeaders(decision policyDecision) http.Header {
+	headers := http.Header{}
+	headers.Set("Content-Type", "application/json; charset=utf-8")
+	headers.Set("X-CPA-Policy-Reason", decision.Code)
+	if window := firstNonEmpty(decision.Window, decision.Param); window != "" {
+		headers.Set("X-CPA-Policy-Window", window)
+	}
+	headers.Set("Retry-After", "60")
+	return headers
+}
+
+func policyDenyBody(decision policyDecision) []byte {
+	body, _ := json.Marshal(map[string]any{
+		"error": map[string]any{
+			"message": decision.Message,
+			"type":    firstNonEmpty(decision.Type, "rate_limit_exceeded"),
+			"code":    decision.Code,
+			"param":   decision.Param,
+		},
+	})
+	return body
+}
+
+func emitPolicyDenyStream(streamID string, decision policyDecision) {
+	defer func() {
+		_, _ = callHost(methodHostStreamClose, hostStreamCloseRequest{StreamID: streamID})
+	}()
+	payload := append([]byte("event: error\ndata: "), policyDenyBody(decision)...)
+	payload = append(payload, []byte("\n\n")...)
+	_, _ = callHost(methodHostStreamEmit, hostStreamEmitRequest{
+		StreamID: streamID,
+		Payload:  payload,
+	})
 }
 
 func usageHandle(raw []byte) ([]byte, error) {
@@ -969,11 +1308,9 @@ func managementRegister() ([]byte, error) {
 		Routes: []managementRoute{
 			{Method: http.MethodGet, Path: "/plugins/cpa-key-policy-plus/keys"},
 			{Method: http.MethodGet, Path: "/plugins/cpa-key-policy-plus/models"},
-			{Method: http.MethodPost, Path: "/plugins/cpa-key-policy-plus/keys/create"},
 			{Method: http.MethodPut, Path: "/plugins/cpa-key-policy-plus/keys/save"},
 			{Method: http.MethodPut, Path: "/plugins/cpa-key-policy-plus/keys/limits"},
 			{Method: http.MethodPost, Path: "/plugins/cpa-key-policy-plus/keys/reset"},
-			{Method: http.MethodPost, Path: "/plugins/cpa-key-policy-plus/keys/delete"},
 			{Method: http.MethodGet, Path: "/plugins/cpa-key-policy-plus/events"},
 			{Method: http.MethodGet, Path: "/plugins/cpa-key-policy-plus/codexcont"},
 			{Method: http.MethodPut, Path: "/plugins/cpa-key-policy-plus/codexcont"},
@@ -982,11 +1319,9 @@ func managementRegister() ([]byte, error) {
 			{Path: "/admin", Menu: "CPA Key Policy+", Description: "Unified user key policy dashboard"},
 			{Path: "/admin/api/keys"},
 			{Path: "/admin/api/models"},
-			{Path: "/admin/api/keys/create"},
 			{Path: "/admin/api/keys/save"},
 			{Path: "/admin/api/keys/limits"},
 			{Path: "/admin/api/keys/reset"},
-			{Path: "/admin/api/keys/delete"},
 			{Path: "/admin/api/events"},
 			{Path: "/admin/api/codexcont"},
 			{Path: "/user", Description: "Self-service usage dashboard"},
@@ -1180,73 +1515,12 @@ func modelIDsFromAny(raw any) []string {
 }
 
 func adminCreateKey(req managementRequest) ([]byte, error) {
-	var body struct {
-		Name              string                           `json:"name"`
-		Enabled           *bool                            `json:"enabled"`
-		RPM               int                              `json:"rpm"`
-		Concurrency       int                              `json:"concurrency"`
-		MaxActiveSessions int                              `json:"max_active_sessions"`
-		Models            []string                         `json:"models"`
-		Prices            map[string]policyplus.ModelPrice `json:"prices"`
-		FiveHourUSD       *float64                         `json:"five_hour_usd"`
-		DailyUSD          *float64                         `json:"daily_usd"`
-		WeeklyUSD         *float64                         `json:"weekly_usd"`
-		MonthlyUSD        *float64                         `json:"monthly_usd"`
-	}
-	if len(req.Body) > 0 {
-		if err := json.Unmarshal(req.Body, &body); err != nil {
-			return jsonResponse(http.StatusBadRequest, map[string]any{"ok": false, "error": "invalid_json"})
-		}
-	}
-	rawKey, err := generateCPAKey()
-	if err != nil {
-		return jsonResponse(http.StatusInternalServerError, map[string]any{"ok": false, "error": "key_generation_failed"})
-	}
-	hash := policyplus.SHA256Hex(rawKey)
-	name := strings.TrimSpace(body.Name)
-	if name == "" {
-		name = "new key"
-	}
-	enabled := true
-	if body.Enabled != nil {
-		enabled = *body.Enabled
-	}
-	rpm := body.RPM
-	if rpm == 0 {
-		rpm = 60
-	}
-	store := loadedStore()
-	if store == nil {
-		return jsonResponse(http.StatusServiceUnavailable, map[string]any{"ok": false, "error": "store_unavailable"})
-	}
-	key := policyplus.KeyRecord{
-		ID:                "key_" + policyplus.HashPreview(hash),
-		Name:              name,
-		KeyHash:           "sha256:" + hash,
-		Enabled:           enabled,
-		Preview:           policyplus.HashPreview(hash),
-		RPM:               rpm,
-		Concurrency:       0,
-		MaxActiveSessions: 0,
-		Models:            cleanStrings(body.Models),
-		Prices:            cleanPrices(body.Prices),
-		FiveHourUSD:       body.FiveHourUSD,
-		DailyLimitUSD:     body.DailyUSD,
-		WeeklyLimitUSD:    body.WeeklyUSD,
-		MonthlyLimitUSD:   body.MonthlyUSD,
-	}
-	if err := store.UpsertKey(context.Background(), key); err != nil {
-		return jsonResponse(http.StatusInternalServerError, map[string]any{"ok": false, "error": err.Error()})
-	}
-	return jsonResponse(http.StatusOK, map[string]any{"ok": true, "key": key.Safe(), "raw_key": rawKey})
-}
-
-func generateCPAKey() (string, error) {
-	buf := make([]byte, 32)
-	if _, err := rand.Read(buf); err != nil {
-		return "", err
-	}
-	return "cpa_" + base64.RawURLEncoding.EncodeToString(buf), nil
+	_ = req
+	return jsonResponse(http.StatusGone, map[string]any{
+		"ok":      false,
+		"error":   "native_key_lifecycle_owned_by_cpa",
+		"message": "Key 新增、删除、复制和别名已交给 CPA/CPAMP 管理；Plus 只编辑已同步 Key 的策略。",
+	})
 }
 
 func adminSaveKeys(req managementRequest) ([]byte, error) {
@@ -1286,11 +1560,11 @@ func adminSaveKeys(req managementRequest) ([]byte, error) {
 		if !ok {
 			return jsonResponse(http.StatusBadRequest, map[string]any{"ok": false, "error": "unknown_key"})
 		}
+		if key.Source == policyplus.NativeCPASource && !key.SourcePresent {
+			return jsonResponse(http.StatusBadRequest, map[string]any{"ok": false, "error": "source_removed_key_read_only"})
+		}
 		if item.Enabled != nil {
 			key.Enabled = *item.Enabled
-		}
-		if strings.TrimSpace(item.Name) != "" {
-			key.Name = strings.TrimSpace(item.Name)
 		}
 		key.RPM = item.RPM
 		key.Concurrency = 0
@@ -1397,32 +1671,21 @@ func adminReset(req managementRequest) ([]byte, error) {
 }
 
 func adminArchiveKey(req managementRequest) ([]byte, error) {
+	_ = req
 	return jsonResponse(http.StatusGone, map[string]any{
 		"ok":      false,
-		"error":   "archive_removed_use_delete",
-		"message": "归档/恢复功能已移除，请使用删除 Key。",
+		"error":   "native_key_lifecycle_owned_by_cpa",
+		"message": "Key 生命周期已交给 CPA/CPAMP 管理；Plus 只保留策略和历史。",
 	})
 }
 
 func adminDeleteKey(req managementRequest) ([]byte, error) {
-	var body struct {
-		ID      string `json:"id"`
-		Confirm string `json:"confirm"`
-	}
-	if err := json.Unmarshal(req.Body, &body); err != nil {
-		return jsonResponse(http.StatusBadRequest, map[string]any{"ok": false, "error": "invalid_json"})
-	}
-	if body.Confirm != "delete" {
-		return jsonResponse(http.StatusBadRequest, map[string]any{"ok": false, "error": "delete_confirmation_required"})
-	}
-	store := loadedStore()
-	if store == nil {
-		return jsonResponse(http.StatusServiceUnavailable, map[string]any{"ok": false, "error": "store_unavailable"})
-	}
-	if err := store.DeleteKey(context.Background(), body.ID); err != nil {
-		return jsonResponse(http.StatusBadRequest, map[string]any{"ok": false, "error": err.Error()})
-	}
-	return adminKeys(req)
+	_ = req
+	return jsonResponse(http.StatusGone, map[string]any{
+		"ok":      false,
+		"error":   "native_key_lifecycle_owned_by_cpa",
+		"message": "Key 删除请在 CPA/CPAMP 中完成；Plus 会在同步后自动标记官方已移除并保留历史。",
+	})
 }
 
 func adminEvents(req managementRequest) ([]byte, error) {
@@ -1486,16 +1749,16 @@ func userSession(req managementRequest) ([]byte, error) {
 		hint := policyplus.ExplainUnmatchedSubmittedKey(key)
 		return jsonResponse(http.StatusUnauthorized, map[string]any{"ok": false, "error": hint.Error, "message": hint.Message})
 	}
-	record, ok := findKeyByRaw(key)
+	record, decision, ok := policyDecisionForRawKey(key, "", false)
 	if !ok {
 		hint := policyplus.ExplainUnmatchedSubmittedKey(key)
 		return jsonResponse(http.StatusUnauthorized, map[string]any{"ok": false, "error": hint.Error, "message": hint.Message})
 	}
-	if !record.Enabled {
-		return jsonResponse(http.StatusForbidden, map[string]any{"ok": false, "error": "api_key_disabled", "category": "auth", "message": "这个 Key 当前已禁用，请联系管理员。"})
+	if record.ID != "" && decision.Code != "policy_missing" {
+		decision = evaluateIdentityPolicy(record)
 	}
-	if record.Archived {
-		return jsonResponse(http.StatusForbidden, map[string]any{"ok": false, "error": "api_key_unavailable", "category": "auth", "message": "这个 Key 已不可用，不能再登录或调用；请联系管理员确认是否已删除。"})
+	if !decision.Allowed {
+		return jsonResponse(http.StatusForbidden, map[string]any{"ok": false, "error": decision.Code, "category": "auth", "message": decision.Message})
 	}
 	cfg := loadedConfig()
 	token, err := policyplus.SignSession(policyplus.SessionPayload{

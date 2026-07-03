@@ -43,7 +43,7 @@ type QuotaDecision struct {
 }
 
 func CheckLimit(used float64, limit *float64) QuotaDecision {
-	if limit == nil || *limit <= 0 {
+	if limit == nil {
 		return QuotaDecision{Allowed: true, UsedUSD: used}
 	}
 	if used >= *limit {

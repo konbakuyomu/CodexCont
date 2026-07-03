@@ -36,9 +36,11 @@ func setupTestState(t *testing.T) policyplus.KeyRecord {
 	key := policyplus.KeyRecord{
 		ID:                "alice-key",
 		Name:              "Alice",
-		KeyHash:           "sha256:" + policyplus.SHA256Hex("cpa_alice_secret"),
+		KeyHash:           "sha256:" + policyplus.SHA256Hex("sk-alice-secret"),
 		Enabled:           true,
-		Preview:           "cpa_ali...cret",
+		Preview:           policyplus.HashPreview(policyplus.SHA256Hex("sk-alice-secret")),
+		Source:            policyplus.NativeCPASource,
+		SourcePresent:     true,
 		RPM:               10,
 		Concurrency:       2,
 		MaxActiveSessions: 1,
@@ -83,15 +85,24 @@ func TestPluginRegistrationIsPolicyPlusExclusiveAuth(t *testing.T) {
 	if !reg.Capabilities.FrontendAuthProvider || !reg.Capabilities.FrontendAuthProviderExclusive {
 		t.Fatalf("frontend auth capabilities = %#v", reg.Capabilities)
 	}
-	if reg.Capabilities.ModelRouter || reg.Capabilities.Executor {
-		t.Fatalf("plus must not steal Governor/CodexCont routing: %#v", reg.Capabilities)
+	if !reg.Capabilities.ModelRouter || !reg.Capabilities.Executor {
+		t.Fatalf("plus must expose deny-only model route/executor for explicit policy 429s: %#v", reg.Capabilities)
+	}
+	if reg.Capabilities.ExecutorModelScope != executorModelScopeBoth {
+		t.Fatalf("executor model scope = %q", reg.Capabilities.ExecutorModelScope)
+	}
+	if len(reg.Capabilities.ExecutorInputFormats) != 1 || reg.Capabilities.ExecutorInputFormats[0] != executorFormatOpenAIResponse {
+		t.Fatalf("executor input formats = %#v", reg.Capabilities.ExecutorInputFormats)
+	}
+	if len(reg.Capabilities.ExecutorOutputFormats) != 1 || reg.Capabilities.ExecutorOutputFormats[0] != executorFormatOpenAIResponse {
+		t.Fatalf("executor output formats = %#v", reg.Capabilities.ExecutorOutputFormats)
 	}
 }
 
 func TestFrontendAuthIgnoresRetiredActiveSessionLimit(t *testing.T) {
 	setupTestState(t)
 	req := frontendAuthRequest{
-		Headers: http.Header{"Authorization": []string{"Bearer cpa_alice_secret"}},
+		Headers: http.Header{"Authorization": []string{"Bearer sk-alice-secret"}},
 		Body:    []byte(`{"model":"gpt-5.5","prompt_cache_key":"window-a"}`),
 	}
 	if !authOK(t, req) {
@@ -110,7 +121,7 @@ func TestFrontendAuthIgnoresRetiredActiveSessionLimit(t *testing.T) {
 func TestFrontendAuthAllowsMissingSessionAndAudits(t *testing.T) {
 	setupTestState(t)
 	req := frontendAuthRequest{
-		Headers: http.Header{"Authorization": []string{"Bearer cpa_alice_secret"}},
+		Headers: http.Header{"Authorization": []string{"Bearer sk-alice-secret"}},
 		Body:    []byte(`{"model":"gpt-5.5"}`),
 	}
 	if !authOK(t, req) {
@@ -143,8 +154,8 @@ func TestAdminSaveKeysPersistsUnifiedLimits(t *testing.T) {
 		t.Fatal(err)
 	}
 	bodyBytes := decodeManagementBody(t, raw)
-	if !strings.Contains(string(bodyBytes), "Alice Plus") {
-		t.Fatalf("save response missing updated key: %s", bodyBytes)
+	if strings.Contains(string(bodyBytes), "Alice Plus") || !strings.Contains(string(bodyBytes), "Alice") {
+		t.Fatalf("save response should keep CPA/CPAMP readonly alias: %s", bodyBytes)
 	}
 	store := loadedStore()
 	keys, err := store.ListKeys(context.Background())
@@ -154,6 +165,9 @@ func TestAdminSaveKeysPersistsUnifiedLimits(t *testing.T) {
 	got := keys[0]
 	if got.Enabled || got.RPM != 5 || got.Concurrency != 0 || got.MaxActiveSessions != 0 {
 		t.Fatalf("updated key = %#v", got)
+	}
+	if got.Name != "Alice" {
+		t.Fatalf("Plus save must not rename native key alias, got %q", got.Name)
 	}
 	if got.FiveHourUSD == nil || *got.FiveHourUSD != 1.25 || got.MonthlyLimitUSD == nil || *got.MonthlyLimitUSD != 20 {
 		t.Fatalf("limits not persisted: %#v", got)
@@ -166,42 +180,23 @@ func TestAdminSaveKeysPersistsUnifiedLimits(t *testing.T) {
 	}
 }
 
-func TestAdminCreateKeyReturnsRawKeyOnlyOnce(t *testing.T) {
+func TestAdminCreateKeyRetiredToCPAMP(t *testing.T) {
 	setupTestState(t)
 	raw, err := adminCreateKey(managementRequest{Body: []byte(`{"name":"Bob","enabled":false,"rpm":9,"concurrency":4,"max_active_sessions":3,"models":["gpt-5.4-mini"]}`)})
 	if err != nil {
 		t.Fatal(err)
 	}
-	bodyBytes := decodeManagementBody(t, raw)
-	var resp struct {
-		OK     bool   `json:"ok"`
-		RawKey string `json:"raw_key"`
-	}
-	if err := json.Unmarshal(bodyBytes, &resp); err != nil {
-		t.Fatal(err)
-	}
-	if !resp.OK || !strings.HasPrefix(resp.RawKey, "cpa_") {
-		t.Fatalf("create response = %s", bodyBytes)
-	}
-	if strings.Contains(string(bodyBytes), policyplus.SHA256Hex(resp.RawKey)) {
-		t.Fatalf("response leaked full hash: %s", bodyBytes)
-	}
+	resp := decodeManagementResponse(t, raw)
+	bodyBytes := resp.Body
 	keys, err := loadedStore().ListKeys(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	var created policyplus.KeyRecord
-	for _, key := range keys {
-		if key.Name == "Bob" {
-			created = key
-			break
-		}
+	if resp.StatusCode != http.StatusGone || !strings.Contains(string(bodyBytes), "native_key_lifecycle_owned_by_cpa") {
+		t.Fatalf("create should be retired to CPA/CPAMP: status=%d body=%s", resp.StatusCode, bodyBytes)
 	}
-	if created.ID == "" || created.Enabled || created.RPM != 9 || created.Concurrency != 0 || created.MaxActiveSessions != 0 {
-		t.Fatalf("created key did not persist requested settings: %#v", created)
-	}
-	if len(created.Models) != 1 || created.Models[0] != "gpt-5.4-mini" {
-		t.Fatalf("created models = %#v", created.Models)
+	if strings.Contains(string(bodyBytes), "raw_key") || len(keys) != 1 {
+		t.Fatalf("retired create must not return raw keys or persist Bob: keys=%#v body=%s", keys, bodyBytes)
 	}
 }
 
@@ -216,9 +211,10 @@ func TestManagementAliasCreateSaveAndReset(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	createBody := decodeManagementBody(t, raw)
-	if !strings.Contains(string(createBody), `"raw_key"`) {
-		t.Fatalf("create via alias failed: %s", createBody)
+	createResp := decodeManagementResponse(t, raw)
+	createBody := createResp.Body
+	if createResp.StatusCode != http.StatusGone || !strings.Contains(string(createBody), "native_key_lifecycle_owned_by_cpa") || strings.Contains(string(createBody), `"raw_key"`) {
+		t.Fatalf("create alias should be retired: status=%d body=%s", createResp.StatusCode, createBody)
 	}
 	saveRaw, _ := json.Marshal(map[string]any{"keys": []map[string]any{{
 		"id":                  "alice-key",
@@ -238,8 +234,8 @@ func TestManagementAliasCreateSaveAndReset(t *testing.T) {
 		t.Fatal(err)
 	}
 	saveBody := decodeManagementBody(t, raw)
-	if !strings.Contains(string(saveBody), "Alias Saved") {
-		t.Fatalf("save via alias failed: %s", saveBody)
+	if strings.Contains(string(saveBody), "Alias Saved") || !strings.Contains(string(saveBody), "Alice") {
+		t.Fatalf("save via alias should update strategy but not readonly alias: %s", saveBody)
 	}
 	keys, err := loadedStore().ListKeys(context.Background())
 	if err != nil {
@@ -277,12 +273,12 @@ func TestArchiveRouteReturnsGone(t *testing.T) {
 		t.Fatal(err)
 	}
 	body := decodeManagementBody(t, raw)
-	if !strings.Contains(string(body), `"archive_removed_use_delete"`) {
-		t.Fatalf("archive route should return delete guidance: %s", body)
+	if !strings.Contains(string(body), `"native_key_lifecycle_owned_by_cpa"`) {
+		t.Fatalf("archive route should return CPA/CPAMP lifecycle guidance: %s", body)
 	}
 }
 
-func TestDeleteKeyRejectsAuthAndUserSession(t *testing.T) {
+func TestDeleteKeyRetiredAndDoesNotDisableNativePolicy(t *testing.T) {
 	key := setupTestState(t)
 	deleteRaw, _ := json.Marshal(map[string]any{"id": key.ID, "confirm": "delete"})
 	raw, err := managementHandle(mustJSON(t, managementRequest{
@@ -293,23 +289,261 @@ func TestDeleteKeyRejectsAuthAndUserSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	body := decodeManagementBody(t, raw)
-	if !strings.Contains(string(body), `"keys"`) {
-		t.Fatalf("delete response should return updated key list: %s", body)
+	resp := decodeManagementResponse(t, raw)
+	body := resp.Body
+	if resp.StatusCode != http.StatusGone || !strings.Contains(string(body), `"native_key_lifecycle_owned_by_cpa"`) {
+		t.Fatalf("delete should be retired to CPA/CPAMP: status=%d body=%s", resp.StatusCode, body)
 	}
-	if authOK(t, frontendAuthRequest{
-		Headers: http.Header{"Authorization": []string{"Bearer cpa_alice_secret"}},
+	if !authOK(t, frontendAuthRequest{
+		Headers: http.Header{"Authorization": []string{"Bearer sk-alice-secret"}},
 		Body:    []byte(`{"model":"gpt-5.5","prompt_cache_key":"window-a"}`),
 	}) {
-		t.Fatal("deleted key should not authenticate frontend requests")
+		t.Fatal("retired Plus delete should not disable native policy")
 	}
-	raw, err = userSession(managementRequest{Headers: http.Header{"X-CPA-Key-Policy-Plus-Key": []string{"cpa_alice_secret"}}})
+	raw, err = userSession(managementRequest{Headers: http.Header{"X-CPA-Key-Policy-Plus-Key": []string{"sk-alice-secret"}}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	body = decodeManagementBody(t, raw)
-	if strings.Contains(string(body), `"ok":true`) {
-		t.Fatalf("deleted user session should fail clearly: %s", body)
+	if !strings.Contains(string(body), `"ok":true`) {
+		t.Fatalf("retired Plus delete should not break user session: %s", body)
+	}
+}
+
+func TestPolicyDecisionDenialsUseExplicitCodes(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*testing.T, *policyplus.KeyRecord)
+		model  string
+		code   string
+		param  string
+	}{
+		{
+			name: "disabled",
+			mutate: func(t *testing.T, key *policyplus.KeyRecord) {
+				key.Enabled = false
+			},
+			model: "gpt-5.5",
+			code:  "api_key_disabled",
+			param: "disabled",
+		},
+		{
+			name: "source removed",
+			mutate: func(t *testing.T, key *policyplus.KeyRecord) {
+				key.SourcePresent = false
+			},
+			model: "gpt-5.5",
+			code:  "api_key_source_removed",
+			param: "source_removed",
+		},
+		{
+			name:  "model not allowed",
+			model: "gpt-5.4",
+			code:  "model_not_allowed",
+			param: "model",
+		},
+		{
+			name: "rpm",
+			mutate: func(t *testing.T, key *policyplus.KeyRecord) {
+				key.RPM = 1
+			},
+			model: "gpt-5.5",
+			code:  "rpm_rate_limit_exceeded",
+			param: "rpm",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			key := setupTestState(t)
+			if tc.mutate != nil {
+				tc.mutate(t, &key)
+			}
+			if key.SourcePresent {
+				if err := loadedStore().SaveKeySettings(context.Background(), key); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tc.name == "source removed" {
+				if err := loadedStore().SyncNativeKeys(context.Background(), nil); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tc.name == "rpm" {
+				first := evaluatePolicy(key, tc.model, true)
+				if !first.Allowed {
+					t.Fatalf("first RPM request should pass: %#v", first)
+				}
+			}
+			decision := evaluatePolicy(key, tc.model, tc.name == "rpm")
+			if decision.Allowed || decision.StatusCode != http.StatusTooManyRequests || decision.Code != tc.code || decision.Param != tc.param || !strings.Contains(decision.Message, "CPA Key Policy+") {
+				t.Fatalf("decision = %#v", decision)
+			}
+		})
+	}
+}
+
+func TestPolicyDecisionQuotaWindowsUsePostAccountingOrder(t *testing.T) {
+	windows := []struct {
+		name  string
+		set   func(*policyplus.KeyRecord)
+		code  string
+		param string
+	}{
+		{policyplus.Range5H, func(k *policyplus.KeyRecord) { k.FiveHourUSD = floatPtr(1) }, "five_hour_quota_exceeded", policyplus.Range5H},
+		{policyplus.Range24H, func(k *policyplus.KeyRecord) { k.DailyLimitUSD = floatPtr(1) }, "daily_quota_exceeded", policyplus.Range24H},
+		{policyplus.Range7D, func(k *policyplus.KeyRecord) { k.WeeklyLimitUSD = floatPtr(1) }, "weekly_quota_exceeded", policyplus.Range7D},
+		{policyplus.RangeMonth, func(k *policyplus.KeyRecord) { k.MonthlyLimitUSD = floatPtr(1) }, "monthly_quota_exceeded", policyplus.RangeMonth},
+	}
+	for _, item := range windows {
+		t.Run(item.name, func(t *testing.T) {
+			key := setupTestState(t)
+			key.FiveHourUSD = nil
+			key.DailyLimitUSD = nil
+			key.WeeklyLimitUSD = nil
+			key.MonthlyLimitUSD = nil
+			item.set(&key)
+			if err := loadedStore().SaveKeySettings(context.Background(), key); err != nil {
+				t.Fatal(err)
+			}
+			if err := loadedStore().InsertUsage(context.Background(), policyplus.UsageEvent{
+				RequestID:   "quota-" + item.name,
+				KeyID:       key.ID,
+				RequestedAt: time.Now(),
+				Cost:        1,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			decision := evaluatePolicy(key, "gpt-5.5", false)
+			if decision.Allowed || decision.Code != item.code || decision.Param != item.param || decision.Window != item.name || decision.UsedUSD != 1 || decision.LimitUSD != 1 {
+				t.Fatalf("quota decision = %#v", decision)
+			}
+			if !strings.Contains(decision.Message, "已用 $1.00 / 上限 $1.00") {
+				t.Fatalf("quota message should expose used/limit: %s", decision.Message)
+			}
+		})
+	}
+}
+
+func TestRouteAndExecutorReturnPolicyDenied429(t *testing.T) {
+	key := setupTestState(t)
+	key.Enabled = false
+	if err := loadedStore().SaveKeySettings(context.Background(), key); err != nil {
+		t.Fatal(err)
+	}
+	routeRaw, err := routeModel(mustJSON(t, modelRouteRequest{
+		RequestedModel: "gpt-5.5",
+		Headers:        http.Header{"Authorization": []string{"Bearer sk-alice-secret"}},
+		Body:           []byte(`{"model":"gpt-5.5"}`),
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var routeEnv envelope
+	if err := json.Unmarshal(routeRaw, &routeEnv); err != nil {
+		t.Fatal(err)
+	}
+	var routeResp modelRouteResponse
+	if err := json.Unmarshal(routeEnv.Result, &routeResp); err != nil {
+		t.Fatal(err)
+	}
+	if !routeResp.Handled || routeResp.TargetKind != routeTargetSelf || routeResp.Reason != "cpa_key_policy_plus_policy_denied" {
+		t.Fatalf("route response = %#v", routeResp)
+	}
+
+	execRaw, err := executorExecute(mustJSON(t, executorCallRequest{
+		executorRequest: executorRequest{
+			Model:   "gpt-5.5",
+			Headers: http.Header{"Authorization": []string{"Bearer sk-alice-secret"}},
+			Payload: []byte(`{"model":"gpt-5.5"}`),
+		},
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var execEnv envelope
+	if err := json.Unmarshal(execRaw, &execEnv); err != nil {
+		t.Fatal(err)
+	}
+	var execResp executorResponse
+	if err := json.Unmarshal(execEnv.Result, &execResp); err != nil {
+		t.Fatal(err)
+	}
+	if execResp.Headers.Get("X-CPA-Policy-Reason") != "api_key_disabled" || execResp.Headers.Get("Retry-After") == "" {
+		t.Fatalf("executor deny response = %#v", execResp)
+	}
+	if execResp.Headers.Get("X-CPA-Policy-Window") != "disabled" {
+		t.Fatalf("executor deny headers should include safe policy window/param: %#v", execResp.Headers)
+	}
+	var body struct {
+		Error struct {
+			Message string `json:"message"`
+			Type    string `json:"type"`
+			Code    string `json:"code"`
+			Param   string `json:"param"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(execResp.Payload, &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Error.Code != "api_key_disabled" || body.Error.Message == "" || body.Error.Param != "disabled" {
+		t.Fatalf("deny body = %s", execResp.Payload)
+	}
+}
+
+func TestFrontendAuthOnlySurfacesDeniedNativeKeysForModelRequests(t *testing.T) {
+	key := setupTestState(t)
+	key.Enabled = false
+	if err := loadedStore().SaveKeySettings(context.Background(), key); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := frontendAuth(mustJSON(t, frontendAuthRequest{
+		Path:    "/v1/models",
+		Headers: http.Header{"Authorization": []string{"Bearer sk-alice-secret"}},
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var env envelope
+	if err := json.Unmarshal(raw, &env); err != nil {
+		t.Fatal(err)
+	}
+	var resp frontendAuthResponse
+	if err := json.Unmarshal(env.Result, &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Authenticated {
+		t.Fatalf("non-model denied request should fail closed through normal auth path: %#v", resp)
+	}
+
+	raw, err = frontendAuth(mustJSON(t, frontendAuthRequest{
+		Path:    "/v1/responses",
+		Headers: http.Header{"Authorization": []string{"Bearer sk-alice-secret"}},
+		Body:    []byte(`{"model":"gpt-5.5"}`),
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(raw, &env); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(env.Result, &resp); err != nil {
+		t.Fatal(err)
+	}
+	if !resp.Authenticated || resp.Metadata[policyDenyMetadataPrefix+"code"] != "api_key_disabled" {
+		t.Fatalf("responses denied request should route to explicit policy body: %#v", resp)
+	}
+}
+
+func TestExecutorRequestNormalizationKeepsNestedPayload(t *testing.T) {
+	body := []byte(`{"model":"gpt-5.5","stream":true}`)
+	req := normalizedExecutorRequest(executorCallRequest{
+		NestedExecutorRequest: executorRequest{
+			Model:   "gpt-5.5",
+			Payload: body,
+		},
+	})
+	if req.Model != "gpt-5.5" || string(req.Payload) != string(body) {
+		t.Fatalf("normalized nested request = %#v", req)
 	}
 }
 
@@ -437,6 +671,11 @@ func TestUserHTMLUsesPolicyPlusHeader(t *testing.T) {
 	if strings.Contains(html, "X-CPA-Governor-Key") {
 		t.Fatal("user page should not keep the Governor login header")
 	}
+	for _, want := range []string{"完整原生 sk- Key", "旧的 cpa_ Key 已迁移下线", "只接受 CPA 原生 sk- Key"} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("user page missing native-key guidance %q", want)
+		}
+	}
 }
 
 func TestUserHTMLFixedRangeUX(t *testing.T) {
@@ -543,14 +782,21 @@ func TestAdminHTMLHasRenderedSharedCSS(t *testing.T) {
 			t.Fatalf("admin html should not contain retired control %q", removed)
 		}
 	}
-	if !strings.Contains(html, "删除 Key") || !strings.Contains(html, "/keys/delete") {
-		t.Fatal("admin html should expose hard delete through the management alias")
+	for _, removed := range []string{"新建 Key", "删除 Key", "复制完整 Key", "raw-key", "/keys/create", "/keys/delete"} {
+		if strings.Contains(html, removed) {
+			t.Fatalf("admin html should not expose Plus-side key lifecycle control %q", removed)
+		}
+	}
+	for _, want := range []string{"Key 策略", "显示官方已移除", "保存策略"} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("admin html missing native policy UI marker %q", want)
+		}
 	}
 }
 
 func TestSessionInvalidatedWhenKeyHashChanges(t *testing.T) {
 	key := setupTestState(t)
-	req := managementRequest{Headers: http.Header{"X-CPA-Key-Policy-Plus-Key": []string{"cpa_alice_secret"}}}
+	req := managementRequest{Headers: http.Header{"X-CPA-Key-Policy-Plus-Key": []string{"sk-alice-secret"}}}
 	raw, err := userSession(req)
 	if err != nil {
 		t.Fatal(err)
@@ -570,7 +816,7 @@ func TestSessionInvalidatedWhenKeyHashChanges(t *testing.T) {
 	if _, ok := keyFromSession(managementRequest{Headers: http.Header{"Cookie": []string{cookie}}}); !ok {
 		t.Fatal("fresh session should resolve")
 	}
-	key.KeyHash = "sha256:" + policyplus.SHA256Hex("cpa_rotated_secret")
+	key.KeyHash = "sha256:" + policyplus.SHA256Hex("sk-rotated-secret")
 	if err := loadedStore().UpsertKey(context.Background(), key); err != nil {
 		t.Fatal(err)
 	}
@@ -581,7 +827,7 @@ func TestSessionInvalidatedWhenKeyHashChanges(t *testing.T) {
 
 func TestSessionCookiePathCompatibility(t *testing.T) {
 	setupTestState(t)
-	raw, err := userSession(managementRequest{Headers: http.Header{"X-CPA-Key-Policy-Plus-Key": []string{"cpa_alice_secret"}}})
+	raw, err := userSession(managementRequest{Headers: http.Header{"X-CPA-Key-Policy-Plus-Key": []string{"sk-alice-secret"}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -639,6 +885,11 @@ func authOK(t *testing.T, req frontendAuthRequest) bool {
 
 func decodeManagementBody(t *testing.T, raw []byte) []byte {
 	t.Helper()
+	return decodeManagementResponse(t, raw).Body
+}
+
+func decodeManagementResponse(t *testing.T, raw []byte) managementResponse {
+	t.Helper()
 	var env envelope
 	if err := json.Unmarshal(raw, &env); err != nil {
 		t.Fatal(err)
@@ -647,7 +898,7 @@ func decodeManagementBody(t *testing.T, raw []byte) []byte {
 	if err := json.Unmarshal(env.Result, &resp); err != nil {
 		t.Fatal(err)
 	}
-	return resp.Body
+	return resp
 }
 
 func mustJSON(t *testing.T, value any) []byte {
