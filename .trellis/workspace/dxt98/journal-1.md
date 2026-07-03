@@ -376,3 +376,36 @@ Retired Key Policy+ request concurrency and Codex active-window enforcement, add
 ### Next Steps
 
 - None - task complete
+
+
+## Session 12: Migrate Key Policy Plus to native CPA keys
+
+**Date**: 2026-07-03
+**Task**: Migrate Key Policy Plus to native CPA keys
+**Branch**: `codex/codexcont-executor-migration`
+
+### Summary
+
+Implemented and deployed CPA Key Policy+ as a passive policy layer over CPA native keys, verified cpa-usage portal, normal Responses calls, structured quota denial body, and documented the CPA executor ABI status/header limitation.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `b46c4d5` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
