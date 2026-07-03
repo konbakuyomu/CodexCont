@@ -369,6 +369,54 @@ func TestUserHTMLUsesPolicyPlusHeader(t *testing.T) {
 	}
 }
 
+func TestUserHTMLFixedRangeUX(t *testing.T) {
+	html := userHTML()
+	for _, removed := range []string{`id="rangeSelect"`, "rangeSelect", "state.range"} {
+		if strings.Contains(html, removed) {
+			t.Fatalf("user page should not keep mutable range control %q", removed)
+		}
+	}
+	for _, want := range []string{
+		`const PRIMARY_RANGE = "24h";`,
+		"${rangeLabel(PRIMARY_RANGE)}费用",
+		"${rangeLabel(PRIMARY_RANGE)} · 最近",
+		"24H / 7D",
+		"5H / 本月",
+		"api(`/usage?range=${encodeURIComponent(PRIMARY_RANGE)}`",
+		"api(`/events?range=${encodeURIComponent(PRIMARY_RANGE)}&limit=100`",
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("user fixed-range page missing %q", want)
+		}
+	}
+}
+
+func TestUserHTMLIgnoresRefreshCancelNoise(t *testing.T) {
+	html := userHTML()
+	for _, want := range []string{
+		"function isRefreshCancel",
+		`abort("refresh_cancelled")`,
+		`controller.abort("refresh_timeout")`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("user refresh cancel handling missing %q", want)
+		}
+	}
+	usageCancel := strings.Index(html, "if (isRefreshCancel(controller.signal)) return;")
+	usageError := strings.Index(html, `state.errors.usage = "用量接口同步失败："`)
+	if usageCancel < 0 || usageError < 0 || usageCancel > usageError {
+		t.Fatal("usage refresh cancel must be ignored before setting a sync error")
+	}
+	protectionError := strings.Index(html, `state.errors.protection = "思维链保护同步失败："`)
+	if protectionError < 0 {
+		t.Fatal("protection sync error assignment missing")
+	}
+	protectionCancel := strings.LastIndex(html[:protectionError], "if (isRefreshCancel(controller.signal)) return;")
+	if protectionCancel < 0 {
+		t.Fatal("protection refresh cancel must be ignored before setting a sync error")
+	}
+}
+
 func TestAdminHTMLHasRenderedSharedCSS(t *testing.T) {
 	html := adminHTML()
 	if strings.Contains(html, "{{CSS}}") || strings.Contains(html, "{{SHARED_CSS}}") {

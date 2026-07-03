@@ -499,6 +499,14 @@ credential, while CPAMP remains admin-only.
 - `5h`, `24h`, and `7d` are rolling USD windows. `month` is the current
   Asia/Shanghai calendar month. Reset writes a soft watermark and does not
   delete historical `usage_events`.
+- The Plus user dashboard primary live view is fixed to `24h`. Do not expose a
+  top-level `5h/24h/7d/month` selector on the ordinary user page; keep
+  four-window quota visibility in side-by-side cards instead. The user APIs may
+  continue accepting range parameters for compatibility and future callers.
+- Refresh cancellation is browser control flow, not a user-visible sync
+  failure. When a manual refresh, focus/pageshow refresh, or visibility change
+  aborts an older in-flight user-page fetch, the page must ignore that aborted
+  work instead of writing usage/protection error notices.
 - Ordinary user throttling is RPM-only plus model allowlist and quota windows.
   `concurrency` and `max_active_sessions` payload fields are compatibility
   fields only: create/save handlers must accept stale payloads but persist and
@@ -595,6 +603,9 @@ credential, while CPAMP remains admin-only.
   when a stale same-name cookie appears before a fresh valid cookie in the
   `Cookie` header.
 - Go unit: user events and CodexCont summaries are filtered to the current key.
+- Go unit: Plus user HTML has no range dropdown, fixes usage/events requests to
+  `range=24h`, keeps `24H / 7D` and `5H / 本月` quota cards, and ignores
+  refresh-cancel aborts before rendering sync errors.
 - Go unit: admin HTML points mutations at `/key-policy-plus/api`, model
   normalization preserves unknown configured models, and create/save/reset
   through the admin alias persist settings.

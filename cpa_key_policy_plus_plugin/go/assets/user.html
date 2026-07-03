@@ -17,12 +17,6 @@
       </div>
     </div>
     <div class="toolbar">
-      <select id="rangeSelect" class="hidden" aria-label="统计范围">
-        <option value="5h">5 小时</option>
-        <option value="24h" selected>24 小时</option>
-        <option value="7d">7 天</option>
-        <option value="month">本月</option>
-      </select>
       <span id="live" class="chip stream warn"><span class="dot"></span><span>未登录</span></span>
       <span id="active-chip" class="chip info hidden"><span class="dot"></span><span>活跃 0</span></span>
       <button id="refresh" class="ghost sync-button hidden" type="button" aria-live="polite">
@@ -61,10 +55,10 @@
 
 <script>
 const USER_API = location.pathname.startsWith("/key-policy-plus-user") ? "/key-policy-plus-user/api" : "/v0/resource/plugins/cpa-key-policy-plus/user/api";
+const PRIMARY_RANGE = "24h";
 const $ = (id) => document.getElementById(id);
 const state = {
   tab: "usage",
-  range: "24h",
   me: null,
   usage: null,
   events: [],
@@ -207,12 +201,15 @@ function isAuthError(e){
   const data = (e && e.data) || {};
   return e && (e.status === 401 || e.status === 403 || data.category === "auth" || data.error === "not_authenticated");
 }
+function isRefreshCancel(signal){
+  return signal && signal.aborted && signal.reason === "refresh_cancelled";
+}
 function clearRefreshTimeout(){
   if (state.timeoutTimer) clearTimeout(state.timeoutTimer);
   state.timeoutTimer = null;
 }
 function cancelRefresh(){
-  if (state.controller) state.controller.abort();
+  if (state.controller) state.controller.abort("refresh_cancelled");
   state.controller = null;
   clearRefreshTimeout();
   clearTimeout(state.refreshTimer);
@@ -308,13 +305,13 @@ function renderCards(force=false){
   const failed = Number(usageSummary.failed || 0);
   const cacheTotal = Number(usage.cached_tokens || 0) + Number(usage.cache_read_tokens || 0) + Number(usage.cache_creation_tokens || 0);
   const successRate = calls ? (calls - failed) / calls : null;
-  const nextSig = signature({me:state.me, usage:usageSummary, range:state.range});
+  const nextSig = signature({me:state.me, usage:usageSummary, range:PRIMARY_RANGE});
   if (!force && state.cardSig === nextSig) return;
   state.cardSig = nextSig;
   updateActiveChip();
   $("cards").innerHTML = `
     <article class="metric"><div class="label">当前 Key</div><div class="value">${esc(state.me.name || "-")}</div><div class="hint">${esc(state.me.preview || "")}</div></article>
-    <article class="metric"><div class="label">${rangeLabel(state.range)}费用</div><div class="value">${money(usageSummary.total_cost, 3)}</div><div class="hint">额度上限 ${money(limitForRange(limits, state.range), 3)}</div></article>
+    <article class="metric"><div class="label">${rangeLabel(PRIMARY_RANGE)}费用</div><div class="value">${money(usageSummary.total_cost, 3)}</div><div class="hint">额度上限 ${money(limitForRange(limits, PRIMARY_RANGE), 3)}</div></article>
     <article class="metric"><div class="label">调用统计</div><div class="value">${num(calls)} 次</div><div class="hint">成功率 ${pct(successRate)} · 失败 ${num(failed)}</div></article>
     <article class="metric"><div class="label">Token</div><div class="value">${num(usage.total_tokens)}</div><div class="hint">I ${num(usage.input_tokens)} / O ${num(usage.output_tokens)}</div></article>
     <article class="metric"><div class="label">思考量</div><div class="value">${num(usage.reasoning_tokens)}</div><div class="hint">Responses reasoning tokens</div></article>
@@ -367,8 +364,8 @@ function eventDetail(ev){
       ["总费用", money(costs.total ?? ev.cost, 4)],
     ])}</section>
     <section class="detail-card"><h3>限额与失败</h3>${detailList([
-      ["当前范围", rangeLabel(state.range)],
-      ["额度上限", money(limitForRange(limits, state.range), 3)],
+      ["当前范围", rangeLabel(PRIMARY_RANGE)],
+      ["额度上限", money(limitForRange(limits, PRIMARY_RANGE), 3)],
       ["计入额度", "5 小时 / 24 小时 / 7 天 / 本月"],
       ["TTFT", duration(ev.ttft_ms)],
       ["总耗时", duration(ev.latency_ms)],
@@ -379,7 +376,7 @@ function renderUsage(force=false){
   if (state.tab !== "usage") return;
   const protect = protectionMap();
   const sig = signature({
-    range: state.range,
+    range: PRIMARY_RANGE,
     usage: state.usage,
     events: state.events,
     protection: state.protection.map((req) => ({
@@ -411,10 +408,10 @@ function renderUsage(force=false){
       <td><span class="strong">${money(ev.cost, 4)}</span><button class="ghost compact" data-event="${esc(id)}" type="button">${open ? "收起" : "展开"}</button></td>
     </tr>`;
     return main + (open ? eventDetail(ev) : "");
-  }).join("") || `<tr><td colspan="9"><div class="empty">暂无 ${rangeLabel(state.range)} 请求明细</div></td></tr>`;
+  }).join("") || `<tr><td colspan="9"><div class="empty">暂无 ${rangeLabel(PRIMARY_RANGE)} 请求明细</div></td></tr>`;
   const error = state.errors.usage ? `<div class="notice">${esc(state.errors.usage)}</div>` : "";
   $("content").innerHTML = `<div class="panel embedded-panel">
-    <div class="panel-head"><h2>单 Key 实时监控</h2><span class="muted">${rangeLabel(state.range)} · 最近 ${num(events.length)} 条</span></div>
+    <div class="panel-head"><h2>单 Key 实时监控</h2><span class="muted">${rangeLabel(PRIMARY_RANGE)} · 最近 ${num(events.length)} 条</span></div>
     ${error}
     <div class="table-wrap"><table class="realtime-table"><thead><tr>
       <th style="width:170px">时间</th><th style="width:130px">状态</th><th style="width:170px">模型</th><th style="width:130px">思考/Tier</th>
@@ -510,8 +507,8 @@ async function fetchMe(seq, signal){
 }
 async function fetchUsage(seq, signal){
   const [usageResp, eventResp] = await Promise.all([
-    api(`/usage?range=${encodeURIComponent(state.range)}`, {signal}),
-    api(`/events?range=${encodeURIComponent(state.range)}&limit=100`, {signal})
+    api(`/usage?range=${encodeURIComponent(PRIMARY_RANGE)}`, {signal}),
+    api(`/events?range=${encodeURIComponent(PRIMARY_RANGE)}&limit=100`, {signal})
   ]);
   if (seq !== state.seq) return;
   state.usage = usageResp;
@@ -560,7 +557,7 @@ async function refreshActive(force=false, includeInactive=false){
   const controller = new AbortController();
   state.controller = controller;
   state.timeoutTimer = setTimeout(() => {
-    if (seq === state.seq && state.refreshing) controller.abort();
+    if (seq === state.seq && state.refreshing) controller.abort("refresh_timeout");
   }, 12000);
   const startedAt = performance.now();
   markRefreshStart(force);
@@ -570,6 +567,7 @@ async function refreshActive(force=false, includeInactive=false){
     const jobs = [];
     if (includeInactive || state.tab === "usage") {
       jobs.push(fetchUsage(seq, controller.signal).catch(e => {
+        if (isRefreshCancel(controller.signal)) return;
         if (isAuthError(e)) throw e;
         partial = true;
         state.errors.usage = "用量接口同步失败：" + errorMessage(e);
@@ -578,6 +576,7 @@ async function refreshActive(force=false, includeInactive=false){
     }
     if (includeInactive || state.tab === "usage" || state.tab === "codex") {
       jobs.push(fetchProtection(seq, controller.signal).catch(e => {
+        if (isRefreshCancel(controller.signal)) return;
         if (isAuthError(e)) throw e;
         partial = true;
         state.errors.protection = "思维链保护同步失败：" + errorMessage(e);
@@ -606,7 +605,6 @@ async function refreshActive(force=false, includeInactive=false){
         $("refresh").classList.add("hidden");
         $("active-chip").classList.add("hidden");
         $("logout").classList.add("hidden");
-        $("rangeSelect").classList.add("hidden");
         $("err").textContent = errorMessage(e, "会话已过期，请重新登录。");
       } else {
         markRefreshError(force);
@@ -633,7 +631,6 @@ async function loginNow(){
     $("refresh").classList.remove("hidden");
     $("active-chip").classList.remove("hidden");
     $("logout").classList.remove("hidden");
-    $("rangeSelect").classList.remove("hidden");
     $("topbar").classList.add("live-active");
     setLive("ok", "实时已连接");
     renderCurrent(true);
@@ -657,12 +654,6 @@ function schedule(){
 $("loginBtn").onclick = loginNow;
 $("refresh").onclick = () => refreshActive(true);
 $("logout").onclick = () => location.reload();
-$("rangeSelect").onchange = () => {
-  state.range = $("rangeSelect").value;
-  renderCards(true);
-  renderUsage(true);
-  refreshActive(true);
-};
 document.querySelectorAll(".tabs button").forEach(btn => btn.onclick = () => switchTab(btn.dataset.tab));
 document.addEventListener("visibilitychange", () => {
   if (document.hidden) {
