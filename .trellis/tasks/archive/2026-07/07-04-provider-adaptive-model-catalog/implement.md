@@ -31,3 +31,21 @@
   to existing discovery behavior.
 - Plus UI changes are management-only and do not affect `/v1/responses` or
   `cpa-usage` user APIs.
+
+## Deployment Evidence
+
+- Built Linux amd64 CLIProxyAPI binary:
+  `8c3f98d64ed77c8ad4a9792ffbb7412b5af2e7da9a883677d559f9955049cbbf`.
+- Built Linux amd64 CPA Key Policy+ plugin:
+  `cabb9baa6f27801f73700f9ed0e1fa15743b0b1344945f8ef56789ab48a9229f`.
+- Deployed on `sjc-snap` by bind-mounting
+  `/opt/codex-stacks/cpa/bin/CLIProxyAPI` into the `cpa` container and
+  replacing `/opt/codex-stacks/cpa/plugins/linux/amd64/cpa-key-policy-plus.so`.
+- Remote CPA version after restart:
+  `v7.2.50-provider-adaptive`, commit `2eafde3c`.
+- Internal Plus model API returned `7` models, all from `source=cpa_registry`
+  and `provider=codex`, with no warnings.
+- Internal `/v1/responses` smoke test for `gpt-5.5` returned HTTP `200` and
+  streaming smoke test ended with `response.completed`.
+- Public plugin admin/resource paths returned HTTP `404`; public
+  `cpa-usage.konbakuyomu.us` returned HTTP `200`.
