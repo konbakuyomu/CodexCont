@@ -673,3 +673,36 @@ Calmed the CPAMP CodexCont Executor monitor by making background polling quiet, 
 ### Next Steps
 
 - None - task complete
+
+
+## Session 21: Deploy quiet executor admin refresh
+
+**Date**: 2026-07-04
+**Task**: Deploy quiet executor admin refresh
+**Branch**: `codex/codexcont-executor-migration`
+
+### Summary
+
+Built cpa-codexcont-executor.so with existing WSL Go 1.22.6, backed up production plugin to /opt/codex-stacks/backups/executor-quiet-refresh-20260704-110642, deployed SHA 69e905579af7766abefe455f96497f7a6167c86c3574bd532e906d4a77dfbd6b, restarted only cpa, verified plugin registration, internal admin HTML quiet-refresh markers, internal status/summaries 200, and public resource paths 404.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `a7fde86` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
