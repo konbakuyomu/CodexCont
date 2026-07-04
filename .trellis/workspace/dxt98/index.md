@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 26
+- **Total Sessions**: 27
 - **Last Active**: 2026-07-05
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~874 | Active |
+| `journal-1.md` | ~907 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 27 | 2026-07-05 | SJC unified auto-upgrade governor | `90caea5` | `codex/codexcont-executor-migration` |
 | 26 | 2026-07-05 | System disk cleanup closeout | `ee8034e` | `codex/codexcont-executor-migration` |
 | 25 | 2026-07-04 | CPA Usage quota window cards | `33813a5` | `codex/codexcont-executor-migration` |
 | 24 | 2026-07-04 | CPA Key Policy Plus CPAMP pricing source | `3e36edf` | `codex/codexcont-executor-migration` |

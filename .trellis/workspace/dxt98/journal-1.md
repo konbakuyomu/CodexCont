@@ -872,3 +872,36 @@ Archived the system disk cleanup Trellis task, captured the cleanup workflow in 
 ### Next Steps
 
 - None - task complete
+
+
+## Session 27: SJC unified auto-upgrade governor
+
+**Date**: 2026-07-05
+**Task**: SJC unified auto-upgrade governor
+**Branch**: `codex/codexcont-executor-migration`
+
+### Summary
+
+Implemented and verified SJC's unified low-disk auto-upgrade governor, Docker app rollback-tag upgrades, host adapters, daily report adapter states, and supporting Trellis evidence/spec.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `90caea5` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
