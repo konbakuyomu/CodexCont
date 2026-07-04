@@ -640,3 +640,36 @@ Aligned cpa-usage current-key CodexCont detail fields with executor admin summar
 ### Next Steps
 
 - None - task complete
+
+
+## Session 20: Quiet executor admin refresh
+
+**Date**: 2026-07-04
+**Task**: Quiet executor admin refresh
+**Branch**: `codex/codexcont-executor-migration`
+
+### Summary
+
+Calmed the CPAMP CodexCont Executor monitor by making background polling quiet, keeping manual refresh feedback explicit, adding latest-wins abort handling, and documenting the refresh contract.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `a7fde86` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
