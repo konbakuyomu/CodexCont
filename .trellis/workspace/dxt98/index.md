@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 24
+- **Total Sessions**: 25
 - **Last Active**: 2026-07-04
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~808 | Active |
+| `journal-1.md` | ~841 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 25 | 2026-07-04 | CPA Usage quota window cards | `33813a5` | `codex/codexcont-executor-migration` |
 | 24 | 2026-07-04 | CPA Key Policy Plus CPAMP pricing source | `3e36edf` | `codex/codexcont-executor-migration` |
 | 23 | 2026-07-04 | Simplify CPA Key Policy Plus admin UX | `05be2af` | `codex/codexcont-executor-migration` |
 | 22 | 2026-07-04 | Deploy provider adaptive model catalog | `b53f343`, `2eafde3c` | `codex/codexcont-executor-migration` |
