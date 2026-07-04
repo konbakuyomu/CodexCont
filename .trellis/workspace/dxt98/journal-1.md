@@ -706,3 +706,37 @@ Built cpa-codexcont-executor.so with existing WSL Go 1.22.6, backed up productio
 ### Next Steps
 
 - None - task complete
+
+
+## Session 22: Deploy provider adaptive model catalog
+
+**Date**: 2026-07-04
+**Task**: Deploy provider adaptive model catalog
+**Branch**: `codex/codexcont-executor-migration`
+
+### Summary
+
+Implemented and deployed provider-adaptive model discovery: CPA exposes host.models.list, CPA Key Policy+ reads CPA registry first, SJC runs v7.2.50-provider-adaptive with Plus model API returning cpa_registry models and /v1/responses smoke passing.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `b53f343` | (see git log) |
+| `2eafde3c` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
