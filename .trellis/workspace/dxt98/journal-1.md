@@ -574,3 +574,36 @@ Fixed CodexCont Executor default model routing to pass visible Codex models thro
 ### Next Steps
 
 - None - task complete
+
+
+## Session 18: Plus live CodexCont processing feed
+
+**Date**: 2026-07-04
+**Task**: Plus live CodexCont processing feed
+**Branch**: `codex/codexcont-executor-migration`
+
+### Summary
+
+Persisted live executor processing summaries for the Plus current-key user feed, deployed both CPA plugins, validated cpa-usage processing visibility, and documented the bridge contract.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `55b772f` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
