@@ -236,9 +236,19 @@ func TestManagementAdminMonitorHTML(t *testing.T) {
 			t.Fatalf("admin monitor html missing %q", want)
 		}
 	}
+	for _, want := range []string{"IDLE_POLL_MS = 5000", "PROCESSING_POLL_MS = 1800", "scheduleNext", "AbortController", "state.seq", "setRefreshState(\"syncing\", \"同步中\")", "setLive(\"ok\", \"实时已连接\")"} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("admin monitor html missing quiet refresh marker %q", want)
+		}
+	}
 	for _, want := range []string{"keyDisplay", "shortID", "调用者 / 请求", "未知 Key"} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("admin monitor html missing readable request marker %q", want)
+		}
+	}
+	for _, forbidden := range []string{"setLive(\"info\", \"同步中\")", "setInterval("} {
+		if strings.Contains(html, forbidden) {
+			t.Fatalf("admin monitor html should not keep noisy refresh marker %q", forbidden)
 		}
 	}
 	for _, forbidden := range []string{"/user/api", "keys/create", "quota"} {

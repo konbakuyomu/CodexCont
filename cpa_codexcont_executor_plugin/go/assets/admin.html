@@ -179,8 +179,21 @@
 const RESOURCE_API = "/v0/resource/plugins/cpa-codexcont-executor/admin/api";
 const MANAGEMENT_API = "/v0/management/plugins/cpa-codexcont-executor";
 const API = String(window.CPA_CODEXCONT_EXECUTOR_API_BASE || (location.pathname.includes("/v0/resource/plugins/cpa-codexcont-executor/admin") ? RESOURCE_API : MANAGEMENT_API)).replace(/\/$/, "");
-const POLL_MS = 2200;
-const state = { summaries: [], seen: new Set(), expanded: new Set(), timer: 0, busy: false };
+const IDLE_POLL_MS = 5000;
+const PROCESSING_POLL_MS = 1800;
+const MANUAL_MIN_MS = 420;
+const BUTTON_RESET_MS = 1300;
+const state = {
+  summaries: [],
+  seen: new Set(),
+  expanded: new Set(),
+  timer: 0,
+  refreshTimer: 0,
+  refreshing: false,
+  seq: 0,
+  controller: null,
+  lastResume: 0
+};
 const labels = {
   processing: ["处理中", "info"],
   protected_clean: ["已保护", "ok"],
@@ -215,9 +228,27 @@ function setLive(kind, text){
   el.className = `chip ${kind}`;
   el.querySelector("span:last-child").textContent = text;
 }
-async function api(path){
+function setRefreshState(kind, text){
+  const btn = document.getElementById("refresh");
+  clearTimeout(state.refreshTimer);
+  btn.disabled = kind === "syncing";
+  btn.setAttribute("aria-busy", kind === "syncing" ? "true" : "false");
+  btn.textContent = text || "刷新";
+  if (kind === "updated" || kind === "error") {
+    state.refreshTimer = setTimeout(() => {
+      btn.disabled = false;
+      btn.setAttribute("aria-busy", "false");
+      btn.textContent = "刷新";
+    }, BUTTON_RESET_MS);
+  }
+}
+function manualRefreshDelay(startedAt){
+  const waitMs = Math.max(0, MANUAL_MIN_MS - (performance.now() - startedAt));
+  return new Promise(resolve => setTimeout(resolve, waitMs));
+}
+async function api(path, signal){
   const sep = path.includes("?") ? "&" : "?";
-  const resp = await fetch(API + path + sep + "_=" + Date.now(), {cache: "no-store", credentials: "same-origin"});
+  const resp = await fetch(API + path + sep + "_=" + Date.now(), {cache: "no-store", credentials: "same-origin", signal});
   if (!resp.ok) throw new Error(String(resp.status));
   return resp.json();
 }
@@ -285,38 +316,81 @@ function renderRows(){
     renderRows();
   });
 }
+function hasProcessing(){
+  return state.summaries.some(row => row && row.protection === "processing");
+}
+function clearSchedule(){
+  if (state.timer) clearTimeout(state.timer);
+  state.timer = 0;
+}
+function scheduleNext(){
+  clearSchedule();
+  if (document.hidden) return;
+  const delay = hasProcessing() ? PROCESSING_POLL_MS : IDLE_POLL_MS;
+  state.timer = setTimeout(() => refresh(false), delay);
+}
+function abortRefresh(){
+  if (state.controller) state.controller.abort();
+  state.controller = null;
+  state.refreshing = false;
+}
 async function refresh(force=false){
-  if (state.busy && !force) return;
-  state.busy = true;
-  document.getElementById("refresh").disabled = true;
-  setLive("info", "同步中");
+  if (!force && document.hidden) return;
+  if (state.refreshing) {
+    if (!force) return;
+    abortRefresh();
+  }
+  state.refreshing = true;
+  const seq = ++state.seq;
+  const controller = new AbortController();
+  state.controller = controller;
+  const manual = !!force;
+  const startedAt = performance.now();
+  if (manual) {
+    setRefreshState("syncing", "同步中");
+    setLive("info", "正在同步");
+  }
   try {
-    const [status, summaries] = await Promise.all([api("/status"), api("/summaries?limit=120")]);
+    const [status, summaries] = await Promise.all([api("/status", controller.signal), api("/summaries?limit=120", controller.signal)]);
+    if (manual) await manualRefreshDelay(startedAt);
+    if (seq !== state.seq) return;
     state.summaries = summaries.summaries || [];
     renderMetrics(status.executor || status);
     renderRows();
-    setLive("ok", "实时刷新");
+    if (manual) setRefreshState("updated", "刚刚更新");
+    setLive("ok", "实时已连接");
   } catch (err) {
-    setLive("bad", "同步失败");
+    if (manual) await manualRefreshDelay(startedAt);
+    if (controller.signal.aborted || seq !== state.seq) return;
+    if (manual) setRefreshState("error", "同步失败");
+    setLive("bad", "连接异常");
   } finally {
-    state.busy = false;
-    document.getElementById("refresh").disabled = false;
+    if (seq === state.seq) {
+      state.refreshing = false;
+      state.controller = null;
+      scheduleNext();
+    }
   }
 }
-function schedule(){
-  clearInterval(state.timer);
-  state.timer = setInterval(() => {
-    if (!document.hidden) refresh(false);
-  }, POLL_MS);
+function resumeRefresh(){
+  const now = Date.now();
+  if (now - state.lastResume < 800) return;
+  state.lastResume = now;
+  refresh(true);
 }
 document.getElementById("refresh").onclick = () => refresh(true);
 document.getElementById("filter").onchange = renderRows;
 document.addEventListener("visibilitychange", () => {
-  if (!document.hidden) refresh(true);
+  if (document.hidden) {
+    clearSchedule();
+    abortRefresh();
+    return;
+  }
+  resumeRefresh();
 });
-window.addEventListener("pageshow", () => refresh(true));
-refresh(true);
-schedule();
+window.addEventListener("pageshow", resumeRefresh);
+window.addEventListener("focus", resumeRefresh);
+resumeRefresh();
 </script>
 </body>
 </html>

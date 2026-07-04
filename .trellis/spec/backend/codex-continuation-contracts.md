@@ -114,6 +114,14 @@ The continuation owner must sit at executor level, where it can inspect raw upst
   on manual/foreground refresh, just like the user page. Fast local admin
   snapshot responses must not collapse the operator feedback into a single
   imperceptible frame.
+- CPAMP executor polling monitors must distinguish manual/foreground refresh
+  from quiet background polling. Background polling may update counters and
+  request rows, but it must not flip the main live chip through `syncing` or
+  disable the refresh button every cycle; otherwise the refresh button loses
+  meaning and operators cannot visually focus on real processing changes.
+- Executor monitor polling should use a slower idle cadence and a short
+  processing follow-up cadence. A visible `processing` row may trigger a quick
+  follow-up snapshot, while an idle page should stay calm.
 - When an SSE request update is still `processing`, the dashboard should
   immediately refresh status counters and follow up with short delayed
   `/admin/requests` snapshot reloads. Do not rely only on the next long polling
@@ -129,6 +137,8 @@ The continuation owner must sit at executor level, where it can inspect raw upst
 - Upstream CPA health probe fails -> dashboard reports upstream unhealthy but admin routes still return safely.
 - Browser tab is idle/backgrounded and returns later -> dashboard reconnects SSE and reloads snapshots without requiring a full page reload.
 - Manual refresh is clicked while a previous fetch is slow -> the latest refresh wins; older fetch results are ignored instead of overwriting the visible table.
+- Executor background polling is idle -> status rows update quietly without
+  alternating the live chip through `syncing`.
 - Request row appears as `processing` -> short follow-up reloads update it to a
   terminal state without requiring a full page refresh.
 - Public API host exposes any admin path -> deployment validation fails; fix Caddy/admin proxy routing before accepting rollout.
@@ -147,6 +157,9 @@ The continuation owner must sit at executor level, where it can inspect raw upst
 - Frontend smoke: desktop and mobile dashboard render without horizontal overflow, and simulated protection states are visibly distinct.
 - Frontend smoke: dashboard HTML keeps the manual-refresh reconnect path, foreground-resume handler, and visible refresh/realtime animation hooks.
 - Frontend smoke: dashboard HTML keeps processing-request follow-up reloads.
+- Frontend smoke: CPAMP executor monitor keeps quiet background refresh markers,
+  manual refresh feedback markers, and latest-wins/abort markers, and does not
+  contain the old auto-poll `setLive("info", "同步中")` pattern.
 - Production smoke: `cpa-admin.konbakuyomu.us/codexcont/` reaches the dashboard through Cloudflare Access, while public `cpa.konbakuyomu.us/admin/*` and `/codexcont/*` return `404`.
 
 ### 7. Wrong vs Correct
