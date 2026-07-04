@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 16
+- **Total Sessions**: 17
 - **Last Active**: 2026-07-04
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~543 | Active |
+| `journal-1.md` | ~576 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 17 | 2026-07-04 | Codex App upstream context error fix | `e065be0` | `codex/codexcont-executor-migration` |
 | 16 | 2026-07-04 | CodexCont key identity protection feed | `e7dcd7d` | `codex/codexcont-executor-migration` |
 | 15 | 2026-07-04 | Executor tool routing and native alias fix | `737befe` | `codex/codexcont-executor-migration` |
 | 14 | 2026-07-04 | CPA Key Policy Plus SQLite/native key stabilization | `c799e47` | `codex/codexcont-executor-migration` |

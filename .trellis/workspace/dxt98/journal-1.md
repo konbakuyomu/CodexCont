@@ -541,3 +541,36 @@ Executor protection summaries now carry safe native key identity, admin rows sho
 ### Next Steps
 
 - None - task complete
+
+
+## Session 17: Codex App upstream context error fix
+
+**Date**: 2026-07-04
+**Task**: Codex App upstream context error fix
+**Branch**: `codex/codexcont-executor-migration`
+
+### Summary
+
+Fixed CodexCont Executor default model routing to pass visible Codex models through, surfaced structured upstream context-window errors instead of opaque upstream_error, built/deployed executor artifact to SJC, and verified live gpt-5.5 streaming succeeds without Spark downgrade.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `e065be0` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
