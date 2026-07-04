@@ -1,0 +1,5 @@
+{"file": ".trellis/spec/backend/sjc-auto-upgrade-contracts.md", "reason": "SJC governor contract to port to LAX"}
+{"file": ".trellis/tasks/archive/2026-07/07-05-sjc-unified-auto-upgrade-governor/evidence.md", "reason": "Verified SJC rollout evidence and acceptance signals"}
+{"file": ".trellis/tasks/07-05-lax-unified-auto-upgrade-governor/prd.md", "reason": "LAX requirements and acceptance criteria"}
+{"file": ".trellis/tasks/07-05-lax-unified-auto-upgrade-governor/design.md", "reason": "LAX governor design and boundaries"}
+{"file": ".trellis/tasks/07-05-lax-unified-auto-upgrade-governor/implement.md", "reason": "Execution and validation checklist"}

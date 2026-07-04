@@ -1,0 +1,2 @@
+{"file": ".trellis/spec/backend/sjc-auto-upgrade-contracts.md", "reason": "Cross-check LAX behavior against existing SJC safety contract"}
+{"file": ".trellis/tasks/07-05-lax-unified-auto-upgrade-governor/evidence.md", "reason": "Rollout evidence and validation summary"}
