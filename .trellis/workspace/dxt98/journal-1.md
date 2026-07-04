@@ -740,3 +740,36 @@ Implemented and deployed provider-adaptive model discovery: CPA exposes host.mod
 ### Next Steps
 
 - None - task complete
+
+
+## Session 23: Simplify CPA Key Policy Plus admin UX
+
+**Date**: 2026-07-04
+**Task**: Simplify CPA Key Policy Plus admin UX
+**Branch**: `codex/codexcont-executor-migration`
+
+### Summary
+
+Slimmed the CPA Key Policy+ admin page into a scan-friendly key list plus focused detail editor, removed redundant source/inheritance/price coverage noise, added compact metrics and button feedback, then built and deployed the updated Plus plugin to SJC with admin HTML, model API, cpa-usage, public boundary, and /v1/responses smokes passing.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `05be2af` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

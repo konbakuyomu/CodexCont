@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 22
+- **Total Sessions**: 23
 - **Last Active**: 2026-07-04
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~742 | Active |
+| `journal-1.md` | ~775 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 23 | 2026-07-04 | Simplify CPA Key Policy Plus admin UX | `05be2af` | `codex/codexcont-executor-migration` |
 | 22 | 2026-07-04 | Deploy provider adaptive model catalog | `b53f343`, `2eafde3c` | `codex/codexcont-executor-migration` |
 | 21 | 2026-07-04 | Deploy quiet executor admin refresh | `a7fde86` | `codex/codexcont-executor-migration` |
 | 20 | 2026-07-04 | Quiet executor admin refresh | `a7fde86` | `codex/codexcont-executor-migration` |
