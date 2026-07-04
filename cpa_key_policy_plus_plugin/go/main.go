@@ -26,6 +26,7 @@ const (
 	executorFormatOpenAIResponse = "openai-response"
 	policyDenyMetadataPrefix     = "policy_deny_"
 	codexProcessingStaleAfter    = 15 * time.Minute
+	priceBookRefreshTTL          = 30 * time.Second
 )
 
 var executorUsageModelAliases = map[string]string{
@@ -91,6 +92,9 @@ type runtimeState struct {
 	keyStateModTime   time.Time
 	keyStateLastCheck time.Time
 	rpmBuckets        map[string][]time.Time
+	priceBook         policyplus.PriceBook
+	priceBookChecked  time.Time
+	priceBookRepriced string
 }
 
 type policyDecision struct {
@@ -460,12 +464,16 @@ func configure(raw []byte) error {
 	state.keyStatePath = strings.TrimSpace(cfg.KeyPolicyStatePath)
 	state.keyStateModTime = time.Time{}
 	state.keyStateLastCheck = time.Time{}
+	state.priceBook = policyplus.PriceBook{}
+	state.priceBookChecked = time.Time{}
+	state.priceBookRepriced = ""
 	state.mu.Unlock()
 	if old != nil {
 		_ = old.Close()
 	}
 	_ = refreshKeyPolicyState(true)
 	_ = syncNativeKeysFromLoadedConfig()
+	_ = currentPriceBook(context.Background(), true)
 	return nil
 }
 
@@ -529,6 +537,92 @@ func applyStoredSettings(cfg policyplus.Config, store *policyplus.Store) policyp
 	return cfg.Normalize()
 }
 
+func currentPriceBook(ctx context.Context, force bool) policyplus.PriceBook {
+	state.mu.RLock()
+	cfg := state.cfg
+	store := state.store
+	cached := state.priceBook
+	checked := state.priceBookChecked
+	state.mu.RUnlock()
+	if !force && !checked.IsZero() && time.Since(checked) < priceBookRefreshTTL && cached.Source != "" {
+		return cached
+	}
+	paths := cfg.PriceDBPaths()
+	book, warnings, err := policyplus.LoadCPAMPPriceBookFromSQLitePaths(ctx, paths)
+	if err == nil && len(book.Prices) > 0 {
+		if store != nil {
+			_ = store.SaveCachedPriceBook(ctx, book)
+			repriceCurrentMonthIfNeeded(ctx, store, book)
+		}
+		state.mu.Lock()
+		state.priceBook = book
+		state.priceBookChecked = time.Now()
+		state.mu.Unlock()
+		return book
+	}
+	if store != nil {
+		if fallback, ok, cacheErr := store.LoadCachedPriceBook(ctx); cacheErr == nil && ok {
+			fallback.Warnings = append(fallback.Warnings, warnings...)
+			if err != nil {
+				fallback.Warnings = append(fallback.Warnings, "CPAMP 价格源暂时不可读，已使用最近缓存。")
+			}
+			state.mu.Lock()
+			state.priceBook = fallback
+			state.priceBookChecked = time.Now()
+			state.mu.Unlock()
+			return fallback
+		}
+	}
+	if err != nil {
+		warnings = append(warnings, "CPAMP 价格源不可用，费用暂按 $0 记录。")
+	}
+	book = policyplus.PriceBook{
+		Source:   policyplus.CostSourceCPAMPPriceUnavailable,
+		LoadedAt: time.Now().UTC(),
+		Prices:   map[string]policyplus.ModelPrice{},
+		Warnings: warnings,
+	}
+	state.mu.Lock()
+	state.priceBook = book
+	state.priceBookChecked = time.Now()
+	state.mu.Unlock()
+	return book
+}
+
+func repriceCurrentMonthIfNeeded(ctx context.Context, store *policyplus.Store, book policyplus.PriceBook) {
+	fingerprint := book.Fingerprint()
+	if fingerprint == "" {
+		return
+	}
+	state.mu.RLock()
+	already := state.priceBookRepriced == fingerprint
+	state.mu.RUnlock()
+	if already {
+		return
+	}
+	window := policyplus.WindowFor(policyplus.RangeMonth, time.Now())
+	if _, err := store.RecalculateUsageCosts(ctx, window.From, book); err != nil {
+		_ = store.Audit(ctx, "system", "cpamp_price_reprice_failed", "usage_events", map[string]any{"error": policyplus.Brief(err.Error(), 240)})
+		return
+	}
+	state.mu.Lock()
+	state.priceBookRepriced = fingerprint
+	state.mu.Unlock()
+}
+
+func pricingStatus(book policyplus.PriceBook) map[string]any {
+	return map[string]any{
+		"source":        book.NormalizedSource(),
+		"path":          book.Path,
+		"model_count":   len(book.Prices),
+		"models":        book.PricedModelIDs(),
+		"loaded_at":     book.LoadedAt,
+		"updated_at_ms": book.UpdatedAtMS,
+		"synced_at_ms":  book.SyncedAtMS,
+		"warnings":      append([]string(nil), book.Warnings...),
+	}
+}
+
 func importLegacySQLite(store *policyplus.Store, path, source string) {
 	path = strings.TrimSpace(path)
 	if store == nil || path == "" {
@@ -578,6 +672,8 @@ func pluginRegistration() registration {
 				{Name: "native_keys_config_path", Type: configString, Description: "Optional CPA config YAML path whose top-level api-keys are synced as native policy keys."},
 				{Name: "cpamp_alias_db_path", Type: configString, Description: "Optional CPAMP manager SQLite path for read-only api_key_aliases lookup."},
 				{Name: "cpamp_alias_db_paths", Type: configString, Description: "Optional comma/semicolon-separated fallback CPAMP SQLite paths for read-only api_key_aliases lookup."},
+				{Name: "cpamp_price_db_path", Type: configString, Description: "Optional CPAMP manager SQLite path for read-only model_prices billing lookup."},
+				{Name: "cpamp_price_db_paths", Type: configString, Description: "Optional comma/semicolon-separated fallback CPAMP SQLite paths for read-only model_prices lookup."},
 				{Name: "session_secret", Type: configString, Description: "Secret used to sign user portal sessions."},
 				{Name: "codexcont_enabled", Type: configBoolean, Description: "Enable CodexCont status lookup for user summaries."},
 				{Name: "codexcont_route", Type: configBoolean, Description: "Deprecated in Key Policy Plus; keep false and let Governor own CodexCont routing."},
@@ -1218,14 +1314,9 @@ func usageHandle(raw []byte) ([]byte, error) {
 		ReasoningTokens:     rec.Detail.ReasoningTokens,
 		TotalTokens:         rec.Detail.TotalTokens,
 	}
-	var cost float64
-	var breakdown policyplus.CostBreakdown
-	if key.ID != "" {
-		if price, ok := policyplus.PriceForModel(key.Prices, visibleModel); ok {
-			breakdown = policyplus.CostForUsage(price, usage, visibleModel)
-			cost = breakdown.Costs["total"]
-		}
-	}
+	priceBook := currentPriceBook(context.Background(), false)
+	breakdown, _ := policyplus.CostForUsageFromPriceBook(priceBook, usage, visibleModel, rec.ServiceTier)
+	cost := breakdown.Costs["total"]
 	event := policyplus.UsageEvent{
 		RequestID:       firstNonEmpty(rec.ResponseHeaders.Get("x-request-id"), rec.ResponseHeaders.Get("x-openai-request-id")),
 		KeyID:           key.ID,
@@ -1274,25 +1365,6 @@ func visibleUsageModel(key policyplus.KeyRecord, rec usageRecord) string {
 	}
 	if len(allowed) == 1 {
 		return allowed[0]
-	}
-	priceModels := make([]string, 0, len(key.Prices))
-	for name, price := range key.Prices {
-		model := strings.TrimSpace(price.Model)
-		if model == "" {
-			model = strings.TrimSpace(name)
-		}
-		if model != "" {
-			priceModels = append(priceModels, model)
-		}
-	}
-	priceModels = cleanStrings(priceModels)
-	for _, model := range priceModels {
-		if strings.EqualFold(model, reported) {
-			return reported
-		}
-	}
-	if len(priceModels) == 1 {
-		return priceModels[0]
 	}
 	return reported
 }
@@ -1441,6 +1513,7 @@ func adminKeys(req managementRequest) ([]byte, error) {
 	if err != nil {
 		return jsonResponse(http.StatusInternalServerError, map[string]any{"ok": false, "error": err.Error()})
 	}
+	priceBook := currentPriceBook(context.Background(), false)
 	includeRemoved := truthyQuery(req.Query.Get("include_removed")) || truthyQuery(req.Query.Get("show_removed"))
 	keys = currentAdminKeyRows(keys, includeRemoved)
 	safe := make([]map[string]any, 0, len(keys))
@@ -1452,7 +1525,7 @@ func adminKeys(req managementRequest) ([]byte, error) {
 		row["quota"] = quotaWindows(key, usage)
 		safe = append(safe, row)
 	}
-	return jsonResponse(http.StatusOK, map[string]any{"ok": true, "keys": safe, "codexcont": codexcontStatus()})
+	return jsonResponse(http.StatusOK, map[string]any{"ok": true, "keys": safe, "codexcont": codexcontStatus(), "pricing": pricingStatus(priceBook)})
 }
 
 func truthyQuery(value string) bool {
@@ -1479,8 +1552,9 @@ func currentAdminKeyRows(keys []policyplus.KeyRecord, includeRemoved bool) []pol
 }
 
 func adminModels(_ managementRequest) ([]byte, error) {
+	priceBook := currentPriceBook(context.Background(), false)
 	models, warnings := adminModelCatalog()
-	return jsonResponse(http.StatusOK, map[string]any{"ok": true, "models": models, "warnings": warnings})
+	return jsonResponse(http.StatusOK, map[string]any{"ok": true, "models": models, "warnings": warnings, "pricing": pricingStatus(priceBook)})
 }
 
 func adminModelCatalog() ([]policyplus.ModelOption, []string) {
@@ -1651,9 +1725,7 @@ func adminSaveKeys(req managementRequest) ([]byte, error) {
 		key.Concurrency = 0
 		key.MaxActiveSessions = 0
 		key.Models = cleanStrings(item.Models)
-		if item.Prices != nil {
-			key.Prices = cleanPrices(item.Prices)
-		}
+		key.Prices = nil
 		key.FiveHourUSD = item.FiveHourUSD
 		key.DailyLimitUSD = item.DailyUSD
 		key.WeeklyLimitUSD = item.WeeklyUSD
@@ -1910,12 +1982,13 @@ func userMe(req managementRequest) ([]byte, error) {
 		return jsonResponse(http.StatusUnauthorized, map[string]any{"ok": false, "error": "not_authenticated", "category": "auth", "message": "会话已过期，请重新登录。"})
 	}
 	row := key.Safe()
+	priceBook := currentPriceBook(context.Background(), false)
 	if store := loadedStore(); store != nil {
 		usage := usageWindows(context.Background(), store, key.ID, time.Now())
 		row["usage"] = usage
 		row["quota"] = quotaWindows(key, usage)
 	}
-	return jsonResponse(http.StatusOK, map[string]any{"ok": true, "me": row})
+	return jsonResponse(http.StatusOK, map[string]any{"ok": true, "me": row, "pricing": pricingStatus(priceBook)})
 }
 
 func userUsage(req managementRequest) ([]byte, error) {
@@ -1927,6 +2000,7 @@ func userUsage(req managementRequest) ([]byte, error) {
 	if store == nil {
 		return jsonResponse(http.StatusServiceUnavailable, map[string]any{"ok": false, "error": "store_unavailable"})
 	}
+	priceBook := currentPriceBook(context.Background(), false)
 	rangeName := req.Query.Get("range")
 	if rangeName == "" {
 		rangeName = policyplus.Range24H
@@ -1941,9 +2015,10 @@ func userUsage(req managementRequest) ([]byte, error) {
 		successRate = float64(success) / float64(summary.Calls)
 	}
 	return jsonResponse(http.StatusOK, map[string]any{
-		"ok":     true,
-		"range":  rangeName,
-		"limits": key.Safe()["limits"],
+		"ok":      true,
+		"range":   rangeName,
+		"limits":  key.Safe()["limits"],
+		"pricing": pricingStatus(priceBook),
 		"summary": map[string]any{
 			"calls":        summary.Calls,
 			"success":      success,
@@ -2006,6 +2081,7 @@ func eventsResponseWithRange(keyID string, rangeName string, limit int) ([]byte,
 	if store == nil {
 		return jsonResponse(http.StatusServiceUnavailable, map[string]any{"ok": false, "error": "store_unavailable"})
 	}
+	priceBook := currentPriceBook(context.Background(), false)
 	var events []policyplus.UsageEvent
 	var err error
 	if strings.TrimSpace(rangeName) == "" {
@@ -2016,7 +2092,7 @@ func eventsResponseWithRange(keyID string, rangeName string, limit int) ([]byte,
 	if err != nil {
 		return jsonResponse(http.StatusInternalServerError, map[string]any{"ok": false, "error": err.Error()})
 	}
-	return jsonResponse(http.StatusOK, map[string]any{"ok": true, "events": events})
+	return jsonResponse(http.StatusOK, map[string]any{"ok": true, "events": events, "pricing": pricingStatus(priceBook)})
 }
 
 func usageWindows(ctx context.Context, store *policyplus.Store, keyID string, now time.Time) map[string]float64 {

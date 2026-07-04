@@ -16,6 +16,8 @@ type Config struct {
 	NativeKeysConfigPath string `yaml:"native_keys_config_path"`
 	CPAMPAliasDBPath     string `yaml:"cpamp_alias_db_path"`
 	CPAMPAliasDBPaths    string `yaml:"cpamp_alias_db_paths"`
+	CPAMPPriceDBPath     string `yaml:"cpamp_price_db_path"`
+	CPAMPPriceDBPaths    string `yaml:"cpamp_price_db_paths"`
 	SessionSecret        string `yaml:"session_secret"`
 	CodexContEnabled     bool   `yaml:"codexcont_enabled"`
 	CodexContRoute       bool   `yaml:"codexcont_route"`
@@ -53,6 +55,8 @@ func (c Config) Normalize() Config {
 	c.NativeKeysConfigPath = strings.TrimSpace(c.NativeKeysConfigPath)
 	c.CPAMPAliasDBPath = strings.TrimSpace(c.CPAMPAliasDBPath)
 	c.CPAMPAliasDBPaths = strings.TrimSpace(c.CPAMPAliasDBPaths)
+	c.CPAMPPriceDBPath = strings.TrimSpace(c.CPAMPPriceDBPath)
+	c.CPAMPPriceDBPaths = strings.TrimSpace(c.CPAMPPriceDBPaths)
 	if c.PollIntervalMS <= 0 {
 		c.PollIntervalMS = 1500
 	}
@@ -77,6 +81,30 @@ func (c Config) AliasDBPaths() []string {
 	}
 	add(c.CPAMPAliasDBPath)
 	add(c.CPAMPAliasDBPaths)
+	return out
+}
+
+func (c Config) PriceDBPaths() []string {
+	c = c.Normalize()
+	seen := map[string]bool{}
+	var out []string
+	add := func(value string) {
+		for _, part := range strings.FieldsFunc(value, func(r rune) bool {
+			return r == ',' || r == ';' || r == '\n' || r == '\r' || r == '\t'
+		}) {
+			part = strings.TrimSpace(part)
+			if part == "" || seen[part] {
+				continue
+			}
+			seen[part] = true
+			out = append(out, part)
+		}
+	}
+	add(c.CPAMPPriceDBPath)
+	add(c.CPAMPPriceDBPaths)
+	if len(out) == 0 {
+		return c.AliasDBPaths()
+	}
 	return out
 }
 

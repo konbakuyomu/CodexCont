@@ -270,18 +270,25 @@ This spreads the event contract into JavaScript and makes the beginner-facing st
 - Key Policy model entries may be structured objects under `models[]`, not only
   strings. The portal must parse clean aliases from `alias` / `model` /
   `target_model` fields instead of rendering dicts as strings.
-- Per-key prices are owned by Key Policy. The portal must parse
-  `input_price_per_million`, `output_price_per_million`, and
-  `cache_read_price_per_million` from each model entry, plus legacy
-  top-level `model_prices` forms for compatibility.
-- A model entry whose input, output, cache-read, and cache-creation prices are
-  all zero is treated as unpriced for safety. Missing prices must not silently
-  turn into "free" usage unless a future explicit free-model policy is added.
-- CPAMP can legitimately return `cost: 0` when its own global price book lacks
-  custom Codex aliases. For self-service user accounting, `/api/usage` and
-  `/api/events` should overlay costs using the current key's Key Policy price
-  book. Do not interpret CPAMP zero cost as "free" when Key Policy prices are
-  configured.
+- CPAMP `model_prices` is the pricing source of truth for Plus usage cost and
+  USD quota windows. Plus no longer lets ordinary admins edit per-key model
+  prices; Plus owns enable state, RPM, model allowlists, soft resets, and
+  5H/24H/7D/month limits only.
+- Plus reads CPAMP prices read-only from `cpamp_price_db_path(s)`, falling back
+  to `cpamp_alias_db_path(s)` when no explicit price DB path is configured,
+  and caches the latest successful snapshot in its `settings` table under
+  `cpamp_price_book_cache`.
+- Cost projection must use the usage record's `service_tier` field, not a UI
+  guess about Codex Fast mode. `service_tier=priority` and `service_tier=fast`
+  apply CPAMP-compatible multipliers: `gpt-5.5` is `2.5x`; `gpt-5.4`,
+  `gpt-5.4-mini`, and `gpt-5.3-codex` are `2x`; missing/other tiers are `1x`.
+- Missing CPAMP prices must not silently become "free". Cold start with no live
+  CPAMP price source and no cache keeps requests working but marks the cost
+  breakdown as `cpamp_price_unavailable` / `price_missing` and records zero
+  estimated cost with UI/API warning.
+- After a fresh live CPAMP price snapshot loads, Plus should recalculate
+  current-month `usage_events` cost and `cost_breakdown_json` from stored
+  tokens/model/service tier, without deleting events or changing key identity.
 - CPAMP Management API is the source of truth for usage token projection. Its
   public `cached_tokens` field is already the compatibility cached-input bucket
   used by the main CPA/CPAMP dashboard:
@@ -656,12 +663,17 @@ Close read cursors before writes on the same single-connection Plus DB.
 - CPA plugin config:
   `plugins.configs.cpa-key-policy-plus` with `enabled`, `priority`,
   `exclusive_auth`, `state_db_path`, `key_policy_state_path`,
-  `legacy_quota_db_path`, `governor_state_db_path`, `session_secret`,
-  `codexcont_enabled`, `codexcont_route`, `codexcont_url`, and `fail_mode`.
+  `legacy_quota_db_path`, `governor_state_db_path`, `codex_summary_db_path`,
+  `native_keys_config_path`, `cpamp_alias_db_path(s)`,
+  `cpamp_price_db_path(s)`, `session_secret`, `codexcont_enabled`,
+  `codexcont_route`, `codexcont_url`, and `fail_mode`.
 - SQLite tables owned by Plus: `keys`, `usage_events`, `reset_watermarks`,
   `active_requests`, `active_sessions`, `audit_log`, `codexcont_summaries`,
   and `settings`. `active_sessions` is retained for schema compatibility and
   delete cleanup, but is not an enforcement source after the RPM-only cutover.
+- Plus `settings` keys include `cpamp_price_book_cache`, a JSON snapshot of
+  CPAMP `model_prices` with `source`, `path`, timestamps, and safe per-model
+  price fields.
 - Admin resource: `GET /v0/resource/plugins/cpa-key-policy-plus/admin`.
 - Admin management routes:
   - `GET /v0/management/plugins/cpa-key-policy-plus/keys`
@@ -716,15 +728,16 @@ Close read cursors before writes on the same single-connection Plus DB.
   `id`, optional display metadata, provider/auth labels, `source`, and
   `known`. It must prefer CPA registry discovery through `host.models.list`,
   then fall back to CPA host auth hints, then preserve already configured Plus
-  models and price-only models.
+  models. Legacy price-only models may be preserved only for migration
+  compatibility; ordinary UI must not present per-key price editing.
 - `host.models.list` is a safe read-only host callback. It may expose
   `id/display_name/type/owned_by/provider/auth_id/auth_name/source`, but must
   not expose raw keys, auth storage JSON, OAuth tokens, cookies, request or
   response bodies, encrypted reasoning, or full secret hashes.
 - Provider-discovered models update selectable candidates only. They must not
-  automatically mutate per-key model allowlists or prices. Admin UI may offer
-  an explicit replacement action, and must warn when selected models have no
-  configured price because USD quota accounting may not cover them.
+  automatically mutate per-key model allowlists. Admin UI may offer an explicit
+  replacement action, and must warn when selected models have no CPAMP price
+  because USD quota accounting may be incomplete for those models.
 - `5h`, `24h`, and `7d` are rolling USD windows. `month` is the current
   Asia/Shanghai calendar month. Reset writes a soft watermark and does not
   delete historical `usage_events`.
@@ -855,9 +868,14 @@ Close read cursors before writes on the same single-connection Plus DB.
 - Go unit: native deletion from CPA config hides the key from ordinary Plus
   admin responses, preserves usage and Codex summaries, and stale archive routes
   return `410 archive_removed_use_delete`.
-- Frontend/Playwright: Plus admin can create a key, select discovered models,
-  edit per-model prices, save, hard-delete a key, reload, and keep dense tables
-  horizontally scrollable on 390px without page-level overflow.
+- Go unit: CPAMP price loader reads `model_prices` read-only with busy timeout,
+  falls back to cached `cpamp_price_book_cache`, applies `service_tier`
+  multipliers, and current-month reprice updates `usage_events` without
+  rewriting identities.
+- Frontend/Playwright: Plus admin can select discovered models, save policy
+  fields, reload, see CPAMP pricing source/missing-price warnings, and keep
+  dense tables horizontally scrollable on 390px without page-level overflow.
+  It must not expose Plus-side key creation/deletion or per-key price editing.
 - Production smoke: plugin SHA256 matches the built artifact, CPA logs show
   Plus loaded, Plus default admin key count matches current CPA native keys,
   `cpa-usage` login works, admin backend `/key-policy-plus/` and

@@ -243,19 +243,17 @@
     .modal-body { padding: 14px; overflow: auto; }
     .selector-layout {
       display: grid;
-      grid-template-columns: minmax(280px, .95fr) minmax(360px, 1.05fr);
+      grid-template-columns: 1fr;
       gap: 12px;
       margin-top: 12px;
     }
-    .model-list,
-    .price-list {
+    .model-list {
       border: 1px solid var(--line);
       border-radius: 8px;
       background: #111722;
       overflow: hidden;
     }
-    .model-list-head,
-    .price-list-head {
+    .model-list-head {
       min-height: 44px;
       display: flex;
       align-items: center;
@@ -280,9 +278,6 @@
     .model-meta { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 4px; }
     .selected-chips { min-height: 34px; display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 0 0; }
     .chip-button { border: 0; min-height: 20px; padding: 0 2px; background: transparent; color: inherit; font-weight: 900; }
-    .price-table { width: 100%; min-width: 640px; table-layout: fixed; }
-    .price-table th:nth-child(1) { width: 210px; }
-    .price-table input { width: 100%; min-width: 0; }
     .notice {
       margin-top: 10px;
       padding: 10px;
@@ -320,7 +315,7 @@
         <div class="mark">K+</div>
         <div>
           <h1>CPA Key Policy+</h1>
-          <p class="subtitle">Key 策略层：跟随 CPA 当前 Key，只编辑 RPM、模型、价格和额度窗口</p>
+          <p class="subtitle">Key 策略层：跟随 CPA 当前 Key，只编辑 RPM、模型白名单和额度窗口</p>
         </div>
       </div>
       <div class="toolbar">
@@ -376,8 +371,8 @@
     <div class="modal" role="dialog" aria-modal="true" aria-labelledby="editor-title">
       <div class="modal-head">
         <div>
-          <h2 id="editor-title">编辑模型/价格</h2>
-          <p class="subtitle">价格单位固定为美元 / 100 万 token；未知模型会保留，除非你主动移除。</p>
+          <h2 id="editor-title">编辑模型白名单</h2>
+          <p class="subtitle">价格统一跟随 CPAMP 模型价格；这里仅选择当前 Key 允许使用的模型。</p>
         </div>
         <button class="btn mini" data-close="editor-modal" type="button">关闭</button>
       </div>
@@ -403,26 +398,6 @@
             </div>
             <div id="edit-model-list" class="model-items"></div>
           </div>
-          <div class="price-list">
-            <div class="price-list-head">
-              <h3>价格</h3>
-              <small>输入 / 输出 / 缓存读 / 缓存写</small>
-            </div>
-            <div class="table-wrap">
-              <table class="price-table">
-                <thead>
-                  <tr>
-                    <th>模型</th>
-                    <th>输入</th>
-                    <th>输出</th>
-                    <th>缓存读</th>
-                    <th>缓存写</th>
-                  </tr>
-                </thead>
-                <tbody id="price-body"></tbody>
-              </table>
-            </div>
-          </div>
         </div>
       </div>
       <div class="modal-foot">
@@ -438,6 +413,7 @@ const state = {
   keys: [],
   modelOptions: [],
   modelWarnings: [],
+  pricing: null,
   selectedId: "",
   dirty: false,
   editor: null
@@ -463,11 +439,6 @@ function inputMoney(v){
   if (v === null || v === undefined || v === "") return "";
   const n = Number(v);
   return Number.isFinite(n) && n > 0 ? n.toFixed(3) : "";
-}
-function priceNumber(v){
-  if (v === null || v === undefined || v === "") return "";
-  const n = Number(v);
-  return Number.isFinite(n) && n > 0 ? String(n) : "";
 }
 function pct(v){
   const n = Number(v);
@@ -520,7 +491,9 @@ function clone(value){ return JSON.parse(JSON.stringify(value || {})); }
 function limitsOf(k){ return k.limits || {}; }
 function usageOf(k){ return k.usage || {}; }
 function selectedModels(k){ return Array.isArray(k.models) ? [...k.models] : []; }
-function pricesOf(k){ return clone(k.prices || (k.pricing && k.pricing.models) || {}); }
+function pricedModelSet(){
+  return new Set(((state.pricing && state.pricing.models) || []).map(m => String(m || "").toLowerCase()));
+}
 function sourceLabel(source){
   source = String(source || "");
   if (source === "cpa_registry") return "CPA 发现";
@@ -535,10 +508,7 @@ function optionMeta(o){
   parts.push(sourceLabel(o.source));
   return parts.filter(Boolean).join(" · ");
 }
-function hasModelPrice(p){
-  if (!p) return false;
-  return ["input_per_million","output_per_million","cache_read_per_million","cache_creation_per_million"].some(f => Number(p[f] || 0) > 0);
-}
+function hasGlobalModelPrice(model){ return pricedModelSet().has(String(model || "").toLowerCase()); }
 function quotaOf(k, name){
   const q = (k.quota || {})[name] || {};
   const limits = limitsOf(k);
@@ -583,8 +553,7 @@ function rpmStateText(k){
 }
 function missingPriceModels(k){
   const models = selectedModels(k);
-  const prices = pricesOf(k);
-  return models.filter(m => !hasModelPrice(prices[m]));
+  return models.filter(m => !hasGlobalModelPrice(m));
 }
 function modelCountText(k){
   const models = selectedModels(k);
@@ -634,21 +603,6 @@ function cleanStrings(items){
   }
   return out;
 }
-function cleanPrices(prices){
-  const out = {};
-  for (const [name, raw] of Object.entries(prices || {})) {
-    const model = String(raw.model || name || "").trim();
-    if (!model) continue;
-    out[model] = {
-      model,
-      input_per_million: Number(raw.input_per_million || 0),
-      output_per_million: Number(raw.output_per_million || 0),
-      cache_read_per_million: Number(raw.cache_read_per_million || 0),
-      cache_creation_per_million: Number(raw.cache_creation_per_million || 0)
-    };
-  }
-  return out;
-}
 function keyPayload(k){
   const limits = limitsOf(k);
   return {
@@ -658,7 +612,6 @@ function keyPayload(k){
     concurrency: 0,
     max_active_sessions: 0,
     models: cleanStrings(k.models || []),
-    prices: cleanPrices(pricesOf(k)),
     five_hour_usd: nullableNumber(limits.five_hour_usd),
     daily_usd: nullableNumber(limits.daily_usd),
     weekly_usd: nullableNumber(limits.weekly_usd),
@@ -671,10 +624,11 @@ function renderMetrics(){
   const enabled = state.keys.filter(k => k.enabled && k.source_present !== false).length;
   const unlimited = state.keys.filter(k => policyWarnings(k).length).length;
   const cost = state.keys.reduce((s,k) => s + Number(usageOf(k)["24h"] || 0), 0);
+  const priceSource = state.pricing && state.pricing.source === "cpamp_cached_price_book" ? "CPAMP 缓存价格" : state.pricing && state.pricing.source === "cpamp_price_book" ? "CPAMP 当前价格" : "价格源待同步";
   $("metrics").innerHTML = `
     <article class="metric"><div class="label">当前 Key</div><div class="value">${total}</div><div class="hint">跟随 CPA/CPAMP 当前配置</div></article>
     <article class="metric"><div class="label">启用</div><div class="value">${enabled}</div><div class="hint">可通过右侧切换</div></article>
-    <article class="metric"><div class="label">24H 费用</div><div class="value">$${cost.toFixed(3)}</div><div class="hint">按 Plus 价格估算</div></article>
+    <article class="metric"><div class="label">24H 费用</div><div class="value">$${cost.toFixed(3)}</div><div class="hint">${escapeHTML(priceSource)}</div></article>
     <article class="metric"><div class="label">需补策略</div><div class="value">${unlimited}</div><div class="hint">${unlimited ? "请补 RPM 或费用窗口" : "全部已配置"}</div></article>`;
 }
 function renderKeyList(){
@@ -727,7 +681,7 @@ function renderDetail(){
   if (key.source_present === false) alertParts.push("这个 Key 已不在 CPA 当前配置中，策略只读。");
   if (key.inherit_conflict) alertParts.push("同名历史策略存在多条候选，请人工确认模板。");
   if (warnings.length) alertParts.push(`当前缺少：${warnings.join("、")}。`);
-  if (missingPrices.length) alertParts.push(`${missingPrices.length} 个模型未配置价格，费用额度统计可能不覆盖。`);
+  if (missingPrices.length) alertParts.push(`${missingPrices.length} 个模型在 CPAMP 中未配置价格，费用额度统计可能不完整。`);
   body.innerHTML = `
     <div class="detail-summary">
       <div class="summary-card"><small>启用状态</small><strong class="${key.enabled ? "success" : "bad-text"}">${key.enabled ? "启用" : "停用"}</strong></div>
@@ -743,10 +697,10 @@ function renderDetail(){
     </div>
     <div class="section-title"><h3>额度窗口</h3><small>已用 / 限额 / 剩余</small></div>
     <div class="quota-editor">${windows.map(([name,label,field]) => renderQuotaCard(key, name, label, field, disabled)).join("")}</div>
-    <div class="section-title"><h3>模型与价格</h3><button class="btn mini" id="edit-models" type="button" ${disabled}>编辑模型/价格</button></div>
+    <div class="section-title"><h3>模型白名单</h3><button class="btn mini" id="edit-models" type="button" ${disabled}>编辑模型白名单</button></div>
     <div class="model-summary">
       <div><strong>${escapeHTML(modelCountText(key))}</strong><div class="detail-note">${escapeHTML(modelPreview(key))}</div></div>
-      <small>${missingPrices.length ? `${missingPrices.length} 个模型未配置价格` : "价格配置在弹窗内维护，单位为美元 / 100 万 token。"}</small>
+      <small>${missingPrices.length ? `${missingPrices.length} 个模型未在 CPAMP 定价` : "费用按 CPAMP 模型价格统计。"}</small>
     </div>
     <div class="section-title"><h3>Soft Reset</h3></div>
     <div class="actions">
@@ -789,7 +743,8 @@ async function load(opts={}){
     const [keys, models] = await Promise.all([api("/keys"), api("/models").catch(e => ({ok:false, models:[], warnings:[e.message]}))]);
     state.keys = keys.keys || [];
     state.modelOptions = models.models || [];
-    state.modelWarnings = models.warnings || [];
+    state.pricing = keys.pricing || models.pricing || null;
+    state.modelWarnings = [...(models.warnings || []), ...((state.pricing && state.pricing.warnings) || [])];
     state.dirty = false;
     setSync(opts.doneSyncText || "已同步", "ok");
     render();
@@ -868,7 +823,7 @@ function renderModelOptions(container, selectedSet, search, options){
   }
   container.innerHTML = filtered.map(o => {
     const selected = selectedSet.has(o.id);
-    const missingPrice = selected && state.editor && !hasModelPrice(state.editor.prices[o.id]);
+    const missingPrice = selected && !hasGlobalModelPrice(o.id);
     return `<label class="model-option">
       <input type="checkbox" data-model-option="${escapeHTML(o.id)}" ${selected ? "checked" : ""}>
       <span>
@@ -890,7 +845,6 @@ function openEditor(id){
   state.editor = {
     keyId: id,
     models: new Set(selectedModels(key)),
-    prices: pricesOf(key),
     search: ""
   };
   $("edit-model-search").value = "";
@@ -901,7 +855,7 @@ function openEditor(id){
 function renderEditor(){
   const editor = state.editor;
   if (!editor) return;
-  const options = allModelOptions([...editor.models, ...Object.keys(editor.prices || {})]);
+  const options = allModelOptions([...editor.models]);
   $("model-source-hint").textContent = state.modelWarnings.join(" ");
   $("edit-selected").innerHTML = selectedChips(editor.models);
   $("edit-selected").querySelectorAll("[data-remove-model]").forEach(btn => btn.onclick = () => {
@@ -912,26 +866,9 @@ function renderEditor(){
   const unknown = [...editor.models].filter(m => !options.some(o => o.id === m && o.known));
   $("unknown-notice").classList.toggle("hidden", unknown.length === 0);
   $("unknown-notice").textContent = unknown.length ? `以下模型来自现有策略或手动输入：${unknown.join(", ")}` : "";
-  const missingPrices = [...editor.models].filter(m => !hasModelPrice(editor.prices[m]));
+  const missingPrices = [...editor.models].filter(m => !hasGlobalModelPrice(m));
   $("price-warning").classList.toggle("hidden", missingPrices.length === 0);
-  $("price-warning").textContent = missingPrices.length ? `以下模型未配置价格，费用额度统计可能不覆盖：${missingPrices.join(", ")}` : "";
-  const models = [...editor.models].sort();
-  $("price-body").innerHTML = models.map(model => {
-    const p = editor.prices[model] || {model};
-    const priceTag = hasModelPrice(p) ? "" : ` <span class="tag warn">未配置价格</span>`;
-    return `<tr>
-      <td><strong>${escapeHTML(model)}</strong>${priceTag}</td>
-      <td><input data-price="${escapeHTML(model)}" data-field="input_per_million" type="number" min="0" step="0.000001" value="${priceNumber(p.input_per_million)}"></td>
-      <td><input data-price="${escapeHTML(model)}" data-field="output_per_million" type="number" min="0" step="0.000001" value="${priceNumber(p.output_per_million)}"></td>
-      <td><input data-price="${escapeHTML(model)}" data-field="cache_read_per_million" type="number" min="0" step="0.000001" value="${priceNumber(p.cache_read_per_million)}"></td>
-      <td><input data-price="${escapeHTML(model)}" data-field="cache_creation_per_million" type="number" min="0" step="0.000001" value="${priceNumber(p.cache_creation_per_million)}"></td>
-    </tr>`;
-  }).join("") || `<tr><td colspan="5" class="empty">允许全部模型时不会逐项计价；如需计费，请选择具体模型并填写价格。</td></tr>`;
-  $("price-body").querySelectorAll("[data-price]").forEach(input => input.oninput = () => {
-    const model = input.dataset.price;
-    editor.prices[model] = editor.prices[model] || {model};
-    editor.prices[model][input.dataset.field] = Number(input.value || 0);
-  });
+  $("price-warning").textContent = missingPrices.length ? `以下模型未在 CPAMP 配置价格，费用额度统计可能不完整：${missingPrices.join(", ")}` : "";
 }
 function addEditorModel(btn){
   const id = $("edit-add-model").value.trim();
@@ -947,8 +884,6 @@ function applyEditor(btn){
   const key = findKey(editor.keyId);
   if (!key) return;
   key.models = cleanStrings([...editor.models]);
-  key.prices = cleanPrices(editor.prices);
-  key.pricing = {models: key.prices};
   markDirty();
   if (btn) {
     const restore = setButtonState(btn, "已应用", "is-done");
@@ -989,7 +924,7 @@ $("edit-select-visible").onclick = () => {
 };
 $("edit-use-discovered").onclick = () => {
   if (!state.editor) return;
-  const discovered = allModelOptions([...state.editor.models, ...Object.keys(state.editor.prices || {})]).filter(o => o.source === "cpa_registry" && o.known);
+  const discovered = allModelOptions([...state.editor.models]).filter(o => o.source === "cpa_registry" && o.known);
   if (!discovered.length) {
     flashButton($("edit-use-discovered"), "暂无发现");
     return;

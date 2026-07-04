@@ -252,6 +252,7 @@ func TestPricingBreakdownUsesPerMillionAndCachedInput(t *testing.T) {
 		Model:               "gpt-5.5",
 		InputPerMillion:     5,
 		OutputPerMillion:    30,
+		CachePerMillion:     0.5,
 		CacheReadPerMillion: 0.5,
 	}
 	breakdown := CostForUsage(price, TokenUsage{
@@ -271,7 +272,90 @@ func TestPricingBreakdownUsesPerMillionAndCachedInput(t *testing.T) {
 		t.Fatalf("total cost should be positive: %#v", breakdown.Costs)
 	}
 	if breakdown.Costs["cached_input"] <= 0 {
-		t.Fatalf("cached input should be charged with cache read price: %#v", breakdown.Costs)
+		t.Fatalf("cached input should be charged with CPAMP cache price: %#v", breakdown.Costs)
+	}
+}
+
+func TestCPAMPPriceBookLoadAndServiceTierCost(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "usage.sqlite")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`create table model_prices (
+		model text primary key,
+		prompt_per_1m real not null,
+		completion_per_1m real not null,
+		cache_per_1m real not null,
+		cache_read_per_1m real not null default 0,
+		cache_creation_per_1m real not null default 0,
+		source text,
+		source_model_id text,
+		raw_json text,
+		updated_at_ms integer not null,
+		synced_at_ms integer
+	)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`insert into model_prices(model, prompt_per_1m, completion_per_1m, cache_per_1m, cache_read_per_1m, cache_creation_per_1m, source, source_model_id, raw_json, updated_at_ms, synced_at_ms)
+		values('gpt-5.5', 1, 10, 0.1, 0.2, 0.5, 'manual', 'gpt-5.5', '{}', 1000, 2000)`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	book, err := LoadCPAMPPriceBookFromSQLite(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	price, ok := book.PriceFor("GPT-5.5")
+	if !ok || price.InputPerMillion != 1 || price.CachePerMillion != 0.1 || price.CacheReadPerMillion != 0.2 {
+		t.Fatalf("loaded price = %#v ok=%v", price, ok)
+	}
+	breakdown, ok := CostForUsageFromPriceBook(book, TokenUsage{
+		InputTokens:         100,
+		CachedTokens:        20,
+		CacheReadTokens:     5,
+		CacheCreationTokens: 3,
+		OutputTokens:        10,
+	}, "gpt-5.5", "priority")
+	if !ok {
+		t.Fatalf("price should be available: %#v", breakdown)
+	}
+	want := ((80*1 + 20*0.1 + 5*0.2 + 3*0.5 + 10*10) / perMillion) * 2.5
+	if got := breakdown.Costs["total"]; got < want-0.000000000001 || got > want+0.000000000001 {
+		t.Fatalf("total cost = %.12f, want %.12f (%#v)", got, want, breakdown)
+	}
+	if breakdown.Source != CostSourceCPAMPPriceBook || breakdown.ServiceTierMultiplier != 2.5 {
+		t.Fatalf("breakdown source/tier = %#v", breakdown)
+	}
+}
+
+func TestCachedCPAMPPriceBookSettings(t *testing.T) {
+	ctx := context.Background()
+	store, err := OpenStore(filepath.Join(t.TempDir(), "policyplus.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	book := PriceBook{
+		Source:   CostSourceCPAMPPriceBook,
+		Path:     "usage.sqlite",
+		LoadedAt: time.Now().UTC(),
+		Prices: map[string]ModelPrice{
+			"gpt-5.5": {Model: "gpt-5.5", InputPerMillion: 1, OutputPerMillion: 10},
+		},
+	}
+	if err := store.SaveCachedPriceBook(ctx, book); err != nil {
+		t.Fatal(err)
+	}
+	got, ok, err := store.LoadCachedPriceBook(ctx)
+	if err != nil || !ok {
+		t.Fatalf("cached book ok=%v err=%v", ok, err)
+	}
+	if got.Source != CostSourceCPAMPCachedPriceBook || len(got.Prices) != 1 {
+		t.Fatalf("cached book = %#v", got)
 	}
 }
 

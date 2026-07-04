@@ -14,6 +14,7 @@ type ModelPrice struct {
 	Provider                string  `json:"provider,omitempty"`
 	InputPerMillion         float64 `json:"input_per_million"`
 	OutputPerMillion        float64 `json:"output_per_million"`
+	CachePerMillion         float64 `json:"cache_per_million,omitempty"`
 	CacheReadPerMillion     float64 `json:"cache_read_per_million"`
 	CacheCreationPerMillion float64 `json:"cache_creation_per_million"`
 }
@@ -109,7 +110,7 @@ func ValidateKeyRecord(key KeyRecord) error {
 	}
 	for name, price := range key.Prices {
 		if price.InputPerMillion < 0 || price.OutputPerMillion < 0 ||
-			price.CacheReadPerMillion < 0 || price.CacheCreationPerMillion < 0 {
+			price.CachePerMillion < 0 || price.CacheReadPerMillion < 0 || price.CacheCreationPerMillion < 0 {
 			return fmt.Errorf("model price must not be negative: %s", name)
 		}
 	}
@@ -581,10 +582,11 @@ func parsePriceEntry(raw map[string]any, defaultModel string) (ModelPrice, bool)
 		Provider:                firstString(raw, "provider", "type"),
 		InputPerMillion:         firstFloat(raw, "input_price_per_million", "inputPricePerMillion", "input", "prompt", "prompt_price_per_million"),
 		OutputPerMillion:        firstFloat(raw, "output_price_per_million", "outputPricePerMillion", "output", "completion", "completion_price_per_million"),
+		CachePerMillion:         firstFloat(raw, "cache_price_per_million", "cachePricePerMillion", "cache_per_million", "cachePerMillion", "cache"),
 		CacheReadPerMillion:     firstFloat(raw, "cache_read_price_per_million", "cacheReadPricePerMillion", "cache_price_per_million", "cachePricePerMillion", "cache_read", "cacheRead", "cache"),
 		CacheCreationPerMillion: firstFloat(raw, "cache_creation_price_per_million", "cacheCreationPricePerMillion", "cache_write_price_per_million", "cacheWritePricePerMillion", "cache_creation", "cacheCreation", "cache_write", "cacheWrite"),
 	}
-	if price.InputPerMillion <= 0 && price.OutputPerMillion <= 0 && price.CacheReadPerMillion <= 0 && price.CacheCreationPerMillion <= 0 {
+	if price.InputPerMillion <= 0 && price.OutputPerMillion <= 0 && price.CachePerMillion <= 0 && price.CacheReadPerMillion <= 0 && price.CacheCreationPerMillion <= 0 {
 		return ModelPrice{}, false
 	}
 	return price, true

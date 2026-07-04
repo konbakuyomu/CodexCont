@@ -26,6 +26,9 @@ func setupTestState(t *testing.T) policyplus.KeyRecord {
 	state.keyState = policyplus.KeyPolicyState{}
 	state.keyStatePath = ""
 	state.rpmBuckets = map[string][]time.Time{}
+	state.priceBook = policyplus.PriceBook{}
+	state.priceBookChecked = time.Time{}
+	state.priceBookRepriced = ""
 	old := state.store
 	state.store = nil
 	state.mu.Unlock()
@@ -66,6 +69,42 @@ func setupTestState(t *testing.T) policyplus.KeyRecord {
 		state.mu.Unlock()
 	})
 	return key
+}
+
+func createCPAMPPriceDB(t *testing.T, prices map[string]policyplus.ModelPrice) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "usage.sqlite")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`create table model_prices (
+		model text primary key,
+		prompt_per_1m real not null,
+		completion_per_1m real not null,
+		cache_per_1m real not null,
+		cache_read_per_1m real not null default 0,
+		cache_creation_per_1m real not null default 0,
+		source text,
+		source_model_id text,
+		raw_json text,
+		updated_at_ms integer not null,
+		synced_at_ms integer
+	)`); err != nil {
+		t.Fatal(err)
+	}
+	for model, price := range prices {
+		if _, err := db.Exec(`insert into model_prices(model, prompt_per_1m, completion_per_1m, cache_per_1m, cache_read_per_1m, cache_creation_per_1m, source, source_model_id, raw_json, updated_at_ms, synced_at_ms)
+			values(?, ?, ?, ?, ?, ?, 'test', ?, '{}', ?, ?)`,
+			model, price.InputPerMillion, price.OutputPerMillion, price.CachePerMillion,
+			price.CacheReadPerMillion, price.CacheCreationPerMillion, model, time.Now().UnixMilli(), time.Now().UnixMilli()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }
 
 func TestPluginRegistrationIsPolicyPlusExclusiveAuth(t *testing.T) {
@@ -178,8 +217,8 @@ func TestAdminSaveKeysPersistsUnifiedLimits(t *testing.T) {
 	if len(got.Models) != 2 || got.Models[1] != "custom-unknown" {
 		t.Fatalf("models should preserve unknown selected model: %#v", got.Models)
 	}
-	if price, ok := got.Prices["custom-unknown"]; !ok || price.Model != "custom-unknown" || price.InputPerMillion != 1.2 {
-		t.Fatalf("custom price not normalized: %#v", got.Prices)
+	if len(got.Prices) != 0 {
+		t.Fatalf("Plus save should ignore per-key price edits after CPAMP pricing cutover: %#v", got.Prices)
 	}
 }
 
@@ -772,12 +811,17 @@ func TestAdminKeysIncludesQuotaProjection(t *testing.T) {
 func TestUsageHandleMapsExecutorRecordsByAuthID(t *testing.T) {
 	key := setupTestState(t)
 	key.Models = []string{"gpt-5.4"}
-	key.Prices = map[string]policyplus.ModelPrice{
-		"gpt-5.4": {Model: "gpt-5.4", InputPerMillion: 10, OutputPerMillion: 20},
-	}
 	if err := loadedStore().SaveKeySettings(context.Background(), key); err != nil {
 		t.Fatal(err)
 	}
+	pricePath := createCPAMPPriceDB(t, map[string]policyplus.ModelPrice{
+		"gpt-5.4": {Model: "gpt-5.4", InputPerMillion: 10, OutputPerMillion: 20},
+	})
+	state.mu.Lock()
+	state.cfg.CPAMPPriceDBPath = pricePath
+	state.priceBook = policyplus.PriceBook{}
+	state.priceBookChecked = time.Time{}
+	state.mu.Unlock()
 	body, _ := json.Marshal(usageRecord{
 		Provider:     "codex-account-3.json",
 		ExecutorType: "codex",
@@ -815,7 +859,104 @@ func TestUsageHandleMapsExecutorRecordsByAuthID(t *testing.T) {
 		t.Fatalf("usage event did not preserve auth/alias mapping: %#v", got)
 	}
 	if got.Cost <= 0 {
-		t.Fatalf("usage event should use visible model price book, got cost=%f event=%#v", got.Cost, got)
+		t.Fatalf("usage event should use CPAMP model price book, got cost=%f event=%#v", got.Cost, got)
+	}
+	if got.CostBreakdown.Source != policyplus.CostSourceCPAMPPriceBook {
+		t.Fatalf("cost source = %#v", got.CostBreakdown)
+	}
+}
+
+func TestUsageHandleUsesCPAMPFastTierPricing(t *testing.T) {
+	key := setupTestState(t)
+	pricePath := createCPAMPPriceDB(t, map[string]policyplus.ModelPrice{
+		"gpt-5.5": {Model: "gpt-5.5", InputPerMillion: 1, OutputPerMillion: 10, CachePerMillion: 0.1},
+	})
+	state.mu.Lock()
+	state.cfg.CPAMPPriceDBPath = pricePath
+	state.priceBook = policyplus.PriceBook{}
+	state.priceBookChecked = time.Time{}
+	state.mu.Unlock()
+	body, _ := json.Marshal(usageRecord{
+		Model:       "gpt-5.5",
+		AuthID:      key.ID,
+		RequestedAt: time.Now(),
+		ServiceTier: "fast",
+		Detail: usageDetail{
+			InputTokens:  100000,
+			OutputTokens: 10000,
+			TotalTokens:  110000,
+		},
+	})
+	if _, err := usageHandle(body); err != nil {
+		t.Fatal(err)
+	}
+	events, err := loadedStore().RecentEvents(context.Background(), key.ID, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("events = %#v", events)
+	}
+	got := events[0]
+	want := ((100000.0 * 1) + (10000.0 * 10)) / 1_000_000 * 2.5
+	if got.Cost < want-0.0000001 || got.Cost > want+0.0000001 {
+		t.Fatalf("fast tier cost = %.9f, want %.9f event=%#v", got.Cost, want, got)
+	}
+	if got.CostBreakdown.ServiceTierMultiplier != 2.5 || got.CostBreakdown.Source != policyplus.CostSourceCPAMPPriceBook {
+		t.Fatalf("breakdown = %#v", got.CostBreakdown)
+	}
+}
+
+func TestCurrentPriceBookRecalculatesCurrentMonthUsage(t *testing.T) {
+	key := setupTestState(t)
+	store := loadedStore()
+	if err := store.InsertUsage(context.Background(), policyplus.UsageEvent{
+		RequestID:      "old-cost",
+		KeyID:          key.ID,
+		Model:          "gpt-5.5",
+		RequestedModel: "gpt-5.5",
+		RequestedAt:    time.Now().Add(-time.Hour),
+		ServiceTier:    "priority",
+		Usage: policyplus.TokenUsage{
+			InputTokens:  100000,
+			OutputTokens: 10000,
+			TotalTokens:  110000,
+		},
+		Cost: 0.001,
+		CostBreakdown: policyplus.CostBreakdown{
+			Source: policyplus.CostSourceKeyPolicyPlusPriceBook,
+			Model:  "gpt-5.5",
+			Costs:  map[string]float64{"total": 0.001},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	pricePath := createCPAMPPriceDB(t, map[string]policyplus.ModelPrice{
+		"gpt-5.5": {Model: "gpt-5.5", InputPerMillion: 1, OutputPerMillion: 10},
+	})
+	state.mu.Lock()
+	state.cfg.CPAMPPriceDBPath = pricePath
+	state.priceBook = policyplus.PriceBook{}
+	state.priceBookChecked = time.Time{}
+	state.priceBookRepriced = ""
+	state.mu.Unlock()
+	book := currentPriceBook(context.Background(), true)
+	if book.Source != policyplus.CostSourceCPAMPPriceBook {
+		t.Fatalf("price book = %#v", book)
+	}
+	events, err := store.RecentEvents(context.Background(), key.ID, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("events = %#v", events)
+	}
+	want := ((100000.0 * 1) + (10000.0 * 10)) / 1_000_000 * 2.5
+	if got := events[0].Cost; got < want-0.0000001 || got > want+0.0000001 {
+		t.Fatalf("recalculated cost = %.9f, want %.9f event=%#v", got, want, events[0])
+	}
+	if events[0].CostBreakdown.Source != policyplus.CostSourceCPAMPPriceBook {
+		t.Fatalf("breakdown source = %#v", events[0].CostBreakdown)
 	}
 }
 
@@ -1320,7 +1461,7 @@ func TestAdminHTMLHasRenderedSharedCSS(t *testing.T) {
 	if strings.Contains(html, "/v0/resource/plugins/cpa-key-policy-plus/admin/api") {
 		t.Fatal("admin html must not send mutating requests through GET-only resource routes")
 	}
-	if !strings.Contains(html, "/key-policy-plus/api") || !strings.Contains(html, "编辑模型/价格") {
+	if !strings.Contains(html, "/key-policy-plus/api") || !strings.Contains(html, "编辑模型白名单") {
 		t.Fatal("admin html should use the management alias and structured model editor")
 	}
 	for _, removed := range []string{"请求并发", "Codex窗口", "显示归档", "归档隐藏", "恢复 Key"} {
@@ -1333,12 +1474,12 @@ func TestAdminHTMLHasRenderedSharedCSS(t *testing.T) {
 			t.Fatalf("admin html should not expose Plus-side key lifecycle control %q", removed)
 		}
 	}
-	for _, want := range []string{"Key 策略", "保存策略", "当前 Key", "需补策略", "配额", "套用 CPA 发现模型", "CPA 发现", "未配置价格，费用额度统计可能不覆盖", "cpa_registry", "${models.length} 个模型", "允许全部模型", "is-busy", "is-done"} {
+	for _, want := range []string{"Key 策略", "保存策略", "当前 Key", "需补策略", "配额", "套用 CPA 发现模型", "CPA 发现", "未在 CPAMP 配置价格", "cpa_registry", "${models.length} 个模型", "允许全部模型", "is-busy", "is-done"} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("admin html missing native policy UI marker %q", want)
 		}
 	}
-	for _, removed := range []string{"新原生 Key 默认禁用", "新原生 Key 默认启用", "策略总数", "显示官方已移除", "include_removed", "CPA 原生", "已继承", "已计价", "quota-mini", "mini-grid", "用当前发现模型替换"} {
+	for _, removed := range []string{"新原生 Key 默认禁用", "新原生 Key 默认启用", "策略总数", "显示官方已移除", "include_removed", "CPA 原生", "已继承", "已计价", "quota-mini", "mini-grid", "用当前发现模型替换", "编辑模型/价格", "模型与价格", "price-table", "price-body"} {
 		if strings.Contains(html, removed) {
 			t.Fatalf("admin html should not advertise old/noisy policy UI marker %q", removed)
 		}

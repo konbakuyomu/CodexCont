@@ -20,6 +20,7 @@ type Store struct {
 }
 
 type UsageEvent struct {
+	ID              int64         `json:"-"`
 	RequestID       string        `json:"request_id"`
 	KeyID           string        `json:"key_id"`
 	KeyPreview      string        `json:"key_preview"`
@@ -1038,6 +1039,72 @@ func (s *Store) InsertUsage(ctx context.Context, event UsageEvent) error {
 		event.Cost, string(breakdown),
 	)
 	return err
+}
+
+func (s *Store) RecalculateUsageCosts(ctx context.Context, since time.Time, book PriceBook) (int, error) {
+	if s == nil || s.db == nil || len(book.Prices) == 0 {
+		return 0, nil
+	}
+	rows, err := s.db.QueryContext(ctx, `select id, coalesce(model, ''), coalesce(requested_model, ''), coalesce(service_tier, ''),
+		coalesce(input_tokens, 0), coalesce(output_tokens, 0), coalesce(cached_tokens, 0), coalesce(cache_read_tokens, 0),
+		coalesce(cache_creation_tokens, 0), coalesce(reasoning_tokens, 0), coalesce(total_tokens, 0)
+		from usage_events where requested_at >= ?`, since.Unix())
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+	type update struct {
+		id        int64
+		cost      float64
+		breakdown CostBreakdown
+	}
+	var updates []update
+	for rows.Next() {
+		var id int64
+		var model, requestedModel, serviceTier string
+		var usage TokenUsage
+		if err := rows.Scan(
+			&id, &model, &requestedModel, &serviceTier,
+			&usage.InputTokens, &usage.OutputTokens, &usage.CachedTokens, &usage.CacheReadTokens,
+			&usage.CacheCreationTokens, &usage.ReasoningTokens, &usage.TotalTokens,
+		); err != nil {
+			return 0, err
+		}
+		visibleModel := strings.TrimSpace(requestedModel)
+		if visibleModel == "" {
+			visibleModel = strings.TrimSpace(model)
+		}
+		breakdown, _ := CostForUsageFromPriceBook(book, usage, visibleModel, serviceTier)
+		updates = append(updates, update{id: id, cost: breakdown.Costs["total"], breakdown: breakdown})
+	}
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	if len(updates) == 0 {
+		return 0, nil
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer func() {
+		_ = tx.Rollback()
+	}()
+	stmt, err := tx.PrepareContext(ctx, `update usage_events set cost=?, cost_breakdown_json=? where id=?`)
+	if err != nil {
+		return 0, err
+	}
+	defer stmt.Close()
+	for _, item := range updates {
+		raw, _ := json.Marshal(item.breakdown)
+		if _, err := stmt.ExecContext(ctx, item.cost, string(raw), item.id); err != nil {
+			return 0, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return len(updates), nil
 }
 
 func (s *Store) UsageSum(ctx context.Context, keyID string, window Window) (float64, error) {
