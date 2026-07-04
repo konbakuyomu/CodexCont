@@ -275,6 +275,14 @@ function protectionMap(){
 function detailList(items){
   return `<dl class="kv">${items.map(([k,v]) => `<dt>${esc(k)}</dt><dd>${esc(v == null || v === "" ? "-" : v)}</dd>`).join("")}</dl>`;
 }
+function keyIdentityLabel(identity){
+  if (!identity) return "-";
+  return identity.name || identity.alias || identity.preview || identity.id || "-";
+}
+function roundSummaryText(rounds){
+  if (!Array.isArray(rounds) || !rounds.length) return "无轮次摘要";
+  return rounds.map(r => `#${esc(r.round ?? "-")} reasoning ${esc(r.reasoning_tokens ?? "-")} / ${esc(r.decision || "-")}`).join("<br>");
+}
 function statusChip(ev){
   if (ev.failed) return chip("failed");
   return chip("success");
@@ -426,13 +434,19 @@ function renderUsage(force=false){
   });
 }
 function protectionDetail(req){
+  const identity = req.key_identity || {};
   return `<tr class="detail-row"><td colspan="8"><div class="detail-grid">
     <section class="detail-card"><h3>请求信息</h3>${detailList([
       ["请求 ID", req.request_id || "-"],
+      ["Key", keyIdentityLabel(identity)],
+      ["Preview", identity.preview || "-"],
       ["模型", req.model || "-"],
       ["路径", req.path || "-"],
       ["状态", req.status || "-"],
       ["最终状态", req.final_status || "-"],
+      ["开始时间", dt(req.started_at)],
+      ["更新时间", dt(req.updated_at)],
+      ["结束时间", dt(req.ended_at)],
       ["耗时", duration(req.duration_ms)],
     ])}</section>
     <section class="detail-card"><h3>保护判断</h3><dl class="kv">
@@ -449,6 +463,7 @@ function protectionDetail(req){
       ["末轮 reasoning", req.latest_reasoning_tokens == null ? "-" : num(req.latest_reasoning_tokens)],
       ["自动续写", num(req.continuation_count)],
     ])}</section>
+    <section class="detail-card"><h3>轮次</h3><p class="muted mono">${roundSummaryText(req.rounds)}</p></section>
     <section class="detail-card"><h3>失败摘要</h3><div class="failure-box mono">${esc(req.failure_reason || req.failure_detail || "无失败详情")}</div></section>
   </div></td></tr>`;
 }
@@ -467,7 +482,7 @@ function renderProtection(force=false){
     const id = protectionID(req, index);
     const open = state.expandedProtection.has(id);
     const main = `<tr class="data-row">
-      <td><div>${dt(req.started_at || req.updated_at)}</div><small class="mono">${esc(req.request_id || "")}</small></td>
+      <td><div>${dt(req.updated_at || req.started_at)}</div><small class="mono">${esc(req.request_id || "")}</small></td>
       <td>${chip(req.protection)}</td>
       <td><div class="mono">${esc(req.model || "-")}</div><div class="muted">${esc(req.status || "-")}</div></td>
       <td><span class="strong">${req.first_truncation_round == null ? "-" : "#" + esc(req.first_truncation_round)}</span><div class="muted">${req.first_truncation_reasoning_tokens == null ? "" : num(req.first_truncation_reasoning_tokens)}</div></td>

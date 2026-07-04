@@ -924,6 +924,26 @@ func TestUserHTMLIgnoresRefreshCancelNoise(t *testing.T) {
 	}
 }
 
+func TestUserHTMLRendersCodexContRoundDetails(t *testing.T) {
+	html := userHTML()
+	for _, want := range []string{
+		"function roundSummaryText",
+		"无轮次摘要",
+		`reasoning ${esc(r.reasoning_tokens`,
+		`["Key", keyIdentityLabel(identity)]`,
+		`["Preview", identity.preview || "-"]`,
+		`["开始时间", dt(req.started_at)]`,
+		`["更新时间", dt(req.updated_at)]`,
+		`["结束时间", dt(req.ended_at)]`,
+		"<h3>轮次</h3>",
+		"dt(req.updated_at || req.started_at)",
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("user protection detail missing %q", want)
+		}
+	}
+}
+
 func TestCodexRequestsPreferExecutorSummaryBridge(t *testing.T) {
 	key := setupTestState(t)
 	execPath := filepath.Join(t.TempDir(), "executor.sqlite")
@@ -958,6 +978,70 @@ func TestCodexRequestsPreferExecutorSummaryBridge(t *testing.T) {
 	requests, source := codexRequestsForKey(key, 10)
 	if source != "codexcont_executor_store" || len(requests) != 1 || requests[0]["request_id"] != "exec-a" {
 		t.Fatalf("source=%s requests=%#v", source, requests)
+	}
+}
+
+func TestCodexRequestsProjectSafeExecutorDetailFields(t *testing.T) {
+	key := setupTestState(t)
+	execPath := filepath.Join(t.TempDir(), "executor.sqlite")
+	execStore, err := policyplus.OpenStore(execPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := execStore.SaveCodexSummary(context.Background(), "exec-detail", key.ID, "gpt-5.5", "auto_continued", map[string]any{
+		"request_id":                        "exec-detail",
+		"model":                             "gpt-5.5",
+		"status":                            "completed",
+		"final_status":                      "completed",
+		"protection":                        "auto_continued",
+		"key_identity":                      map[string]any{"known": true, "id": key.ID, "preview": key.Preview},
+		"folded":                            true,
+		"passthrough":                       false,
+		"first_truncation_round":            1,
+		"first_truncation_reasoning_tokens": 516,
+		"first_truncation_n":                1,
+		"first_truncation_decision":         "continue",
+		"latest_reasoning_tokens":           94,
+		"continuation_count":                3,
+		"failure_detail":                    "safe diagnostic",
+		"rounds": []map[string]any{
+			{"round": 1, "reasoning_tokens": 516, "decision": "continue"},
+			{"round": 4, "reasoning_tokens": 94, "decision": "clean"},
+		},
+		"authorization":     "Bearer sk-should-not-leak",
+		"encrypted_content": "should-not-leak",
+		"request_body":      "should-not-leak",
+		"response_body":     "should-not-leak",
+		"full_hash":         strings.Repeat("a", 64),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := execStore.Close(); err != nil {
+		t.Fatal(err)
+	}
+	state.mu.Lock()
+	state.cfg.CodexSummaryDBPath = execPath
+	state.cfg.CodexContEnabled = false
+	state.mu.Unlock()
+	requests, source := codexRequestsForKey(key, 10)
+	if source != "codexcont_executor_store" || len(requests) != 1 {
+		t.Fatalf("source=%s requests=%#v", source, requests)
+	}
+	got := requests[0]
+	for _, field := range []string{"final_status", "folded", "passthrough", "first_truncation_n", "failure_detail", "rounds"} {
+		if _, ok := got[field]; !ok {
+			t.Fatalf("projected summary missing %s: %#v", field, got)
+		}
+	}
+	rounds, _ := got["rounds"].([]any)
+	if len(rounds) != 2 {
+		t.Fatalf("rounds projection = %#v", got["rounds"])
+	}
+	raw, _ := json.Marshal(got)
+	for _, forbidden := range []string{"sk-should-not-leak", "encrypted_content", "request_body", "response_body", strings.Repeat("a", 64)} {
+		if strings.Contains(string(raw), forbidden) {
+			t.Fatalf("unsafe field leaked in projection: %s", raw)
+		}
 	}
 }
 

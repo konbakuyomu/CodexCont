@@ -2254,10 +2254,11 @@ func safeCodexSummary(req map[string]any, key policyplus.KeyRecord) map[string]a
 	}
 	fields := []string{
 		"request_id", "model", "path", "started_at", "updated_at", "ended_at",
-		"duration_ms", "status", "protection", "latest_round",
+		"duration_ms", "status", "final_status", "protection", "latest_round",
 		"latest_reasoning_tokens", "first_truncation_round",
-		"first_truncation_reasoning_tokens", "first_truncation_decision",
-		"continuation_count", "stopped_reason", "failure_reason",
+		"first_truncation_reasoning_tokens", "first_truncation_n",
+		"first_truncation_decision", "continuation_count", "stopped_reason",
+		"failure_reason", "failure_detail", "folded", "passthrough",
 		"passthrough_reason", "rounds",
 	}
 	out := map[string]any{}

@@ -1032,6 +1032,13 @@ Separate the key authority migration from the continuation-owner migration.
   by trusted row `key_id` and by safe summary `key_identity.id` or
   `key_identity.preview`, but must not show other-key rows or guess ownership
   for summaries with no identity.
+- Plus user CodexCont details should stay information-equivalent with the
+  executor admin detail for safe fields: `final_status`, `folded`,
+  `passthrough`, `passthrough_reason`, `first_truncation_n`, `failure_detail`,
+  `rounds[]`, safe key name, and safe preview may be shown. The user table
+  should use the same timestamp semantics as the executor admin table
+  (`updated_at || started_at`) and show start/update/end timestamps in the
+  expanded detail to avoid apparent duration offsets.
 - `/user/api/codexcont` must filter or downgrade stale `processing` rows from
   the executor bridge so a CPA restart or stream crash does not keep the user's
   active protection counter inflated. Terminal history can remain visible.
@@ -1114,6 +1121,10 @@ Separate the key authority migration from the continuation-owner migration.
   all-key `processing` row and `cpa-usage.konbakuyomu.us` shows the same
   current-key `processing` row through `/user/api/codexcont`, without showing
   other keys.
+- Good: A current-key auto-continued row with rounds
+  `516/continue, 516/continue, 516/continue, 94/clean` renders those rounds in
+  `cpa-usage` just as the executor admin detail does, while still hiding other
+  keys.
 - Good: `/v0/resource/plugins/cpa-codexcont-executor/admin` is routable inside
   the admin boundary, while `/v0/resource/plugins/cpa-codexcont-executor/status`
   is not a resource page and returns `404` through resource dispatch.
@@ -1163,6 +1174,8 @@ Separate the key authority migration from the continuation-owner migration.
   terminal state on executor/host errors.
 - Go unit: Plus returns current-key `processing` rows from the executor bridge,
   hides other-key processing rows, and ignores stale processing rows.
+- Go unit: Plus projects safe executor detail fields and user HTML keeps the
+  per-round rendering hook and executor-aligned timestamp order.
 
 ### 7. Wrong vs Correct
 
