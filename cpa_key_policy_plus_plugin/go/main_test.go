@@ -1333,13 +1333,15 @@ func TestAdminHTMLHasRenderedSharedCSS(t *testing.T) {
 			t.Fatalf("admin html should not expose Plus-side key lifecycle control %q", removed)
 		}
 	}
-	for _, want := range []string{"Key 策略", "保存策略", "当前官方 Key", "新原生 Key 默认启用", "未配置限额", "用当前发现模型替换", "CPA 发现", "未配置价格，费用额度统计可能不覆盖", "cpa_registry"} {
+	for _, want := range []string{"Key 策略", "保存策略", "当前 Key", "需补策略", "配额", "套用 CPA 发现模型", "CPA 发现", "未配置价格，费用额度统计可能不覆盖", "cpa_registry", "${models.length} 个模型", "允许全部模型", "is-busy", "is-done"} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("admin html missing native policy UI marker %q", want)
 		}
 	}
-	if strings.Contains(html, "新原生 Key 默认禁用") || strings.Contains(html, "策略总数") || strings.Contains(html, "显示官方已移除") || strings.Contains(html, "include_removed") {
-		t.Fatal("admin html should not advertise old disabled/default, historical count, or removed-row controls")
+	for _, removed := range []string{"新原生 Key 默认禁用", "新原生 Key 默认启用", "策略总数", "显示官方已移除", "include_removed", "CPA 原生", "已继承", "已计价", "quota-mini", "mini-grid", "用当前发现模型替换"} {
+		if strings.Contains(html, removed) {
+			t.Fatalf("admin html should not advertise old/noisy policy UI marker %q", removed)
+		}
 	}
 }
 
