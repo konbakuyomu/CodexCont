@@ -773,3 +773,36 @@ Slimmed the CPA Key Policy+ admin page into a scan-friendly key list plus focuse
 ### Next Steps
 
 - None - task complete
+
+
+## Session 24: CPA Key Policy Plus CPAMP pricing source
+
+**Date**: 2026-07-04
+**Task**: CPA Key Policy Plus CPAMP pricing source
+**Branch**: `codex/codexcont-executor-migration`
+
+### Summary
+
+Aligned CPA Key Policy+ billing with CPAMP model_prices, added service_tier fast/priority multipliers, cached price snapshots, repriced current-month usage, deployed to SJC, archived the Trellis task, and updated backend spec guidance.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `3e36edf` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
