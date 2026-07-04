@@ -905,3 +905,36 @@ Implemented and verified SJC's unified low-disk auto-upgrade governor, Docker ap
 ### Next Steps
 
 - None - task complete
+
+
+## Session 28: LAX unified auto-upgrade governor
+
+**Date**: 2026-07-05
+**Task**: LAX unified auto-upgrade governor
+**Branch**: `codex/codexcont-executor-migration`
+
+### Summary
+
+Deployed and documented the LAX auto-upgrade governor, Docker app labels, Docker apt adapter, daily report integration, live validation, and Trellis evidence.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `f78d6cf` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
