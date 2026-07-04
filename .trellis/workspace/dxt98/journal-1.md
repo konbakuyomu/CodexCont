@@ -607,3 +607,36 @@ Persisted live executor processing summaries for the Plus current-key user feed,
 ### Next Steps
 
 - None - task complete
+
+
+## Session 19: Plus CodexCont detail alignment
+
+**Date**: 2026-07-04
+**Task**: Plus CodexCont detail alignment
+**Branch**: `codex/codexcont-executor-migration`
+
+### Summary
+
+Aligned cpa-usage current-key CodexCont detail fields with executor admin summaries, deployed Plus plugin, and validated rounds/final status parity in production.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `f80c05a` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
