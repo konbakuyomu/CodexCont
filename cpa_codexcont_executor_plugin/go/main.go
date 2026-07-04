@@ -1110,6 +1110,11 @@ func (d *streamDiagnostics) RecordRead(round int, readNo int, payload []byte, do
 	}
 	if err != nil {
 		item["last_read_error"] = brief(err.Error(), 160)
+		if upstreamErr := executor.ParseUpstreamError(err); upstreamErr != nil {
+			item["upstream_error_type"] = upstreamErr.Type
+			item["upstream_error_code"] = upstreamErr.Code
+			item["upstream_error_message"] = brief(upstreamErr.Message, 240)
+		}
 		if readNo == 1 {
 			item["first_read_error"] = brief(err.Error(), 160)
 		}

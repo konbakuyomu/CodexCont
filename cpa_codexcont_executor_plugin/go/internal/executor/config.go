@@ -29,14 +29,11 @@ type Config struct {
 
 func DefaultConfig() Config {
 	return Config{
-		Enabled:      true,
-		RouteEnabled: false,
-		StateDBPath:  "cpa-codexcont-executor.sqlite",
-		FailMode:     "fallback",
-		UpstreamModelAliases: map[string]string{
-			"gpt-5.4": DefaultCodexUpstreamModel,
-			"gpt-5.5": DefaultCodexUpstreamModel,
-		},
+		Enabled:               true,
+		RouteEnabled:          false,
+		StateDBPath:           "cpa-codexcont-executor.sqlite",
+		FailMode:              "fallback",
+		UpstreamModelAliases:  map[string]string{},
 		TruncationStep:        518,
 		MaxContinue:           8,
 		MinN:                  1,
@@ -57,11 +54,7 @@ func (c Config) Normalize() Config {
 		c.FailMode = "fallback"
 	}
 	c.UpstreamModel = strings.TrimSpace(c.UpstreamModel)
-	defaultAliases := DefaultConfig().UpstreamModelAliases
-	clean := make(map[string]string, len(defaultAliases)+len(c.UpstreamModelAliases))
-	for alias, target := range defaultAliases {
-		clean[alias] = target
-	}
+	clean := make(map[string]string, len(c.UpstreamModelAliases))
 	for alias, target := range c.UpstreamModelAliases {
 		alias = strings.TrimSpace(alias)
 		target = strings.TrimSpace(target)

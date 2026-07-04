@@ -1052,17 +1052,20 @@ Separate the key authority migration from the continuation-owner migration.
   returns an empty protection list, while usage APIs continue to pass.
 - Upstream EOF before terminal event -> executor emits `response.incomplete`
   and must not leak buffered tentative message/function-call output.
+- Structured upstream stream errors, especially context-window errors returned
+  as OpenAI-compatible JSON, must be surfaced as explicit downstream
+  `response.failed` events with the useful type/code/message preserved. Do not
+  collapse these into generic `response.incomplete(reason=upstream_error)`.
 - Host stream returns line-sized SSE chunks -> executor must still emit the
   terminal event; treating this as EOF/incomplete is a regression.
 - Upstream alias configured -> upstream host callback uses the internal model
   in callback metadata and body; downstream stream and summaries keep the
   client-visible model.
-- Executor default config must include stable Codex visible-model aliases for
-  currently exposed Codex client models. In this deployment, `gpt-5.4` and
-  `gpt-5.5` both default to the provider-registered upstream
-  `gpt-5.3-codex-spark`; production YAML may repeat or override those mappings,
-  but missing YAML entries must not make `gpt-5.5` fall through to an
-  unregistered upstream model.
+- Executor default config must pass visible Codex models through unchanged.
+  Do not silently downgrade `gpt-5.4` or `gpt-5.5` to a smaller-context
+  upstream model. Production YAML may explicitly configure
+  `upstream_model_aliases` for an intentional mapping, but missing YAML entries
+  must leave the requested model unchanged.
 - When routing to `gpt-5.3-codex-spark`, the executor must filter upstream-only
   incompatible built-in tools such as `image_generation` before the host
   callback. It must preserve custom/function tools, remove an emptied `tools`
@@ -1093,9 +1096,10 @@ Separate the key authority migration from the continuation-owner migration.
 - Good: `/v0/resource/plugins/cpa-codexcont-executor/admin` is routable inside
   the admin boundary, while `/v0/resource/plugins/cpa-codexcont-executor/status`
   is not a resource page and returns `404` through resource dispatch.
-- Good: A `gpt-5.5` streaming request opens the host callback with
-  `gpt-5.3-codex-spark`, while downstream events, summaries, and diagnostics
-  preserve the client-visible `gpt-5.5`.
+- Good: A default `gpt-5.5` streaming request opens the host callback with
+  `gpt-5.5`, while an explicitly configured alias may route to another
+  upstream model and must preserve the client-visible model in downstream
+  events, summaries, and diagnostics.
 - Base: executor plugin loaded with `route_enabled=false`; no request is
   handled by the executor, and CPA remains usable without continuation folding.
 - Base: All official native keys fail with the same `invalidated oauth token`
@@ -1121,13 +1125,15 @@ Separate the key authority migration from the continuation-owner migration.
 - Go unit: route switch disabled/enabled behavior and non-stream fallback.
 - Go unit: upstream model aliasing rewrites host callback metadata/body while
   preserving downstream client-visible model and safe diagnostics.
-- Go unit: default executor config aliases `gpt-5.5` to the configured Codex
-  upstream model and keeps `gpt-5.5` visible in emitted streams and summaries.
+- Go unit: default executor config passes `gpt-5.5` through unchanged, while
+  explicit aliases still rewrite host callback metadata/body and keep the
+  client-visible model in emitted streams and summaries.
 - Go unit: SSE parser accepts host callback line-chunked streams without
   trailing newlines.
 - Go unit: stream folding covers auto continuation, max continuation, missing
-  encrypted reasoning, upstream EOF, upstream error, monotonic sequence
-  numbers, and reconstructed proxy metadata.
+  encrypted reasoning, upstream EOF, structured upstream stream errors,
+  ordinary stream errors, monotonic sequence numbers, and reconstructed proxy
+  metadata.
 - Go unit: Plus reads executor summaries by key id through
   `codex_summary_db_path`, filters other users, and fails soft when the DB is
   missing.

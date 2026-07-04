@@ -123,8 +123,11 @@ func TestReconfigureReturnsFullRegistration(t *testing.T) {
 		t.Fatalf("reconfigure must return full registration for CPA active snapshot: %#v", reg)
 	}
 	cfg := loadedConfig()
-	if cfg.UpstreamModelAliases["gpt-5.4"] != "gpt-5.3-codex-spark" || cfg.UpstreamModelAliases["gpt-5.5"] != "gpt-5.3-codex-spark" {
+	if cfg.UpstreamModelAliases["gpt-5.4"] != "gpt-5.3-codex-spark" {
 		t.Fatalf("upstream aliases not loaded: %#v", cfg.UpstreamModelAliases)
+	}
+	if _, ok := cfg.UpstreamModelAliases["gpt-5.5"]; ok {
+		t.Fatalf("gpt-5.5 must not get an implicit Spark alias: %#v", cfg.UpstreamModelAliases)
 	}
 }
 
@@ -505,11 +508,11 @@ func TestExecuteStreamAcceptsOfficialFlattenedRPCPayload(t *testing.T) {
 	if err := json.Unmarshal(openedBody, &opened); err != nil {
 		t.Fatalf("opened body is not JSON: %v body=%q", err, openedBody)
 	}
-	if openedModel != "gpt-5.3-codex-spark" || opened["model"] != "gpt-5.3-codex-spark" || len(openedBody) == 0 || strings.Contains(string(openedBody), "reasoning.encrypted_content") {
-		t.Fatalf("opened upstream request did not use stable model alias: request=%q body=%s", openedModel, string(openedBody))
+	if openedModel != "gpt-5.5" || opened["model"] != "gpt-5.5" || len(openedBody) == 0 || strings.Contains(string(openedBody), "reasoning.encrypted_content") {
+		t.Fatalf("opened upstream request should pass through client model by default: request=%q body=%s", openedModel, string(openedBody))
 	}
-	if strings.Contains(string(openedBody), "image_generation") || !strings.Contains(string(openedBody), `"type":"function"`) {
-		t.Fatalf("opened upstream body should filter only unsupported Spark built-ins: %s", openedBody)
+	if !strings.Contains(string(openedBody), "image_generation") || !strings.Contains(string(openedBody), `"type":"function"`) {
+		t.Fatalf("default pass-through should not filter tools: %s", openedBody)
 	}
 	if openedProtocol != "openai-response->openai-response" {
 		t.Fatalf("opened protocol = %q, want openai-response->openai-response", openedProtocol)
@@ -549,12 +552,12 @@ func TestExecuteStreamAcceptsOfficialFlattenedRPCPayload(t *testing.T) {
 		t.Fatalf("summary diagnostics missing: %#v", gotSummary)
 	}
 	firstDiag, _ := diagRounds[0].(map[string]any)
-	if firstDiag["model"] != "gpt-5.3-codex-spark" || firstDiag["requested_model"] != "gpt-5.5" || firstDiag["body_model"] != "gpt-5.3-codex-spark" {
-		t.Fatalf("diagnostics should record gpt-5.5 alias routing: %#v", firstDiag)
+	if firstDiag["model"] != "gpt-5.5" || firstDiag["requested_model"] != "gpt-5.5" || firstDiag["body_model"] != "gpt-5.5" {
+		t.Fatalf("diagnostics should record default model pass-through: %#v", firstDiag)
 	}
 	filtered, _ := firstDiag["filtered_tool_types"].([]any)
-	if len(filtered) != 1 || filtered[0] != "image_generation" {
-		t.Fatalf("diagnostics should safely record filtered tool types: %#v", firstDiag)
+	if len(filtered) != 0 {
+		t.Fatalf("default pass-through should not filter tool types: %#v", firstDiag)
 	}
 	if _, leaked := firstDiag["body"]; leaked {
 		t.Fatalf("diagnostics must not include request body: %#v", firstDiag)
@@ -694,6 +697,84 @@ func TestExecuteStreamUsesConfiguredUpstreamModelAlias(t *testing.T) {
 	firstDiag, _ := diagRounds[0].(map[string]any)
 	if firstDiag["model"] != "gpt-5.3-codex-spark" || firstDiag["requested_model"] != "gpt-5.4" || firstDiag["body_model"] != "gpt-5.3-codex-spark" {
 		t.Fatalf("diagnostics should show safe alias routing evidence: %#v", firstDiag)
+	}
+}
+
+func TestExecuteStreamConfiguredSparkAliasFiltersUnsupportedTools(t *testing.T) {
+	configureTestStateWithConfig(t, func(cfg *executor.Config) {
+		cfg.RouteEnabled = true
+		cfg.UpstreamModelAliases = map[string]string{"gpt-5.5": "gpt-5.3-codex-spark"}
+	})
+	originalHostCall := hostCall
+	t.Cleanup(func() { hostCall = originalHostCall })
+
+	requestBody := []byte(`{"model":"gpt-5.5","stream":true,"input":[{"role":"user","content":"hi"}],"tools":[{"type":"image_generation"},{"type":"function","name":"lookup"}],"tool_choice":"image_generation"}`)
+	upstreamChunks := [][]byte{
+		executor.SerializeEvent(map[string]any{"type": "response.created", "response": map[string]any{"id": "resp-spark", "model": "gpt-5.3-codex-spark", "status": "in_progress"}}),
+		executor.SerializeEvent(map[string]any{"type": "response.completed", "response": map[string]any{
+			"id":     "resp-spark",
+			"model":  "gpt-5.3-codex-spark",
+			"status": "completed",
+			"usage": map[string]any{
+				"input_tokens":  10,
+				"output_tokens": 20,
+				"total_tokens":  30,
+			},
+		}}),
+	}
+	var openedBody []byte
+	var openedModel string
+	readIndex := 0
+	done := make(chan struct{})
+	closeOnce := sync.Once{}
+	hostCall = func(method string, payload any) (json.RawMessage, error) {
+		switch method {
+		case methodHostModelExecuteStream:
+			req := payload.(hostModelExecutionRequest)
+			openedModel = req.Model
+			openedBody = append([]byte(nil), req.Body...)
+			return rawJSON(t, hostModelStreamResponse{StatusCode: http.StatusOK, StreamID: "upstream-spark"}), nil
+		case methodHostModelStreamRead:
+			if readIndex >= len(upstreamChunks) {
+				return rawJSON(t, hostModelStreamReadResponse{Done: true}), nil
+			}
+			chunk := upstreamChunks[readIndex]
+			readIndex++
+			return rawJSON(t, hostModelStreamReadResponse{Payload: chunk, Done: readIndex >= len(upstreamChunks)}), nil
+		case methodHostModelStreamClose:
+			return rawJSON(t, map[string]any{}), nil
+		case methodHostStreamEmit:
+			return rawJSON(t, map[string]any{}), nil
+		case methodHostStreamClose:
+			closeOnce.Do(func() { close(done) })
+			return rawJSON(t, map[string]any{}), nil
+		default:
+			t.Fatalf("unexpected host call %s", method)
+			return nil, nil
+		}
+	}
+
+	if _, err := executorExecuteStream(mustJSON(t, map[string]any{
+		"AuthID":       "key-1",
+		"Model":        "gpt-5.5",
+		"Format":       "openai-response",
+		"Stream":       true,
+		"SourceFormat": "openai-response",
+		"Payload":      requestBody,
+		"stream_id":    "client-spark",
+	})); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("executor stream did not finish")
+	}
+	if openedModel != "gpt-5.3-codex-spark" || !strings.Contains(string(openedBody), `"model":"gpt-5.3-codex-spark"`) {
+		t.Fatalf("explicit Spark alias not applied: model=%q body=%s", openedModel, openedBody)
+	}
+	if strings.Contains(string(openedBody), "image_generation") || !strings.Contains(string(openedBody), `"type":"function"`) {
+		t.Fatalf("Spark alias should filter only unsupported built-ins: %s", openedBody)
 	}
 }
 

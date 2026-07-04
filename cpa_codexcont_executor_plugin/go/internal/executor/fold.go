@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -26,6 +27,30 @@ type FoldResult struct {
 	RequestID  string
 	Protection string
 	Summary    map[string]any
+}
+
+type UpstreamError struct {
+	Type    string
+	Code    string
+	Message string
+	Param   string
+	Status  string
+}
+
+func (e *UpstreamError) Error() string {
+	if e == nil {
+		return ""
+	}
+	if e.Message != "" {
+		return e.Message
+	}
+	if e.Code != "" {
+		return e.Code
+	}
+	if e.Type != "" {
+		return e.Type
+	}
+	return "upstream_error"
 }
 
 type seqCounter struct {
@@ -96,6 +121,10 @@ func FoldStream(ctx context.Context, cfg Config, baseBody map[string]any, open S
 		for !readTerminal {
 			chunk, done, readErr := reader.Read(ctx)
 			if readErr != nil {
+				if upstreamErr := ParseUpstreamError(readErr); upstreamErr != nil {
+					failureReason = upstreamFailureReason(upstreamErr)
+					return emitUpstreamFailure(ctx, emit, baseResponse, finalOutput, agentUsage(firstUsage, totalUsage, nil, false), seq, upstreamErr, roundsInfo, totalUsage, startedAt, requestID, failureReason)
+				}
 				failureReason = "upstream_stream_error"
 				return emitIncomplete(ctx, emit, baseResponse, finalOutput, agentUsage(firstUsage, totalUsage, nil, false), seq, "upstream_error", roundsInfo, totalUsage, startedAt, requestID, failureReason)
 			}
@@ -325,6 +354,21 @@ func emitIncomplete(ctx context.Context, emit Emitter, baseResponse map[string]a
 	return &FoldResult{RequestID: requestID, Protection: protection, Summary: summary}, nil
 }
 
+func emitUpstreamFailure(ctx context.Context, emit Emitter, baseResponse map[string]any, finalOutput []any, usage map[string]any, seq *seqCounter, upstreamErr *UpstreamError, rounds []map[string]any, totalUsage map[string]any, startedAt time.Time, requestID, failureReason string) (*FoldResult, error) {
+	ev := syntheticFailed(baseResponse, finalOutput, usage, seq.Next(), upstreamErr, rounds, totalUsage)
+	if err := emit(ctx, SerializeEvent(ev)); err != nil {
+		return nil, err
+	}
+	protection := protectionValue(0, "upstream_failed", failureReason, "failed")
+	summary := summaryMap(requestID, nil, startedAt, protection, "failed", "upstream_failed", failureReason, rounds, latestFromRounds(rounds), 0, nil, nil, nil, "")
+	if upstreamErr != nil {
+		summary["upstream_error_type"] = upstreamErr.Type
+		summary["upstream_error_code"] = upstreamErr.Code
+		summary["upstream_error_message"] = briefText(upstreamErr.Message, 240)
+	}
+	return &FoldResult{RequestID: requestID, Protection: protection, Summary: summary}, nil
+}
+
 func reconstructTerminal(terminal, baseResponse map[string]any, output []any, usage map[string]any, seq int, rounds []map[string]any, stoppedReason string, billedUsage map[string]any) map[string]any {
 	resp := cloneMap(baseResponse)
 	if len(resp) == 0 {
@@ -350,6 +394,167 @@ func syntheticIncomplete(baseResponse map[string]any, output []any, usage map[st
 	resp["incomplete_details"] = map[string]any{"reason": reason}
 	withProxyMetadata(resp, rounds, reason, billedUsage)
 	return map[string]any{"type": "response.incomplete", "response": resp, "sequence_number": seq}
+}
+
+func syntheticFailed(baseResponse map[string]any, output []any, usage map[string]any, seq int, upstreamErr *UpstreamError, rounds []map[string]any, billedUsage map[string]any) map[string]any {
+	resp := cloneMap(baseResponse)
+	resp["output"] = output
+	resp["usage"] = usage
+	resp["status"] = "failed"
+	errBody := map[string]any{
+		"message": "upstream error",
+		"type":    "invalid_request_error",
+		"code":    "upstream_error",
+	}
+	if upstreamErr != nil {
+		if upstreamErr.Message != "" {
+			errBody["message"] = upstreamErr.Message
+		}
+		if upstreamErr.Type != "" {
+			errBody["type"] = upstreamErr.Type
+		}
+		if upstreamErr.Code != "" {
+			errBody["code"] = normalizedUpstreamErrorCode(upstreamErr)
+		}
+		if upstreamErr.Param != "" {
+			errBody["param"] = upstreamErr.Param
+		}
+	}
+	resp["error"] = errBody
+	withProxyMetadata(resp, rounds, "upstream_failed", billedUsage)
+	return map[string]any{"type": "response.failed", "response": resp, "sequence_number": seq}
+}
+
+func ParseUpstreamError(err error) *UpstreamError {
+	if err == nil {
+		return nil
+	}
+	var upstreamErr *UpstreamError
+	if errors.As(err, &upstreamErr) {
+		return upstreamErr
+	}
+	return parseUpstreamErrorText(err.Error())
+}
+
+func parseUpstreamErrorText(text string) *UpstreamError {
+	text = strings.TrimSpace(text)
+	if text == "" || !strings.Contains(text, "{") {
+		return nil
+	}
+	start := strings.Index(text, "{")
+	if start > 0 {
+		text = text[start:]
+	}
+	var raw map[string]any
+	if err := json.Unmarshal([]byte(text), &raw); err != nil {
+		return nil
+	}
+	if errMap := mapValue(raw, "error"); errMap != nil {
+		return normalizeUpstreamError(errMap)
+	}
+	if resp := mapValue(raw, "response"); resp != nil {
+		if errMap := mapValue(resp, "error"); errMap != nil {
+			return normalizeUpstreamError(errMap)
+		}
+	}
+	if raw["type"] == "error" || raw["message"] != nil || raw["code"] != nil {
+		return normalizeUpstreamError(raw)
+	}
+	return nil
+}
+
+func normalizeUpstreamError(raw map[string]any) *UpstreamError {
+	if len(raw) == 0 {
+		return nil
+	}
+	out := &UpstreamError{
+		Type:    firstString(raw["type"], ""),
+		Code:    firstString(raw["code"], ""),
+		Message: firstString(raw["message"], ""),
+		Param:   firstString(raw["param"], ""),
+		Status:  firstString(raw["status"], ""),
+	}
+	if out.Type == "" && out.Code == "" && out.Message == "" {
+		return nil
+	}
+	if out.Message == "" {
+		out.Message = out.Code
+	}
+	if out.Type == "" {
+		out.Type = "invalid_request_error"
+	}
+	if out.Code == "" && looksLikeContextWindowError(out.Message) {
+		out.Code = "context_too_large"
+	}
+	return out
+}
+
+func normalizedUpstreamErrorCode(err *UpstreamError) string {
+	if err == nil {
+		return "upstream_error"
+	}
+	if looksLikeContextWindowError(err.Code) || looksLikeContextWindowError(err.Message) {
+		return "context_too_large"
+	}
+	if err.Code != "" {
+		return err.Code
+	}
+	return "upstream_error"
+}
+
+func upstreamFailureReason(err *UpstreamError) string {
+	if err == nil {
+		return "upstream_stream_error"
+	}
+	if looksLikeContextWindowError(err.Code) || looksLikeContextWindowError(err.Message) {
+		return "upstream_context_too_large"
+	}
+	if err.Code != "" {
+		return "upstream_" + sanitizeReason(err.Code)
+	}
+	return "upstream_stream_error"
+}
+
+func looksLikeContextWindowError(text string) bool {
+	text = strings.ToLower(strings.TrimSpace(text))
+	return strings.Contains(text, "context_length") ||
+		strings.Contains(text, "context length") ||
+		strings.Contains(text, "context window") ||
+		strings.Contains(text, "context_too_large") ||
+		strings.Contains(text, "too many tokens")
+}
+
+func sanitizeReason(text string) string {
+	text = strings.ToLower(strings.TrimSpace(text))
+	var b strings.Builder
+	lastUnderscore := false
+	for _, r := range text {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+			lastUnderscore = false
+			continue
+		}
+		if !lastUnderscore {
+			b.WriteByte('_')
+			lastUnderscore = true
+		}
+	}
+	out := strings.Trim(b.String(), "_")
+	if out == "" {
+		return "error"
+	}
+	return out
+}
+
+func briefText(text string, limit int) string {
+	text = strings.TrimSpace(text)
+	if limit <= 0 || len(text) <= limit {
+		return text
+	}
+	if limit <= 1 {
+		return text[:limit]
+	}
+	return text[:limit-3] + "..."
 }
 
 func withProxyMetadata(resp map[string]any, rounds []map[string]any, stoppedReason string, billedUsage map[string]any) {

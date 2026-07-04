@@ -16,14 +16,19 @@ type fakeRoundReader struct {
 }
 
 func (r *fakeRoundReader) Read(context.Context) ([]byte, bool, error) {
-	if r.err != nil {
-		return nil, false, r.err
-	}
 	if r.idx >= len(r.chunks) {
+		if r.err != nil {
+			err := r.err
+			r.err = nil
+			return nil, false, err
+		}
 		return nil, true, nil
 	}
 	chunk := r.chunks[r.idx]
 	r.idx++
+	if r.err != nil {
+		return chunk, false, nil
+	}
 	return chunk, r.idx >= len(r.chunks), nil
 }
 
@@ -340,6 +345,75 @@ func TestFoldStreamContinuationOpenErrorEmitsIncomplete(t *testing.T) {
 	}
 	if opened != 2 || result.Protection != "failed" {
 		t.Fatalf("opened=%d summary=%#v", opened, result.Summary)
+	}
+	term := terminalEvent(t, parseEvents(t, emitted.Bytes()))
+	resp := mapValue(term, "response")
+	if term["type"] != "response.incomplete" || mapValue(resp, "incomplete_details")["reason"] != "upstream_error" {
+		t.Fatalf("terminal = %#v", term)
+	}
+}
+
+func TestFoldStreamReadContextWindowErrorEmitsFailed(t *testing.T) {
+	cfg := DefaultConfig()
+	base := map[string]any{"model": "gpt-5.5", "stream": true, "input": []any{}}
+	errText := `{"error":{"message":"Your input exceeds the context window of this model. Please adjust your input and try again.","type":"invalid_request_error","code":"context_length_exceeded","param":"input"}}`
+	var emitted bytes.Buffer
+	result, err := FoldStream(context.Background(), cfg, base, func(_ context.Context, _ []byte, roundNo int) (StreamReader, error) {
+		if roundNo != 1 {
+			t.Fatalf("unexpected round %d", roundNo)
+		}
+		return &fakeRoundReader{
+			chunks: round(created("resp-context")),
+			err:    errors.New(errText),
+		}, nil
+	}, func(_ context.Context, payload []byte) error {
+		_, _ = emitted.Write(payload)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Protection != "failed" || result.Summary["failure_reason"] != "upstream_context_too_large" {
+		t.Fatalf("result = %#v", result.Summary)
+	}
+	term := terminalEvent(t, parseEvents(t, emitted.Bytes()))
+	resp := mapValue(term, "response")
+	errBody := mapValue(resp, "error")
+	if term["type"] != "response.failed" || resp["status"] != "failed" {
+		t.Fatalf("terminal = %#v", term)
+	}
+	if errBody["code"] != "context_too_large" || errBody["type"] != "invalid_request_error" {
+		t.Fatalf("error body = %#v", errBody)
+	}
+	if !strings.Contains(toString(errBody["message"]), "context window") {
+		t.Fatalf("error message did not preserve upstream reason: %#v", errBody)
+	}
+	if strings.Contains(string(emitted.Bytes()), "upstream_error") {
+		t.Fatalf("context-window failure should not be collapsed to upstream_error:\n%s", emitted.String())
+	}
+}
+
+func TestFoldStreamReadPlainErrorStillEmitsIncomplete(t *testing.T) {
+	cfg := DefaultConfig()
+	base := map[string]any{"model": "gpt-5.5", "stream": true, "input": []any{}}
+	var emitted bytes.Buffer
+	result, err := FoldStream(context.Background(), cfg, base, func(_ context.Context, _ []byte, roundNo int) (StreamReader, error) {
+		if roundNo != 1 {
+			t.Fatalf("unexpected round %d", roundNo)
+		}
+		return &fakeRoundReader{
+			chunks: round(created("resp-plain")),
+			err:    errors.New("connection reset by peer"),
+		}, nil
+	}, func(_ context.Context, payload []byte) error {
+		_, _ = emitted.Write(payload)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Protection != "failed" || result.Summary["failure_reason"] != "upstream_stream_error" {
+		t.Fatalf("result = %#v", result.Summary)
 	}
 	term := terminalEvent(t, parseEvents(t, emitted.Bytes()))
 	resp := mapValue(term, "response")
