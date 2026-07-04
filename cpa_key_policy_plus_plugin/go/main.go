@@ -95,6 +95,8 @@ type runtimeState struct {
 	priceBook         policyplus.PriceBook
 	priceBookChecked  time.Time
 	priceBookRepriced string
+	lastConfigError   string
+	lastConfigErrorAt time.Time
 }
 
 type policyDecision struct {
@@ -392,14 +394,14 @@ func shutdownPlugin() {
 		_ = state.store.Close()
 		state.store = nil
 	}
+	state.lastConfigError = ""
+	state.lastConfigErrorAt = time.Time{}
 }
 
 func handleMethod(method string, request []byte) ([]byte, error) {
 	switch method {
 	case methodPluginRegister, methodPluginReconfigure:
-		if err := configure(request); err != nil {
-			return nil, err
-		}
+		configure(request)
 		return okEnvelope(pluginRegistration())
 	case methodFrontendAuthIdentifier:
 		return okEnvelope(map[string]string{"identifier": pluginID})
@@ -431,10 +433,12 @@ func configure(raw []byte) error {
 	if len(raw) > 0 {
 		var req lifecycleRequest
 		if err := json.Unmarshal(raw, &req); err != nil {
+			recordLifecycleConfigError(err)
 			return err
 		}
 		if len(req.ConfigYAML) > 0 {
 			if err := yaml.Unmarshal(req.ConfigYAML, &cfg); err != nil {
+				recordLifecycleConfigError(err)
 				return err
 			}
 		}
@@ -442,6 +446,7 @@ func configure(raw []byte) error {
 	cfg = cfg.Normalize()
 	store, err := policyplus.OpenStore(cfg.StateDBPath)
 	if err != nil {
+		recordLifecycleConfigError(err)
 		return err
 	}
 	cfg = applyStoredSettings(cfg, store)
@@ -467,6 +472,8 @@ func configure(raw []byte) error {
 	state.priceBook = policyplus.PriceBook{}
 	state.priceBookChecked = time.Time{}
 	state.priceBookRepriced = ""
+	state.lastConfigError = ""
+	state.lastConfigErrorAt = time.Time{}
 	state.mu.Unlock()
 	if old != nil {
 		_ = old.Close()
@@ -475,6 +482,16 @@ func configure(raw []byte) error {
 	_ = syncNativeKeysFromLoadedConfig()
 	_ = currentPriceBook(context.Background(), true)
 	return nil
+}
+
+func recordLifecycleConfigError(err error) {
+	if err == nil {
+		return
+	}
+	state.mu.Lock()
+	state.lastConfigError = err.Error()
+	state.lastConfigErrorAt = time.Now().UTC()
+	state.mu.Unlock()
 }
 
 func syncNativeKeysFromLoadedConfig() error {
@@ -708,6 +725,12 @@ func loadedStore() *policyplus.Store {
 	state.mu.RLock()
 	defer state.mu.RUnlock()
 	return state.store
+}
+
+func loadedLifecycleStatus() (bool, string, time.Time) {
+	state.mu.RLock()
+	defer state.mu.RUnlock()
+	return state.store != nil, state.lastConfigError, state.lastConfigErrorAt
 }
 
 func frontendAuth(raw []byte) ([]byte, error) {
@@ -1396,6 +1419,7 @@ func managementRegister() ([]byte, error) {
 		},
 		Resources: []resourceRoute{
 			{Path: "/admin", Menu: "CPA Key Policy+", Description: "Unified user key policy dashboard"},
+			{Path: "/admin/api/status"},
 			{Path: "/admin/api/keys"},
 			{Path: "/admin/api/models"},
 			{Path: "/admin/api/keys/save"},
@@ -1425,6 +1449,8 @@ func managementHandle(raw []byte) ([]byte, error) {
 		return managementHTML(adminHTML())
 	case path == "/v0/resource/plugins/cpa-key-policy-plus/user" || path == "/user":
 		return managementHTML(userHTML())
+	case strings.HasSuffix(path, "/admin/api/status"):
+		return plusStatus()
 	case strings.HasSuffix(path, "/admin/api/keys"):
 		return adminKeys(req)
 	case strings.HasSuffix(path, "/admin/api/models"):
@@ -1498,6 +1524,28 @@ func managementHandle(raw []byte) ([]byte, error) {
 	default:
 		return jsonResponse(http.StatusNotFound, map[string]any{"ok": false, "error": "not_found"})
 	}
+}
+
+func plusStatus() ([]byte, error) {
+	return jsonResponse(http.StatusOK, map[string]any{"ok": true, "plus": plusStatusPayload()})
+}
+
+func plusStatusPayload() map[string]any {
+	cfg := loadedConfig()
+	storeAvailable, lastConfigError, lastConfigErrorAt := loadedLifecycleStatus()
+	out := map[string]any{
+		"plugin_id":       pluginID,
+		"enabled":         cfg.Enabled,
+		"exclusive_auth":  cfg.ExclusiveAuth,
+		"state_db_path":   cfg.StateDBPath,
+		"store_available": storeAvailable,
+		"mode":            "key_policy_plus",
+	}
+	if lastConfigError != "" {
+		out["last_config_error"] = lastConfigError
+		out["last_config_error_at"] = lastConfigErrorAt.Format(time.RFC3339)
+	}
+	return out
 }
 
 func adminKeys(req managementRequest) ([]byte, error) {
@@ -2139,8 +2187,8 @@ func quotaWindows(key policyplus.KeyRecord, usage map[string]float64) map[string
 }
 
 func codexRequestsForKey(key policyplus.KeyRecord, limit int) ([]map[string]any, string) {
-	if requests, ok := fetchExecutorCodexSummaries(key, limit); ok {
-		return requests, "codexcont_executor_store"
+	if requests, source, ok := fetchExecutorCodexSummaries(key, limit); ok {
+		return requests, source
 	}
 	if requests, ok := fetchCodexContRequests(key, limit); ok {
 		return requests, "codexcont_admin"
@@ -2165,15 +2213,15 @@ func codexRequestsForKey(key policyplus.KeyRecord, limit int) ([]map[string]any,
 	return out, "governor_store"
 }
 
-func fetchExecutorCodexSummaries(key policyplus.KeyRecord, limit int) ([]map[string]any, bool) {
+func fetchExecutorCodexSummaries(key policyplus.KeyRecord, limit int) ([]map[string]any, string, bool) {
 	cfg := loadedConfig()
 	path := strings.TrimSpace(cfg.CodexSummaryDBPath)
 	if path == "" {
-		return nil, false
+		return nil, "", false
 	}
 	items, err := policyplus.RecentCodexSummariesFromSQLite(context.Background(), path, key.ID, limit)
 	if err != nil {
-		return nil, false
+		return []map[string]any{}, "codexcont_executor_store_unavailable", true
 	}
 	out := make([]map[string]any, 0, len(items))
 	for _, item := range items {
@@ -2205,7 +2253,7 @@ func fetchExecutorCodexSummaries(key policyplus.KeyRecord, limit int) ([]map[str
 		}
 	}
 	sortCodexSummariesNewestFirst(out)
-	return out, true
+	return out, "codexcont_executor_store", true
 }
 
 func safeCodexSummaryWithTrustedRow(item policyplus.CodexSummary, key policyplus.KeyRecord) map[string]any {
@@ -2376,7 +2424,7 @@ func safeCodexSummary(req map[string]any, key policyplus.KeyRecord) map[string]a
 		"latest_reasoning_tokens", "first_truncation_round",
 		"first_truncation_reasoning_tokens", "first_truncation_n",
 		"first_truncation_decision", "continuation_count", "stopped_reason",
-		"failure_reason", "failure_detail", "folded", "passthrough",
+		"failure_category", "failure_reason", "failure_detail", "folded", "passthrough",
 		"passthrough_reason", "rounds",
 	}
 	out := map[string]any{}
@@ -2385,7 +2433,45 @@ func safeCodexSummary(req map[string]any, key policyplus.KeyRecord) map[string]a
 			out[field] = value
 		}
 	}
+	if diagnostics, ok := req["diagnostics"].(map[string]any); ok {
+		if brief := safeDiagnosticsBrief(diagnostics); len(brief) > 0 {
+			out["diagnostics_brief"] = brief
+		}
+	}
 	out["key_identity"] = key.Safe()
+	return out
+}
+
+func safeDiagnosticsBrief(diagnostics map[string]any) []map[string]any {
+	rounds, _ := diagnostics["rounds"].([]any)
+	out := make([]map[string]any, 0, len(rounds))
+	for _, raw := range rounds {
+		round, _ := raw.(map[string]any)
+		if len(round) == 0 {
+			continue
+		}
+		item := map[string]any{}
+		for _, field := range []string{
+			"round", "model", "requested_model", "body_model", "stream",
+			"host_callback", "stream_id_present", "open_status_code",
+			"open_error_category", "last_read_error_category",
+			"upstream_error_type", "upstream_error_code",
+			"first_read_payload_bytes", "last_read_payload_bytes",
+			"read_count",
+		} {
+			if value, ok := round[field]; ok {
+				item[field] = value
+			}
+		}
+		for _, field := range []string{"open_error", "open_error_detail", "last_read_error", "last_read_error_detail", "upstream_error_message"} {
+			if value := policyplus.Brief(strings.TrimSpace(fmt.Sprint(round[field])), 160); value != "" && value != "<nil>" {
+				item[field] = value
+			}
+		}
+		if len(item) > 0 {
+			out = append(out, item)
+		}
+	}
 	return out
 }
 

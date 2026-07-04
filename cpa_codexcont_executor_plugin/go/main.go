@@ -27,6 +27,16 @@ const pluginID = "cpa-codexcont-executor"
 const executorModelScopeBoth = "both"
 const executorFormatOpenAIResponse = "openai-response"
 
+const (
+	codexProcessingStaleAfter              = 15 * time.Minute
+	failureCategoryClientStreamClosed      = "client_stream_closed"
+	failureCategoryUpstreamTransportEOF    = "upstream_transport_eof"
+	failureCategoryUpstreamConnectTimeout  = "upstream_connect_timeout"
+	failureCategoryUpstreamContextTooLarge = "upstream_context_too_large"
+	failureCategoryHostCallbackFailed      = "host_callback_failed"
+	failureCategoryStaleProcessing         = "stale_processing_reconciled"
+)
+
 //go:embed assets/admin.html
 var adminHTMLTemplate string
 
@@ -72,9 +82,18 @@ type capabilities struct {
 }
 
 type runtimeState struct {
-	mu    sync.RWMutex
-	cfg   executor.Config
-	store *executor.Store
+	mu                sync.RWMutex
+	cfg               executor.Config
+	store             *executor.Store
+	lastConfigError   string
+	lastConfigErrorAt time.Time
+	lastHostError     hostErrorState
+}
+
+type hostErrorState struct {
+	Category string
+	Message  string
+	At       time.Time
 }
 
 var state = runtimeState{cfg: executor.DefaultConfig()}
@@ -123,17 +142,13 @@ func handleMethod(method string, request []byte) ([]byte, error) {
 
 func pluginRegister(raw []byte) ([]byte, error) {
 	if len(raw) > 0 {
-		if err := applyLifecycleConfig(raw); err != nil {
-			return errorEnvelope("config_error", err.Error()), nil
-		}
+		applyLifecycleConfig(raw)
 	}
 	return okEnvelope(pluginRegistration())
 }
 
 func pluginReconfigure(raw []byte) ([]byte, error) {
-	if err := applyLifecycleConfig(raw); err != nil {
-		return errorEnvelope("config_error", err.Error()), nil
-	}
+	applyLifecycleConfig(raw)
 	return okEnvelope(pluginRegistration())
 }
 
@@ -179,28 +194,44 @@ func frontendAuth(_ []byte) ([]byte, error) {
 func applyLifecycleConfig(raw []byte) error {
 	var req lifecycleRequest
 	if err := json.Unmarshal(raw, &req); err != nil && len(raw) > 0 {
+		recordLifecycleConfigError(err)
 		return err
 	}
 	cfg := executor.DefaultConfig()
 	if len(req.ConfigYAML) > 0 {
 		if err := yaml.Unmarshal(req.ConfigYAML, &cfg); err != nil {
+			recordLifecycleConfigError(err)
 			return err
 		}
 	}
 	cfg = cfg.Normalize()
 	store, err := executor.OpenStore(cfg.StateDBPath)
 	if err != nil {
+		recordLifecycleConfigError(err)
 		return err
 	}
+	reconcileStaleProcessingSummaries(store)
 	state.mu.Lock()
 	old := state.store
 	state.cfg = cfg
 	state.store = store
+	state.lastConfigError = ""
+	state.lastConfigErrorAt = time.Time{}
 	state.mu.Unlock()
 	if old != nil {
 		_ = old.Close()
 	}
 	return nil
+}
+
+func recordLifecycleConfigError(err error) {
+	if err == nil {
+		return
+	}
+	state.mu.Lock()
+	state.lastConfigError = err.Error()
+	state.lastConfigErrorAt = time.Now().UTC()
+	state.mu.Unlock()
 }
 
 func loadedConfig() executor.Config {
@@ -215,6 +246,33 @@ func loadedStore() *executor.Store {
 	return state.store
 }
 
+func loadedLifecycleStatus() (bool, string, time.Time) {
+	state.mu.RLock()
+	defer state.mu.RUnlock()
+	return state.store != nil, state.lastConfigError, state.lastConfigErrorAt
+}
+
+func recordHostError(err error) (string, string) {
+	category, detail := classifyHostError(err)
+	if err == nil {
+		return category, detail
+	}
+	state.mu.Lock()
+	state.lastHostError = hostErrorState{
+		Category: category,
+		Message:  detail,
+		At:       time.Now().UTC(),
+	}
+	state.mu.Unlock()
+	return category, detail
+}
+
+func loadedHostError() hostErrorState {
+	state.mu.RLock()
+	defer state.mu.RUnlock()
+	return state.lastHostError
+}
+
 func shutdownPlugin() {
 	state.mu.Lock()
 	defer state.mu.Unlock()
@@ -222,6 +280,9 @@ func shutdownPlugin() {
 		_ = state.store.Close()
 		state.store = nil
 	}
+	state.lastConfigError = ""
+	state.lastConfigErrorAt = time.Time{}
+	state.lastHostError = hostErrorState{}
 }
 
 func routeModel(raw []byte) ([]byte, error) {
@@ -334,14 +395,20 @@ func foldHostStream(req executorCallRequest, execReq executorRequest, cfg execut
 	}
 	emitter := func(ctx context.Context, payload []byte) error {
 		_, err := hostCall(methodHostStreamEmit, hostStreamEmitRequest{StreamID: targetStreamID, Payload: payload})
+		if err != nil {
+			recordHostError(err)
+		}
 		return err
 	}
 	result, err := executor.FoldStream(ctx, cfg, base, opener, emitter)
 	if err != nil {
 		streamErr = brief(err.Error(), 400)
-		saveExecutorSummary(failedProcessingSummary(processingSummary, streamErr))
-		monitor.Fail(monitorID, streamErr)
-		_, _ = hostCall(methodHostStreamEmit, hostStreamEmitRequest{StreamID: targetStreamID, Error: streamErr})
+		failed := failedProcessingSummaryWithDiagnostics(processingSummary, streamErr, diagnostics.Snapshot())
+		saveExecutorSummary(failed)
+		monitor.Finish(monitorID, failed)
+		if cleanAnyString(failed["failure_category"]) != failureCategoryClientStreamClosed {
+			_, _ = hostCall(methodHostStreamEmit, hostStreamEmitRequest{StreamID: targetStreamID, Error: streamErr})
+		}
 		return
 	}
 	if result != nil {
@@ -377,6 +444,7 @@ func openHostModelStream(_ context.Context, req executorCallRequest, execReq exe
 	}
 	result, err := hostCall(methodHostModelExecuteStream, hostReq)
 	if err != nil {
+		recordHostError(err)
 		if diagnostics != nil {
 			diagnostics.RecordOpenError(round, err)
 		}
@@ -384,6 +452,7 @@ func openHostModelStream(_ context.Context, req executorCallRequest, execReq exe
 	}
 	var resp hostModelStreamResponse
 	if err := json.Unmarshal(result, &resp); err != nil {
+		recordHostError(err)
 		if diagnostics != nil {
 			diagnostics.RecordOpenError(round, err)
 		}
@@ -393,10 +462,20 @@ func openHostModelStream(_ context.Context, req executorCallRequest, execReq exe
 		diagnostics.RecordOpenResponse(round, resp)
 	}
 	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("upstream returned %d", resp.StatusCode)
+		err := fmt.Errorf("upstream returned %d", resp.StatusCode)
+		recordHostError(err)
+		if diagnostics != nil {
+			diagnostics.RecordOpenError(round, err)
+		}
+		return nil, err
 	}
 	if resp.StreamID == "" {
-		return nil, fmt.Errorf("host returned empty stream id")
+		err := fmt.Errorf("host returned empty stream id")
+		recordHostError(err)
+		if diagnostics != nil {
+			diagnostics.RecordOpenError(round, err)
+		}
+		return nil, err
 	}
 	return &hostStreamReader{streamID: resp.StreamID, round: round, diagnostics: diagnostics}, nil
 }
@@ -404,16 +483,19 @@ func openHostModelStream(_ context.Context, req executorCallRequest, execReq exe
 func (r *hostStreamReader) Read(context.Context) ([]byte, bool, error) {
 	result, err := hostCall(methodHostModelStreamRead, hostModelStreamReadRequest{StreamID: r.streamID})
 	if err != nil {
+		recordHostError(err)
 		r.recordRead(nil, false, err)
 		return nil, false, err
 	}
 	var chunk hostModelStreamReadResponse
 	if err := json.Unmarshal(result, &chunk); err != nil {
+		recordHostError(err)
 		r.recordRead(nil, false, err)
 		return nil, false, err
 	}
 	if chunk.Error != "" {
 		err := fmt.Errorf("%s", chunk.Error)
+		recordHostError(err)
 		r.recordRead(chunk.Payload, chunk.Done, err)
 		return chunk.Payload, chunk.Done, err
 	}
@@ -460,6 +542,7 @@ func saveFoldSummaryReplacing(req executorRequest, result *executor.FoldResult, 
 	if diagnostics != nil {
 		summary["diagnostics"] = diagnostics
 	}
+	decorateFailureSummary(summary)
 	requestID := firstNonEmpty(result.RequestID, cleanAnyString(summary["request_id"]))
 	if requestID == "" && processingID != "" {
 		requestID = processingID
@@ -480,6 +563,7 @@ func saveExecutorSummary(summary map[string]any) {
 	if len(summary) == 0 {
 		return
 	}
+	decorateFailureSummary(summary)
 	store := loadedStore()
 	if store == nil {
 		return
@@ -496,6 +580,10 @@ func saveExecutorSummary(summary map[string]any) {
 }
 
 func failedProcessingSummary(processing map[string]any, reason string) map[string]any {
+	return failedProcessingSummaryWithDiagnostics(processing, reason, nil)
+}
+
+func failedProcessingSummaryWithDiagnostics(processing map[string]any, reason string, diagnostics map[string]any) map[string]any {
 	if len(processing) == 0 {
 		return nil
 	}
@@ -507,10 +595,69 @@ func failedProcessingSummary(processing map[string]any, reason string) map[strin
 	out["final_status"] = "failed"
 	out["protection"] = "failed"
 	out["failure_reason"] = reason
+	if diagnostics != nil {
+		out["diagnostics"] = diagnostics
+	}
+	decorateFailureSummary(out)
 	if started, ok := parseSummaryTime(out["started_at"]); ok {
 		out["duration_ms"] = now.Sub(started).Milliseconds()
 	}
 	return out
+}
+
+func decorateFailureSummary(summary map[string]any) {
+	if len(summary) == 0 {
+		return
+	}
+	category, detail := failureInfoFromSummary(summary)
+	if category != "" && cleanAnyString(summary["failure_category"]) == "" {
+		summary["failure_category"] = category
+	}
+	if detail != "" && cleanAnyString(summary["failure_detail"]) == "" {
+		summary["failure_detail"] = detail
+	}
+}
+
+func failureInfoFromSummary(summary map[string]any) (string, string) {
+	if len(summary) == 0 {
+		return "", ""
+	}
+	for _, field := range []string{"failure_category", "upstream_error_code", "failure_reason", "failure_detail", "upstream_error_message"} {
+		if category, detail := classifyHostErrorText(cleanAnyString(summary[field])); category != "" {
+			return category, detail
+		}
+	}
+	if diagnostics, ok := summary["diagnostics"].(map[string]any); ok {
+		if category, detail := failureInfoFromDiagnostics(diagnostics); category != "" {
+			return category, detail
+		}
+	}
+	return "", ""
+}
+
+func failureInfoFromDiagnostics(diagnostics map[string]any) (string, string) {
+	if len(diagnostics) == 0 {
+		return "", ""
+	}
+	rounds, _ := diagnostics["rounds"].([]any)
+	for _, raw := range rounds {
+		round, _ := raw.(map[string]any)
+		if len(round) == 0 {
+			continue
+		}
+		for _, field := range []string{"open_error_category", "last_read_error_category", "first_read_error_category"} {
+			if category := cleanAnyString(round[field]); category != "" {
+				detail := firstNonEmpty(cleanAnyString(round["open_error"]), cleanAnyString(round["last_read_error"]), cleanAnyString(round["first_read_error"]))
+				return category, detail
+			}
+		}
+		for _, field := range []string{"open_error", "last_read_error", "first_read_error", "upstream_error_code", "upstream_error_message"} {
+			if category, detail := classifyHostErrorText(cleanAnyString(round[field])); category != "" {
+				return category, detail
+			}
+		}
+	}
+	return "", ""
 }
 
 func parseSummaryTime(value any) (time.Time, bool) {
@@ -524,6 +671,111 @@ func parseSummaryTime(value any) (time.Time, bool) {
 		}
 	}
 	return time.Time{}, false
+}
+
+func classifyHostError(err error) (string, string) {
+	if err == nil {
+		return "", ""
+	}
+	return classifyHostErrorText(err.Error())
+}
+
+func classifyHostErrorText(text string) (string, string) {
+	text = strings.TrimSpace(text)
+	if text == "" || text == "<nil>" {
+		return "", ""
+	}
+	lower := strings.ToLower(text)
+	switch lower {
+	case failureCategoryClientStreamClosed,
+		failureCategoryUpstreamTransportEOF,
+		failureCategoryUpstreamConnectTimeout,
+		failureCategoryUpstreamContextTooLarge,
+		failureCategoryHostCallbackFailed,
+		failureCategoryStaleProcessing:
+		return lower, lower
+	}
+	if strings.Contains(lower, "stream ") && strings.Contains(lower, "is not open") {
+		return failureCategoryClientStreamClosed, brief(text, 240)
+	}
+	if strings.Contains(lower, "client disconnected") || strings.Contains(lower, "client stream closed") || strings.Contains(lower, "broken pipe") {
+		return failureCategoryClientStreamClosed, brief(text, 240)
+	}
+	if strings.Contains(lower, "context_length") || strings.Contains(lower, "context window") || strings.Contains(lower, "context_too_large") || strings.Contains(lower, "upstream_context_too_large") {
+		return failureCategoryUpstreamContextTooLarge, brief(text, 240)
+	}
+	if strings.Contains(lower, "connection timeout") || strings.Contains(lower, "i/o timeout") || strings.Contains(lower, "context deadline exceeded") {
+		return failureCategoryUpstreamConnectTimeout, brief(text, 240)
+	}
+	if lower == "eof" || strings.Contains(lower, ": eof") || strings.Contains(lower, " eof") {
+		return failureCategoryUpstreamTransportEOF, brief(text, 240)
+	}
+	if strings.Contains(lower, "host callback") || strings.Contains(lower, "host_call") || strings.Contains(lower, "host call") {
+		return failureCategoryHostCallbackFailed, brief(text, 240)
+	}
+	if strings.Contains(lower, "upstream_stream_error") {
+		return failureCategoryHostCallbackFailed, brief(text, 240)
+	}
+	return failureCategoryHostCallbackFailed, brief(text, 240)
+}
+
+func reconcileStaleProcessingSummaries(store *executor.Store) {
+	if store == nil {
+		return
+	}
+	now := time.Now().UTC()
+	items, err := store.ProcessingCodexSummaries(context.Background(), 1000)
+	if err != nil {
+		return
+	}
+	for _, item := range items {
+		if !staleProcessingSummary(item.Summary, item.UpdatedAt, now) {
+			continue
+		}
+		summary := failedProcessingSummaryWithCategory(item.Summary, failureCategoryStaleProcessing, "processing row exceeded stale threshold")
+		if summary == nil {
+			summary = map[string]any{}
+		}
+		if cleanAnyString(summary["request_id"]) == "" {
+			summary["request_id"] = item.RequestID
+		}
+		if cleanAnyString(summary["model"]) == "" {
+			summary["model"] = item.Model
+		}
+		_ = store.SaveCodexSummary(context.Background(), item.RequestID, item.KeyID, item.Model, "failed", summary)
+	}
+}
+
+func failedProcessingSummaryWithCategory(processing map[string]any, category, detail string) map[string]any {
+	out := failedProcessingSummaryWithDiagnostics(processing, category, nil)
+	if out == nil {
+		return nil
+	}
+	out["failure_category"] = category
+	if detail != "" {
+		out["failure_detail"] = brief(detail, 240)
+	}
+	return out
+}
+
+func staleProcessingSummary(summary map[string]any, rowUpdatedAt time.Time, now time.Time) bool {
+	if len(summary) == 0 {
+		return false
+	}
+	status := cleanAnyString(summary["status"])
+	protection := cleanAnyString(summary["protection"])
+	if status != "processing" && protection != "processing" {
+		return false
+	}
+	updated, ok := parseSummaryTime(summary["updated_at"])
+	if !ok && !rowUpdatedAt.IsZero() {
+		updated = rowUpdatedAt
+		ok = true
+	}
+	if !ok {
+		return false
+	}
+	return now.Sub(updated) > codexProcessingStaleAfter
 }
 
 func keyIdentityFromRequest(req executorRequest) map[string]any {
@@ -847,18 +1099,35 @@ func summariesResponse(req managementRequest) ([]byte, error) {
 
 func statusPayload() map[string]any {
 	cfg := loadedConfig()
-	return map[string]any{
-		"plugin_id":       pluginID,
-		"enabled":         cfg.Enabled,
-		"route_enabled":   cfg.RouteEnabled,
-		"state_db_path":   cfg.StateDBPath,
-		"truncation_step": cfg.TruncationStep,
-		"max_continue":    cfg.MaxContinue,
-		"mode":            "executor_only",
-		"monitor":         "cpamp_admin_resource",
-		"upstream_model":  cfg.UpstreamModel,
-		"alias_count":     len(cfg.UpstreamModelAliases),
+	storeAvailable, lastConfigError, lastConfigErrorAt := loadedLifecycleStatus()
+	activeProcessing, oldestProcessingAge := monitor.ProcessingStats(time.Now().UTC())
+	lastHostError := loadedHostError()
+	out := map[string]any{
+		"plugin_id":                pluginID,
+		"enabled":                  cfg.Enabled,
+		"route_enabled":            cfg.RouteEnabled,
+		"state_db_path":            cfg.StateDBPath,
+		"store_available":          storeAvailable,
+		"truncation_step":          cfg.TruncationStep,
+		"max_continue":             cfg.MaxContinue,
+		"mode":                     "executor_only",
+		"monitor":                  "cpamp_admin_resource",
+		"upstream_model":           cfg.UpstreamModel,
+		"alias_count":              len(cfg.UpstreamModelAliases),
+		"active_processing_count":  activeProcessing,
+		"oldest_processing_age_ms": oldestProcessingAge.Milliseconds(),
+		"drain_ready":              activeProcessing == 0,
 	}
+	if lastConfigError != "" {
+		out["last_config_error"] = lastConfigError
+		out["last_config_error_at"] = lastConfigErrorAt.Format(time.RFC3339)
+	}
+	if !lastHostError.At.IsZero() {
+		out["last_host_error_category"] = lastHostError.Category
+		out["last_host_error_message"] = lastHostError.Message
+		out["last_host_error_at"] = lastHostError.At.Format(time.RFC3339)
+	}
+	return out
 }
 
 func okEnvelope(result any) ([]byte, error) {
@@ -1158,6 +1427,12 @@ func (d *streamDiagnostics) RecordOpenError(round int, err error) {
 	defer d.mu.Unlock()
 	item := d.ensureRoundLocked(round)
 	item["open_error"] = brief(err.Error(), 160)
+	if category, detail := classifyHostError(err); category != "" {
+		item["open_error_category"] = category
+		if detail != "" {
+			item["open_error_detail"] = detail
+		}
+	}
 }
 
 func (d *streamDiagnostics) RecordRead(round int, readNo int, payload []byte, done bool, err error) {
@@ -1181,6 +1456,18 @@ func (d *streamDiagnostics) RecordRead(round int, readNo int, payload []byte, do
 	}
 	if err != nil {
 		item["last_read_error"] = brief(err.Error(), 160)
+		if category, detail := classifyHostError(err); category != "" {
+			item["last_read_error_category"] = category
+			if detail != "" {
+				item["last_read_error_detail"] = detail
+			}
+			if readNo == 1 {
+				item["first_read_error_category"] = category
+				if detail != "" {
+					item["first_read_error_detail"] = detail
+				}
+			}
+		}
 		if upstreamErr := executor.ParseUpstreamError(err); upstreamErr != nil {
 			item["upstream_error_type"] = upstreamErr.Type
 			item["upstream_error_code"] = upstreamErr.Code
@@ -1335,6 +1622,7 @@ func (m *summaryMonitor) Fail(processingID, reason string) {
 	item["final_status"] = "failed"
 	item["protection"] = "failed"
 	item["failure_reason"] = reason
+	decorateFailureSummary(item)
 }
 
 func (m *summaryMonitor) Recent(limit int) []map[string]any {
@@ -1353,6 +1641,39 @@ func (m *summaryMonitor) Recent(limit int) []map[string]any {
 		}
 	}
 	return out
+}
+
+func (m *summaryMonitor) ProcessingStats(now time.Time) (int, time.Duration) {
+	if m == nil {
+		return 0, 0
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	count := 0
+	var oldest time.Time
+	for _, item := range m.items {
+		if item == nil {
+			continue
+		}
+		status := cleanAnyString(item["status"])
+		protection := cleanAnyString(item["protection"])
+		if status != "processing" && protection != "processing" {
+			continue
+		}
+		count++
+		if started, ok := parseSummaryTime(item["started_at"]); ok {
+			if oldest.IsZero() || started.Before(oldest) {
+				oldest = started
+			}
+		}
+	}
+	if count == 0 || oldest.IsZero() {
+		return count, 0
+	}
+	return count, now.Sub(oldest)
 }
 
 func (m *summaryMonitor) upsert(id string, item map[string]any) {

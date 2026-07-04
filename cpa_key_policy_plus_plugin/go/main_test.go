@@ -29,6 +29,8 @@ func setupTestState(t *testing.T) policyplus.KeyRecord {
 	state.priceBook = policyplus.PriceBook{}
 	state.priceBookChecked = time.Time{}
 	state.priceBookRepriced = ""
+	state.lastConfigError = ""
+	state.lastConfigErrorAt = time.Time{}
 	old := state.store
 	state.store = nil
 	state.mu.Unlock()
@@ -107,6 +109,20 @@ func createCPAMPPriceDB(t *testing.T, prices map[string]policyplus.ModelPrice) s
 	return path
 }
 
+func unwrapPlusEnvelope(t *testing.T, raw []byte, out any) {
+	t.Helper()
+	var env envelope
+	if err := json.Unmarshal(raw, &env); err != nil {
+		t.Fatal(err)
+	}
+	if !env.OK {
+		t.Fatalf("envelope error: %#v", env.Error)
+	}
+	if err := json.Unmarshal(env.Result, out); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestPluginRegistrationIsPolicyPlusExclusiveAuth(t *testing.T) {
 	setupTestState(t)
 	raw, err := okEnvelope(pluginRegistration())
@@ -138,6 +154,229 @@ func TestPluginRegistrationIsPolicyPlusExclusiveAuth(t *testing.T) {
 	}
 	if len(reg.Capabilities.ExecutorOutputFormats) != 1 || reg.Capabilities.ExecutorOutputFormats[0] != executorFormatOpenAIResponse {
 		t.Fatalf("executor output formats = %#v", reg.Capabilities.ExecutorOutputFormats)
+	}
+}
+
+func TestLifecycleConfigErrorKeepsPlusRegistrationAndPreviousStore(t *testing.T) {
+	setupTestState(t)
+	oldStore := loadedStore()
+	oldCfg := loadedConfig()
+	if oldStore == nil {
+		t.Fatal("expected initial store")
+	}
+	badParent := filepath.Join(t.TempDir(), "not-a-dir")
+	if err := os.WriteFile(badParent, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	badPath := filepath.Join(badParent, "policyplus.sqlite")
+	raw, err := handleMethod(methodPluginReconfigure, mustJSON(t, lifecycleRequest{ConfigYAML: []byte("enabled: true\nexclusive_auth: false\nstate_db_path: " + badPath + "\n")}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var reg registration
+	unwrapPlusEnvelope(t, raw, &reg)
+	if reg.Metadata.Name != pluginID || !reg.Capabilities.ManagementAPI || !reg.Capabilities.FrontendAuthProvider {
+		t.Fatalf("failed reconfigure must still return full registration: %#v", reg)
+	}
+	if loadedStore() != oldStore {
+		t.Fatal("failed reconfigure replaced the previous store")
+	}
+	cfg := loadedConfig()
+	if cfg.StateDBPath != oldCfg.StateDBPath || cfg.ExclusiveAuth != oldCfg.ExclusiveAuth {
+		t.Fatalf("failed reconfigure changed active config: %#v old=%#v", cfg, oldCfg)
+	}
+	status := plusStatusPayload()
+	if status["store_available"] != true || !strings.Contains(fmt.Sprint(status["last_config_error"]), "not-a-dir") {
+		t.Fatalf("status missing config error or previous store availability: %#v", status)
+	}
+}
+
+func TestPlusLifecycleConfigParseErrorStillReturnsRegistration(t *testing.T) {
+	setupTestState(t)
+	oldStore := loadedStore()
+	raw, err := handleMethod(methodPluginReconfigure, []byte(`{"config_yaml":`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var reg registration
+	unwrapPlusEnvelope(t, raw, &reg)
+	if reg.Metadata.Name != pluginID || !reg.Capabilities.ManagementAPI || !reg.Capabilities.FrontendAuthProvider {
+		t.Fatalf("parse error must still return full registration: %#v", reg)
+	}
+	if loadedStore() != oldStore {
+		t.Fatal("parse error replaced the previous store")
+	}
+	status := plusStatusPayload()
+	if status["store_available"] != true || fmt.Sprint(status["last_config_error"]) == "" {
+		t.Fatalf("status missing parse error: %#v", status)
+	}
+}
+
+func TestInitialPlusLifecycleConfigErrorStillRegistersAndFailsClosed(t *testing.T) {
+	state.mu.Lock()
+	if state.store != nil {
+		_ = state.store.Close()
+	}
+	state.cfg = policyplus.DefaultConfig()
+	state.store = nil
+	state.keyState = policyplus.KeyPolicyState{}
+	state.keyStatePath = ""
+	state.keyStateModTime = time.Time{}
+	state.keyStateLastCheck = time.Time{}
+	state.rpmBuckets = map[string][]time.Time{}
+	state.priceBook = policyplus.PriceBook{}
+	state.priceBookChecked = time.Time{}
+	state.priceBookRepriced = ""
+	state.lastConfigError = ""
+	state.lastConfigErrorAt = time.Time{}
+	state.mu.Unlock()
+	t.Cleanup(shutdownPlugin)
+
+	badParent := filepath.Join(t.TempDir(), "not-a-dir")
+	if err := os.WriteFile(badParent, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	badPath := filepath.Join(badParent, "policyplus.sqlite")
+	raw, err := handleMethod(methodPluginRegister, mustJSON(t, lifecycleRequest{ConfigYAML: []byte("enabled: true\nstate_db_path: " + badPath + "\n")}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var reg registration
+	unwrapPlusEnvelope(t, raw, &reg)
+	if reg.Metadata.Name != pluginID || !reg.Capabilities.ManagementAPI || !reg.Capabilities.FrontendAuthProvider {
+		t.Fatalf("register must still return full registration: %#v", reg)
+	}
+	raw, err = managementRegister()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mgmt managementRegistrationResponse
+	unwrapPlusEnvelope(t, raw, &mgmt)
+	foundAdmin := false
+	foundStatus := false
+	for _, resource := range mgmt.Resources {
+		if resource.Path == "/admin" && resource.Menu == "CPA Key Policy+" {
+			foundAdmin = true
+		}
+		if resource.Path == "/admin/api/status" {
+			foundStatus = true
+		}
+	}
+	if !foundAdmin || !foundStatus {
+		t.Fatalf("management resources missing after config error: %#v", mgmt.Resources)
+	}
+	raw, err = managementHandle(mustJSON(t, managementRequest{Method: http.MethodGet, Path: "/v0/resource/plugins/cpa-key-policy-plus/admin/api/keys"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp := decodeManagementResponse(t, raw)
+	if resp.StatusCode != http.StatusServiceUnavailable || !strings.Contains(string(resp.Body), "store_unavailable") {
+		t.Fatalf("admin keys should fail closed without store: status=%d body=%s", resp.StatusCode, resp.Body)
+	}
+	raw, err = managementHandle(mustJSON(t, managementRequest{Method: http.MethodGet, Path: "/v0/resource/plugins/cpa-key-policy-plus/admin/api/status"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp = decodeManagementResponse(t, raw)
+	var statusBody struct {
+		Plus map[string]any `json:"plus"`
+	}
+	if err := json.Unmarshal(resp.Body, &statusBody); err != nil {
+		t.Fatal(err)
+	}
+	if statusBody.Plus["store_available"] != false || !strings.Contains(fmt.Sprint(statusBody.Plus["last_config_error"]), "not-a-dir") {
+		t.Fatalf("status API missing initial config error: %#v", statusBody.Plus)
+	}
+}
+
+func TestPlusOptionalSQLiteFailuresDoNotBreakLifecycleRegistration(t *testing.T) {
+	dir := t.TempDir()
+	statePath := filepath.Join(dir, "policyplus.sqlite")
+	nativeConfigPath := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(nativeConfigPath, []byte("api-keys:\n  - sk-native-one\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	badLegacyPath := filepath.Join(dir, "legacy-not-sqlite.db")
+	badLegacyDB, err := sql.Open("sqlite", badLegacyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := badLegacyDB.Exec(`create table key_limits(unexpected text)`); err != nil {
+		t.Fatal(err)
+	}
+	if err := badLegacyDB.Close(); err != nil {
+		t.Fatal(err)
+	}
+	badGovernorPath := filepath.Join(dir, "governor-not-sqlite.db")
+	badGovernorDB, err := sql.Open("sqlite", badGovernorPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := badGovernorDB.Exec(`create table key_limits(unexpected text)`); err != nil {
+		t.Fatal(err)
+	}
+	if err := badGovernorDB.Close(); err != nil {
+		t.Fatal(err)
+	}
+	badParent := filepath.Join(dir, "not-a-dir")
+	if err := os.WriteFile(badParent, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	badAliasPath := filepath.Join(badParent, "cpamp.sqlite")
+	badPricePath := filepath.Join(badParent, "prices.sqlite")
+	config := fmt.Sprintf(`enabled: true
+exclusive_auth: true
+state_db_path: %s
+native_keys_config_path: %s
+legacy_quota_db_path: %s
+governor_state_db_path: %s
+cpamp_alias_db_path: %s
+cpamp_price_db_path: %s
+`, statePath, nativeConfigPath, badLegacyPath, badGovernorPath, badAliasPath, badPricePath)
+	raw, err := handleMethod(methodPluginReconfigure, mustJSON(t, lifecycleRequest{ConfigYAML: []byte(config)}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(shutdownPlugin)
+	var reg registration
+	unwrapPlusEnvelope(t, raw, &reg)
+	if reg.Metadata.Name != pluginID || !reg.Capabilities.ManagementAPI || !reg.Capabilities.FrontendAuthProvider {
+		t.Fatalf("optional DB failures must still return full registration: %#v", reg)
+	}
+	if loadedStore() == nil {
+		t.Fatal("main state store should be available despite optional DB failures")
+	}
+	status := plusStatusPayload()
+	if status["store_available"] != true || status["last_config_error"] != nil {
+		t.Fatalf("optional DB failures should not poison lifecycle status: %#v", status)
+	}
+	store := loadedStore()
+	if count, err := store.AuditCount(context.Background(), "legacy_import_failed"); err != nil || count < 2 {
+		t.Fatalf("legacy DB failures should be audited, count=%d err=%v", count, err)
+	}
+	if count, err := store.AuditCount(context.Background(), "native_alias_read_failed"); err != nil || count < 1 {
+		t.Fatalf("CPAMP alias DB failure should be audited, count=%d err=%v", count, err)
+	}
+	raw, err = adminKeys(managementRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp := decodeManagementResponse(t, raw)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("admin keys should remain usable: status=%d body=%s", resp.StatusCode, resp.Body)
+	}
+	var body struct {
+		Keys    []map[string]any `json:"keys"`
+		Pricing map[string]any   `json:"pricing"`
+	}
+	if err := json.Unmarshal(resp.Body, &body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Keys) != 1 {
+		t.Fatalf("native key sync should continue without aliases: %#v", body.Keys)
+	}
+	if body.Pricing["source"] != policyplus.CostSourceCPAMPPriceUnavailable {
+		t.Fatalf("bad CPAMP price DB should surface as unavailable pricing: %#v", body.Pricing)
 	}
 }
 
@@ -1228,7 +1467,24 @@ func TestCodexRequestsProjectSafeExecutorDetailFields(t *testing.T) {
 		"first_truncation_decision":         "continue",
 		"latest_reasoning_tokens":           94,
 		"continuation_count":                3,
+		"failure_category":                  "upstream_transport_eof",
 		"failure_detail":                    "safe diagnostic",
+		"diagnostics": map[string]any{
+			"rounds": []map[string]any{
+				{
+					"round":                1,
+					"model":                "gpt-5.5",
+					"requested_model":      "gpt-5.5",
+					"open_error_category":  "upstream_transport_eof",
+					"open_error":           `Post "https://chatgpt.com/backend-api/codex/responses": EOF`,
+					"authorization":        "Bearer sk-should-not-leak",
+					"encrypted_content":    "should-not-leak",
+					"raw_request_body":     "should-not-leak",
+					"last_read_error":      "EOF",
+					"last_read_error_body": "should-not-leak",
+				},
+			},
+		},
 		"rounds": []map[string]any{
 			{"round": 1, "reasoning_tokens": 516, "decision": "continue"},
 			{"round": 4, "reasoning_tokens": 94, "decision": "clean"},
@@ -1253,10 +1509,14 @@ func TestCodexRequestsProjectSafeExecutorDetailFields(t *testing.T) {
 		t.Fatalf("source=%s requests=%#v", source, requests)
 	}
 	got := requests[0]
-	for _, field := range []string{"final_status", "folded", "passthrough", "first_truncation_n", "failure_detail", "rounds"} {
+	for _, field := range []string{"final_status", "folded", "passthrough", "first_truncation_n", "failure_category", "failure_detail", "rounds", "diagnostics_brief"} {
 		if _, ok := got[field]; !ok {
 			t.Fatalf("projected summary missing %s: %#v", field, got)
 		}
+	}
+	brief, _ := got["diagnostics_brief"].([]map[string]any)
+	if len(brief) != 1 || brief[0]["open_error_category"] != "upstream_transport_eof" || brief[0]["authorization"] != nil {
+		t.Fatalf("diagnostics brief projection = %#v", got["diagnostics_brief"])
 	}
 	rounds, _ := got["rounds"].([]any)
 	if len(rounds) != 2 {
@@ -1426,6 +1686,18 @@ func TestCodexRequestsExecutorBridgeEmptyCurrentKeyIsNotError(t *testing.T) {
 	requests, source := codexRequestsForKey(key, 10)
 	if source != "codexcont_executor_store" || len(requests) != 0 {
 		t.Fatalf("empty current-key executor feed should not be an error: source=%s requests=%#v", source, requests)
+	}
+}
+
+func TestCodexRequestsExecutorBridgeUnavailableIsExplicit(t *testing.T) {
+	key := setupTestState(t)
+	state.mu.Lock()
+	state.cfg.CodexSummaryDBPath = filepath.Join(t.TempDir(), "missing", "executor.sqlite")
+	state.cfg.CodexContEnabled = false
+	state.mu.Unlock()
+	requests, source := codexRequestsForKey(key, 10)
+	if source != "codexcont_executor_store_unavailable" || len(requests) != 0 {
+		t.Fatalf("unavailable executor store should fail soft with explicit source: source=%s requests=%#v", source, requests)
 	}
 }
 

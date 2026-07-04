@@ -265,7 +265,7 @@ function renderMetrics(status){
   document.getElementById("route-chip").querySelector("span:last-child").textContent = `route ${status?.route_enabled ? "on" : "off"}`;
   document.getElementById("metrics").innerHTML = `
     <article class="metric"><div class="label">滚动窗口</div><div class="value">${num(rows.length)}</div><div class="hint">最近 120 条</div></article>
-    <article class="metric"><div class="label">处理中</div><div class="value">${num(processing)}</div><div class="hint">executor 内存态</div></article>
+    <article class="metric"><div class="label">处理中</div><div class="value">${num(status?.active_processing_count ?? processing)}</div><div class="hint">${status?.drain_ready ? "drain ready" : "draining"}</div></article>
     <article class="metric"><div class="label">自动续写</div><div class="value">${num(continued)}</div><div class="hint">隐藏 continuation</div></article>
     <article class="metric"><div class="label">疑似截断</div><div class="value">${num(risky)}</div><div class="hint">518n-2 未续写</div></article>
     <article class="metric"><div class="label">失败</div><div class="value">${num(failed)}</div><div class="hint">executor / upstream</div></article>`;
@@ -278,7 +278,7 @@ function detail(row){
     <section><h3>请求</h3><dl><dt>ID</dt><dd class="mono">${esc(row.request_id)}</dd><dt>Key</dt><dd>${esc(keyDisplay(identity))}</dd><dt>Preview</dt><dd class="mono">${esc(identity.preview || "-")}</dd><dt>状态</dt><dd>${esc(row.final_status || row.status || "-")}</dd></dl></section>
     <section><h3>触发</h3><dl><dt>命中轮</dt><dd>${esc(row.first_truncation_round ?? "-")}</dd><dt>命中 tokens</dt><dd>${esc(row.first_truncation_reasoning_tokens ?? "-")}</dd><dt>决策</dt><dd>${esc(row.first_truncation_decision || "-")}</dd></dl></section>
     <section><h3>轮次</h3><p class="muted">${roundText}</p></section>
-    <section><h3>停止 / 失败</h3><dl><dt>停止原因</dt><dd>${esc(row.stopped_reason || "-")}</dd><dt>失败原因</dt><dd>${esc(row.failure_reason || "-")}</dd><dt>耗时</dt><dd>${row.duration_ms == null ? "-" : num(row.duration_ms) + " ms"}</dd></dl></section>
+    <section><h3>停止 / 失败</h3><dl><dt>停止原因</dt><dd>${esc(row.stopped_reason || "-")}</dd><dt>失败分类</dt><dd>${esc(row.failure_category || "-")}</dd><dt>失败原因</dt><dd>${esc(row.failure_reason || row.failure_detail || "-")}</dd><dt>耗时</dt><dd>${row.duration_ms == null ? "-" : num(row.duration_ms) + " ms"}</dd></dl></section>
   </div></td></tr>`;
 }
 function renderRows(){

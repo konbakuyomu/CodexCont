@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,6 +17,8 @@ import (
 type Store struct {
 	db *sql.DB
 }
+
+const sqliteBusyTimeoutMS = 5000
 
 type CodexSummary struct {
 	RequestID  string         `json:"request_id"`
@@ -35,16 +39,33 @@ func OpenStore(path string) (*Store, error) {
 			return nil, err
 		}
 	}
-	db, err := sql.Open("sqlite", path)
+	db, err := sql.Open("sqlite", sqliteDSN(path))
 	if err != nil {
 		return nil, err
 	}
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
 	store := &Store{db: db}
 	if err := store.EnsureSchema(context.Background()); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
 	return store, nil
+}
+
+func sqliteDSN(path string) string {
+	path = strings.TrimSpace(path)
+	query := url.Values{}
+	query.Add("_pragma", fmt.Sprintf("busy_timeout(%d)", sqliteBusyTimeoutMS))
+	query.Add("_pragma", "journal_mode(WAL)")
+	if strings.HasPrefix(path, "file:") {
+		sep := "?"
+		if strings.Contains(path, "?") {
+			sep = "&"
+		}
+		return path + sep + query.Encode()
+	}
+	return path + "?" + query.Encode()
 }
 
 func (s *Store) Close() error {
@@ -119,6 +140,39 @@ func (s *Store) RecentCodexSummaries(ctx context.Context, keyID string, limit in
 	query += ` order by updated_at desc limit ?`
 	args = append(args, limit)
 	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []CodexSummary
+	for rows.Next() {
+		var item CodexSummary
+		var raw string
+		var ts int64
+		if err := rows.Scan(&item.RequestID, &item.KeyID, &item.Model, &item.Protection, &raw, &ts); err != nil {
+			return nil, err
+		}
+		item.UpdatedAt = time.Unix(ts, 0)
+		_ = json.Unmarshal([]byte(raw), &item.Summary)
+		if item.Summary == nil {
+			item.Summary = map[string]any{}
+		}
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) ProcessingCodexSummaries(ctx context.Context, limit int) ([]CodexSummary, error) {
+	if s == nil || s.db == nil {
+		return nil, nil
+	}
+	if limit <= 0 || limit > 1000 {
+		limit = 500
+	}
+	rows, err := s.db.QueryContext(ctx, `select request_id, key_id, model, protection, summary_json, updated_at from codexcont_summaries
+		where protection = ?
+		order by updated_at asc
+		limit ?`, "processing", limit)
 	if err != nil {
 		return nil, err
 	}

@@ -4,7 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -27,6 +30,34 @@ func unwrapEnvelope(t *testing.T, raw []byte, out any) {
 	if err := json.Unmarshal(env.Result, out); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func decodeExecutorManagementResponse(t *testing.T, raw []byte) managementResponse {
+	t.Helper()
+	var resp managementResponse
+	unwrapEnvelope(t, raw, &resp)
+	return resp
+}
+
+func recentExecutorSummaries(t *testing.T, limit string) []map[string]any {
+	t.Helper()
+	raw, err := managementHandle(mustJSON(t, managementRequest{
+		Method: http.MethodGet,
+		Path:   "/v0/resource/plugins/cpa-codexcont-executor/admin/api/summaries",
+		Query:  map[string][]string{"limit": {limit}},
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var resp managementResponse
+	unwrapEnvelope(t, raw, &resp)
+	var body struct {
+		Summaries []map[string]any `json:"summaries"`
+	}
+	if err := json.Unmarshal(resp.Body, &body); err != nil {
+		t.Fatal(err)
+	}
+	return body.Summaries
 }
 
 func configureTestState(t *testing.T, routeEnabled bool) {
@@ -55,6 +86,9 @@ func configureTestStateWithConfig(t *testing.T, mutate func(*executor.Config)) {
 	}
 	state.cfg = cfg
 	state.store = store
+	state.lastConfigError = ""
+	state.lastConfigErrorAt = time.Time{}
+	state.lastHostError = hostErrorState{}
 	monitor = newSummaryMonitor(160)
 	state.mu.Unlock()
 	t.Cleanup(func() {
@@ -128,6 +162,134 @@ func TestReconfigureReturnsFullRegistration(t *testing.T) {
 	}
 	if _, ok := cfg.UpstreamModelAliases["gpt-5.5"]; ok {
 		t.Fatalf("gpt-5.5 must not get an implicit Spark alias: %#v", cfg.UpstreamModelAliases)
+	}
+}
+
+func TestLifecycleConfigErrorKeepsRegistrationAndPreviousStore(t *testing.T) {
+	goodPath := filepath.Join(t.TempDir(), "executor.sqlite")
+	t.Cleanup(shutdownPlugin)
+	raw, err := handleMethod(methodPluginReconfigure, mustJSON(t, lifecycleRequest{ConfigYAML: []byte("enabled: true\nroute_enabled: true\nstate_db_path: " + goodPath + "\n")}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var reg registration
+	unwrapEnvelope(t, raw, &reg)
+	if reg.Metadata.Name != pluginID || !reg.Capabilities.ManagementAPI {
+		t.Fatalf("initial reconfigure registration = %#v", reg)
+	}
+	oldStore := loadedStore()
+	if oldStore == nil {
+		t.Fatal("expected initial store")
+	}
+	badParent := filepath.Join(t.TempDir(), "not-a-dir")
+	if err := os.WriteFile(badParent, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	badPath := filepath.Join(badParent, "executor.sqlite")
+	raw, err = handleMethod(methodPluginReconfigure, mustJSON(t, lifecycleRequest{ConfigYAML: []byte("enabled: true\nroute_enabled: false\nstate_db_path: " + badPath + "\n")}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	unwrapEnvelope(t, raw, &reg)
+	if reg.Metadata.Name != pluginID || !reg.Capabilities.ManagementAPI {
+		t.Fatalf("failed reconfigure must still return full registration: %#v", reg)
+	}
+	if loadedStore() != oldStore {
+		t.Fatal("failed reconfigure replaced the previous store")
+	}
+	cfg := loadedConfig()
+	if cfg.StateDBPath != goodPath || !cfg.RouteEnabled {
+		t.Fatalf("failed reconfigure changed active config: %#v", cfg)
+	}
+	status := statusPayload()
+	if status["store_available"] != true || !strings.Contains(fmt.Sprint(status["last_config_error"]), "not-a-dir") {
+		t.Fatalf("status missing config error or store availability: %#v", status)
+	}
+}
+
+func TestLifecycleConfigParseErrorStillReturnsRegistration(t *testing.T) {
+	configureTestState(t, true)
+	oldStore := loadedStore()
+	raw, err := handleMethod(methodPluginReconfigure, []byte(`{"config_yaml":`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var reg registration
+	unwrapEnvelope(t, raw, &reg)
+	if reg.Metadata.Name != pluginID || !reg.Capabilities.ManagementAPI {
+		t.Fatalf("parse error must still return full registration: %#v", reg)
+	}
+	if loadedStore() != oldStore {
+		t.Fatal("parse error replaced the previous store")
+	}
+	status := statusPayload()
+	if status["store_available"] != true || fmt.Sprint(status["last_config_error"]) == "" {
+		t.Fatalf("status missing parse error: %#v", status)
+	}
+}
+
+func TestInitialLifecycleConfigErrorStillRegistersAndReportsUnavailableStore(t *testing.T) {
+	state.mu.Lock()
+	if state.store != nil {
+		_ = state.store.Close()
+	}
+	state.cfg = executor.DefaultConfig()
+	state.store = nil
+	state.lastConfigError = ""
+	state.lastConfigErrorAt = time.Time{}
+	state.mu.Unlock()
+	t.Cleanup(shutdownPlugin)
+
+	badParent := filepath.Join(t.TempDir(), "not-a-dir")
+	if err := os.WriteFile(badParent, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	badPath := filepath.Join(badParent, "executor.sqlite")
+	raw, err := handleMethod(methodPluginRegister, mustJSON(t, lifecycleRequest{ConfigYAML: []byte("enabled: true\nstate_db_path: " + badPath + "\n")}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var reg registration
+	unwrapEnvelope(t, raw, &reg)
+	if reg.Metadata.Name != pluginID || !reg.Capabilities.ManagementAPI {
+		t.Fatalf("register must still return full registration: %#v", reg)
+	}
+	raw, err = managementRegister()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mgmt managementRegistrationResponse
+	unwrapEnvelope(t, raw, &mgmt)
+	foundAdmin := false
+	for _, resource := range mgmt.Resources {
+		if resource.Path == "/admin" && resource.Menu == "CodexCont Executor" {
+			foundAdmin = true
+		}
+	}
+	if !foundAdmin {
+		t.Fatalf("admin resource missing after config error: %#v", mgmt.Resources)
+	}
+	raw, err = managementHandle(mustJSON(t, managementRequest{Method: http.MethodGet, Path: "/admin/api/summaries"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp := decodeExecutorManagementResponse(t, raw)
+	if resp.StatusCode != http.StatusServiceUnavailable || !strings.Contains(string(resp.Body), "store_unavailable") {
+		t.Fatalf("summaries should fail soft without store: status=%d body=%s", resp.StatusCode, resp.Body)
+	}
+	raw, err = managementHandle(mustJSON(t, managementRequest{Method: http.MethodGet, Path: "/admin/api/status"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp = decodeExecutorManagementResponse(t, raw)
+	var statusBody struct {
+		Executor map[string]any `json:"executor"`
+	}
+	if err := json.Unmarshal(resp.Body, &statusBody); err != nil {
+		t.Fatal(err)
+	}
+	if statusBody.Executor["store_available"] != false || !strings.Contains(fmt.Sprint(statusBody.Executor["last_config_error"]), "not-a-dir") {
+		t.Fatalf("status API missing initial config error: %#v", statusBody.Executor)
 	}
 }
 
@@ -390,6 +552,52 @@ func TestFailedProcessingSummaryPersistsTerminalFailure(t *testing.T) {
 	if got := items[0].Summary["failure_reason"]; got != "upstream disconnected" {
 		t.Fatalf("failure reason = %#v", got)
 	}
+	if got := items[0].Summary["failure_category"]; got != failureCategoryHostCallbackFailed {
+		t.Fatalf("failure category = %#v", got)
+	}
+}
+
+func TestReconfigureReconcilesStaleProcessingRows(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "executor.sqlite")
+	store, err := executor.OpenStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale := time.Now().UTC().Add(-codexProcessingStaleAfter - time.Minute)
+	if err := store.SaveCodexSummary(context.Background(), "processing-stale", "key-1", "gpt-5.5", "processing", map[string]any{
+		"request_id":   "processing-stale",
+		"model":        "gpt-5.5",
+		"started_at":   stale.Add(-time.Minute).Format(time.RFC3339Nano),
+		"updated_at":   stale.Format(time.RFC3339Nano),
+		"status":       "processing",
+		"protection":   "processing",
+		"key_identity": map[string]any{"known": true, "id": "key-1", "preview": "key...one"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := handleMethod(methodPluginReconfigure, mustJSON(t, lifecycleRequest{ConfigYAML: []byte("enabled: true\nroute_enabled: true\nstate_db_path: " + path + "\n")}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var reg registration
+	unwrapEnvelope(t, raw, &reg)
+	if reg.Metadata.Name != pluginID {
+		t.Fatalf("registration = %#v", reg)
+	}
+	t.Cleanup(shutdownPlugin)
+	items, err := loadedStore().RecentCodexSummaries(context.Background(), "key-1", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].Protection != "failed" {
+		t.Fatalf("stale processing row not reconciled: %#v", items)
+	}
+	if items[0].Summary["failure_category"] != failureCategoryStaleProcessing {
+		t.Fatalf("stale failure category = %#v", items[0].Summary)
+	}
 }
 
 func TestKeyIdentityFromRequestUsesSafeMetadata(t *testing.T) {
@@ -643,6 +851,166 @@ func TestExecuteStreamAcceptsOfficialFlattenedRPCPayload(t *testing.T) {
 	}
 	if firstDiag["first_read_payload_bytes"].(float64) <= 0 {
 		t.Fatalf("first read diagnostics did not record payload length: %#v", firstDiag)
+	}
+}
+
+func TestExecuteStreamOpenEOFRecordsFailedSummaryCategory(t *testing.T) {
+	configureTestState(t, true)
+	originalHostCall := hostCall
+	t.Cleanup(func() { hostCall = originalHostCall })
+
+	done := make(chan struct{})
+	closeOnce := sync.Once{}
+	hostCall = func(method string, payload any) (json.RawMessage, error) {
+		switch method {
+		case methodHostModelExecuteStream:
+			return nil, errors.New(`Post "https://chatgpt.com/backend-api/codex/responses": EOF`)
+		case methodHostStreamEmit:
+			return rawJSON(t, map[string]any{}), nil
+		case methodHostStreamClose:
+			closeOnce.Do(func() { close(done) })
+			return rawJSON(t, map[string]any{}), nil
+		default:
+			t.Fatalf("unexpected host call %s", method)
+			return nil, nil
+		}
+	}
+
+	raw, err := executorExecuteStream(mustJSON(t, map[string]any{
+		"AuthID":       "key-1",
+		"Model":        "gpt-5.5",
+		"Format":       "openai-response",
+		"Stream":       true,
+		"SourceFormat": "openai-response",
+		"Payload":      []byte(`{"model":"gpt-5.5","stream":true,"input":[{"role":"user","content":"hi"}]}`),
+		"stream_id":    "client-eof",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var resp executorStreamResponse
+	unwrapEnvelope(t, raw, &resp)
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("executor stream did not finish")
+	}
+	summaries := recentExecutorSummaries(t, "5")
+	if len(summaries) == 0 {
+		t.Fatal("expected failed summary")
+	}
+	got := summaries[0]
+	if got["protection"] != "failed" || got["failure_category"] != failureCategoryUpstreamTransportEOF {
+		t.Fatalf("summary did not preserve EOF category: %#v", got)
+	}
+	diagnostics, _ := got["diagnostics"].(map[string]any)
+	rounds, _ := diagnostics["rounds"].([]any)
+	first, _ := rounds[0].(map[string]any)
+	if first["open_error_category"] != failureCategoryUpstreamTransportEOF {
+		t.Fatalf("diagnostics missing open error category: %#v", first)
+	}
+	status := statusPayload()
+	if status["last_host_error_category"] != failureCategoryUpstreamTransportEOF || status["drain_ready"] != true {
+		t.Fatalf("status did not record EOF/drain state: %#v", status)
+	}
+}
+
+func TestExecuteStreamClientClosedStopsAndRecordsCategory(t *testing.T) {
+	configureTestState(t, true)
+	originalHostCall := hostCall
+	t.Cleanup(func() { hostCall = originalHostCall })
+
+	done := make(chan struct{})
+	closeOnce := sync.Once{}
+	emitCount := 0
+	upstreamClosed := false
+	hostCall = func(method string, payload any) (json.RawMessage, error) {
+		switch method {
+		case methodHostModelExecuteStream:
+			return rawJSON(t, hostModelStreamResponse{StatusCode: http.StatusOK, StreamID: "upstream-client-closed"}), nil
+		case methodHostModelStreamRead:
+			return rawJSON(t, hostModelStreamReadResponse{
+				Payload: executor.SerializeEvent(map[string]any{"type": "response.created", "response": map[string]any{"id": "resp-client-closed", "status": "in_progress"}}),
+			}), nil
+		case methodHostModelStreamClose:
+			upstreamClosed = true
+			return rawJSON(t, map[string]any{}), nil
+		case methodHostStreamEmit:
+			emitCount++
+			return nil, errors.New("stream 187 is not open")
+		case methodHostStreamClose:
+			closeOnce.Do(func() { close(done) })
+			return rawJSON(t, map[string]any{}), nil
+		default:
+			t.Fatalf("unexpected host call %s", method)
+			return nil, nil
+		}
+	}
+
+	if _, err := executorExecuteStream(mustJSON(t, map[string]any{
+		"AuthID":       "key-1",
+		"Model":        "gpt-5.5",
+		"Format":       "openai-response",
+		"Stream":       true,
+		"SourceFormat": "openai-response",
+		"Payload":      []byte(`{"model":"gpt-5.5","stream":true,"input":[{"role":"user","content":"hi"}]}`),
+		"stream_id":    "client-closed",
+	})); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("executor stream did not finish")
+	}
+	if emitCount != 1 || !upstreamClosed {
+		t.Fatalf("client close should stop after first emit and close upstream, emitCount=%d upstreamClosed=%v", emitCount, upstreamClosed)
+	}
+	summaries := recentExecutorSummaries(t, "5")
+	if len(summaries) == 0 {
+		t.Fatal("expected failed summary")
+	}
+	if summaries[0]["failure_category"] != failureCategoryClientStreamClosed {
+		t.Fatalf("summary category = %#v", summaries[0])
+	}
+	status := statusPayload()
+	if status["last_host_error_category"] != failureCategoryClientStreamClosed || status["active_processing_count"] != 0 {
+		t.Fatalf("status did not record client close: %#v", status)
+	}
+}
+
+func TestClassifyHostConnectTimeoutErrors(t *testing.T) {
+	for _, text := range []string{
+		"upstream connect error or disconnect/reset before headers. reset reason: connection timeout",
+		"dial tcp 172.23.0.2:8317: i/o timeout",
+		"error stopping API server: context deadline exceeded",
+	} {
+		category, detail := classifyHostErrorText(text)
+		if category != failureCategoryUpstreamConnectTimeout || detail == "" {
+			t.Fatalf("classifyHostErrorText(%q) = %q %q", text, category, detail)
+		}
+	}
+}
+
+func TestStatusReportsDrainState(t *testing.T) {
+	configureTestState(t, true)
+	started := time.Now().UTC().Add(-2 * time.Minute)
+	monitor.upsert("processing-active", processingSummary(executorRequest{AuthID: "key-1", Model: "gpt-5.5"}, map[string]any{"model": "gpt-5.5"}, "processing-active", started))
+	recordHostError(errors.New("dial tcp 172.23.0.2:8317: i/o timeout"))
+	status := statusPayload()
+	if status["active_processing_count"] != 1 || status["drain_ready"] != false {
+		t.Fatalf("status missing active drain state: %#v", status)
+	}
+	if age, ok := status["oldest_processing_age_ms"].(int64); !ok || age <= 0 {
+		t.Fatalf("oldest age missing: %#v", status)
+	}
+	if status["last_host_error_category"] != failureCategoryUpstreamConnectTimeout {
+		t.Fatalf("last host error missing: %#v", status)
+	}
+	monitor.Finish("processing-active", map[string]any{"request_id": "processing-active", "protection": "failed", "status": "failed"})
+	status = statusPayload()
+	if status["active_processing_count"] != 0 || status["drain_ready"] != true {
+		t.Fatalf("status should be drain ready after finish: %#v", status)
 	}
 }
 

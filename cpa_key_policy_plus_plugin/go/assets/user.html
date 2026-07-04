@@ -501,7 +501,7 @@ function protectionDetail(req){
       ["自动续写", num(req.continuation_count)],
     ])}</section>
     <section class="detail-card"><h3>轮次</h3><p class="muted mono">${roundSummaryText(req.rounds)}</p></section>
-    <section class="detail-card"><h3>失败摘要</h3><div class="failure-box mono">${esc(req.failure_reason || req.failure_detail || "无失败详情")}</div></section>
+    <section class="detail-card"><h3>失败摘要</h3><div class="failure-box mono">${esc(req.failure_category || req.failure_reason || req.failure_detail || "无失败详情")}</div></section>
   </div></td></tr>`;
 }
 function renderProtection(force=false){
@@ -525,7 +525,7 @@ function renderProtection(force=false){
       <td><span class="strong">${req.first_truncation_round == null ? "-" : "#" + esc(req.first_truncation_round)}</span><div class="muted">${req.first_truncation_reasoning_tokens == null ? "" : num(req.first_truncation_reasoning_tokens)}</div></td>
       <td><span class="strong">${req.latest_reasoning_tokens == null ? "-" : num(req.latest_reasoning_tokens)}</span><div class="muted">续写 ${num(req.continuation_count)}</div></td>
       <td><span class="strong">${duration(req.duration_ms)}</span><div class="muted">${esc(req.stopped_reason || "-")}</div></td>
-      <td>${esc(req.failure_reason || req.failure_detail || "-")}</td>
+      <td>${esc(req.failure_category || req.failure_reason || req.failure_detail || "-")}</td>
       <td><button class="ghost compact" data-protection="${esc(id)}" type="button">${open ? "收起" : "展开"}</button></td>
     </tr>`;
     return main + (open ? protectionDetail(req) : "");
@@ -585,7 +585,7 @@ async function fetchProtection(seq, signal){
   state.errors.protection = "";
   const result = changedIds(requests, state.protectionSigs, protectionID, r => ({
     protection:r.protection, status:r.status, latest_reasoning_tokens:r.latest_reasoning_tokens,
-    continuation_count:r.continuation_count, stopped_reason:r.stopped_reason, failure_reason:r.failure_reason,
+    continuation_count:r.continuation_count, stopped_reason:r.stopped_reason, failure_category:r.failure_category, failure_reason:r.failure_reason, failure_detail:r.failure_detail,
     duration_ms:r.duration_ms, first_truncation_round:r.first_truncation_round
   }));
   state.protection = requests;

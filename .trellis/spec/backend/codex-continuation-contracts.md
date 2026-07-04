@@ -997,6 +997,13 @@ Separate the key authority migration from the continuation-owner migration.
 - Resource API aliases for that monitor:
   `GET /v0/resource/plugins/cpa-codexcont-executor/admin/api/status` and
   `GET /v0/resource/plugins/cpa-codexcont-executor/admin/api/summaries`.
+- Executor status payload must include deployment-drain and last host error
+  fields: `active_processing_count`, `oldest_processing_age_ms`,
+  `drain_ready`, `last_host_error_category`, `last_host_error_message`, and
+  `last_host_error_at`.
+- Executor summaries may include safe failure classification fields:
+  `failure_category`, `failure_reason`, `failure_detail`, and
+  `diagnostics.rounds[].{open_error_category,last_read_error_category}`.
 
 ### 3. Contracts
 - `route_enabled=false` -> `model.route` returns unhandled. CPA keeps the
@@ -1021,6 +1028,26 @@ Separate the key authority migration from the continuation-owner migration.
   evidence and read byte counts. It must not persist or return request bodies,
   response bodies, raw keys, Authorization headers, OAuth tokens, cookies, or
   encrypted reasoning.
+- Host callback failures must be normalized before they are surfaced to CPAMP or
+  Plus. Required categories are `client_stream_closed`,
+  `upstream_transport_eof`, `upstream_connect_timeout`,
+  `upstream_context_too_large`, and `host_callback_failed`. These categories are
+  stable API values; UI and Plus projections should render them instead of
+  reparsing free-form error text.
+- A client/host stream close such as `stream ... is not open` means the
+  downstream stream is gone. The executor must stop folding promptly, close the
+  upstream host stream, persist a failed summary with
+  `failure_category=client_stream_closed`, and avoid opening hidden
+  continuation rounds after the client is already gone.
+- Upstream open failures such as `Post .../codex/responses: EOF`,
+  `connection timeout`, `i/o timeout`, or `context deadline exceeded` must
+  update the existing `processing` row to a failed terminal summary and update
+  executor status `last_host_error_*`; they must not leave an eternal
+  `processing` row.
+- Executor status `drain_ready=true` means there are no in-memory active
+  `processing` rows and plugin binary replacement/restart is less likely to cut
+  an active user stream. It does not prove CPA/Caddy is healthy; failures before
+  plugin dispatch still require host/proxy observability.
 - Plus `frontend_auth` metadata is the safe key-identity bridge for executor
   summaries. It may include `key_id`, `key_name`, `key_alias`, `preview`,
   `source`, and `source_present`, but never the raw native key or full hash.
@@ -1059,6 +1086,14 @@ Separate the key authority migration from the continuation-owner migration.
   must return full metadata and capabilities from both methods; returning only a
   lightweight configured acknowledgement makes CPA mark the plugin
   unregistered and drops CPAMP resource routes.
+- Plugin lifecycle registration is separate from runtime state readiness.
+  `plugin.register` and `plugin.reconfigure` for self-owned plugins must not
+  return lifecycle errors for config YAML parse failures, writable state SQLite
+  open/schema failures, legacy import failures, or read-only CPAMP/Governor DB
+  failures. Return the full registration, keep the last-known-good config/store
+  on failed reconfigure, record the failure in plugin status such as
+  `last_config_error`, and let business APIs fail closed or fail soft according
+  to their own safety contract.
 - Plus may read the executor SQLite store through `codex_summary_db_path` for
   `/user/api/codexcont`; read failures degrade only protection summaries and
   must not affect login, quota, `/user/api/usage`, or `/user/api/events`.
@@ -1074,9 +1109,10 @@ Separate the key authority migration from the continuation-owner migration.
   for summaries with no identity.
 - Plus user CodexCont details should stay information-equivalent with the
   executor admin detail for safe fields: `final_status`, `folded`,
-  `passthrough`, `passthrough_reason`, `first_truncation_n`, `failure_detail`,
-  `rounds[]`, safe key name, and safe preview may be shown. The user table
-  should use the same timestamp semantics as the executor admin table
+  `passthrough`, `passthrough_reason`, `first_truncation_n`,
+  `failure_category`, `failure_detail`, `diagnostics_brief`, `rounds[]`, safe
+  key name, and safe preview may be shown. The user table should use the same
+  timestamp semantics as the executor admin table
   (`updated_at || started_at`) and show start/update/end timestamps in the
   expanded detail to avoid apparent duration offsets.
 - `/user/api/codexcont` must filter or downgrade stale `processing` rows from
@@ -1104,6 +1140,10 @@ Separate the key authority migration from the continuation-owner migration.
   menu-registration shims.
 - `route_enabled=false` but `model.route` handles a request -> reject; the
   switch is not one-click safe.
+- Any plugin lifecycle config/store/import/read-only DB failure makes CPAMP
+  drop a plugin menu or resource route -> reject; the plugin must stay
+  registered and expose the failure through status while runtime APIs enforce
+  their normal safe error behavior.
 - Missing executor summary DB -> Plus falls back to sidecar/local summaries or
   returns an empty protection list, while usage APIs continue to pass.
 - Executor creates only in-memory `processing` monitor rows and writes SQLite
@@ -1114,8 +1154,17 @@ Separate the key authority migration from the continuation-owner migration.
   show duplicate rows for one logical request.
 - Stale executor `processing` row is older than the user-page freshness window
   -> do not count it as active and do not return it as a live current-key row.
+- Stale executor SQLite `processing` row survives plugin restart/reconfigure ->
+  reconcile it to `protection=failed` with
+  `failure_category=stale_processing_reconciled`.
 - Upstream EOF before terminal event -> executor emits `response.incomplete`
   and must not leak buffered tentative message/function-call output.
+- `host.model.execute_stream` returns EOF/timeout before a stream id -> persist
+  failed summary with `failure_category=upstream_transport_eof` or
+  `upstream_connect_timeout`; do not leave the placeholder in processing.
+- `host.stream.emit` or `host.model.stream_read` returns `stream ... is not
+  open` -> classify as `client_stream_closed`, stop the fold loop promptly, and
+  do not send an additional downstream error frame to a closed stream.
 - Structured upstream stream errors, especially context-window errors returned
   as OpenAI-compatible JSON, must be surfaced as explicit downstream
   `response.failed` events with the useful type/code/message preserved. Do not
@@ -1172,6 +1221,12 @@ Separate the key authority migration from the continuation-owner migration.
   `gpt-5.5`, while an explicitly configured alias may route to another
   upstream model and must preserve the client-visible model in downstream
   events, summaries, and diagnostics.
+- Good: A `gpt-5.5` stream that fails opening upstream with EOF becomes a
+  terminal failed summary with `failure_category=upstream_transport_eof`, and
+  executor status records the same last host error while `drain_ready=true`.
+- Good: A CPA restart closes the client stream; executor records
+  `client_stream_closed`, closes the upstream stream, and Plus displays the
+  category without exposing raw request data.
 - Base: executor plugin loaded with `route_enabled=false`; no request is
   handled by the executor, and CPA remains usable without continuation folding.
 - Base: All official native keys fail with the same `invalidated oauth token`
@@ -1190,6 +1245,10 @@ Separate the key authority migration from the continuation-owner migration.
   entry, and non-admin management routes have empty `Menu` fields.
 - Go unit: `plugin.reconfigure` returns full registration metadata and
   capabilities, not only `{"configured": true}`.
+- Go unit: lifecycle config parse/open/schema failures still return full
+  registration, preserve the previous good store/config on reconfigure, expose
+  `last_config_error` through status, and keep business APIs fail-closed or
+  fail-soft as appropriate.
 - Go unit: executor `usage.handle` returns an observability-only no-op and does
   not store billing or quota data.
 - Go unit: executor `frontend_auth.authenticate` returns unauthenticated and is
@@ -1206,9 +1265,19 @@ Separate the key authority migration from the continuation-owner migration.
   encrypted reasoning, upstream EOF, structured upstream stream errors,
   ordinary stream errors, monotonic sequence numbers, and reconstructed proxy
   metadata.
+- Go unit: host callback open/read/emit errors are classified into stable
+  `failure_category` values, persisted to executor summaries, and exposed
+  through executor status `last_host_error_*`.
+- Go unit: executor status reports `active_processing_count`,
+  `oldest_processing_age_ms`, and `drain_ready`, and stale SQLite
+  `processing` rows are reconciled on lifecycle config apply.
 - Go unit: Plus reads executor summaries by key id through
   `codex_summary_db_path`, filters other users, and fails soft when the DB is
   missing.
+- Go unit: Plus lifecycle ignores optional legacy quota, Governor, CPAMP alias,
+  and CPAMP price read failures for registration while auditing/statusing them;
+  the main state DB unavailable case must not silently authenticate or relax
+  quota policy.
 - Go unit: executor persists `processing` summaries with safe key identity,
   replaces the processing placeholder on terminal success, and persists failed
   terminal state on executor/host errors.
@@ -1216,6 +1285,10 @@ Separate the key authority migration from the continuation-owner migration.
   hides other-key processing rows, and ignores stale processing rows.
 - Go unit: Plus projects safe executor detail fields and user HTML keeps the
   per-round rendering hook and executor-aligned timestamp order.
+- Go unit: Plus projects `failure_category`, `failure_detail`, and
+  `diagnostics_brief` from executor summaries without leaking raw keys,
+  Authorization headers, request bodies, response bodies, cookies, OAuth tokens,
+  full hashes, or encrypted reasoning.
 
 ### 7. Wrong vs Correct
 
