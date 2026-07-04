@@ -1190,6 +1190,11 @@ the Plus user portal or key/quota controls.
   before re-extracting and place it under `_LocalRuntime`, not a throwaway
   `/tmp/codex-go*` directory.
 - Record plugin artifact SHA256 hashes after every production-bound rebuild.
+- When launching deployment commands from Windows PowerShell to a Linux host,
+  protect remote shell variables and command substitutions from local
+  expansion. Prefer single-quoted remote commands or pipe a clean LF-only script
+  to `ssh host bash -s`; verify SHA/config state after any partial remote
+  command failure.
 - CLIProxyAPI CPA plugins are C ABI shared objects built with
   `-tags cliproxy_plugin -buildmode=c-shared`. Do not use Go
   `-buildmode=plugin`; that produces the wrong plugin ABI for this host.
@@ -1209,6 +1214,10 @@ the Plus user portal or key/quota controls.
 - Build artifact SHA not recorded -> rollout evidence is incomplete.
 - Build uses `-buildmode=plugin` instead of `-buildmode=c-shared` -> artifact
   is invalid for CPA deployment even if `go build` exits successfully.
+- PowerShell expands remote `$()` / `$VAR` in a double-quoted `ssh` command, or
+  a CRLF/BOM script makes the remote shell see `set\r` -> stop, inspect what
+  already changed, then rerun the remaining deployment step with quoted or
+  stdin-fed shell input.
 
 ### 5. Good/Base/Bad Cases
 - Good: A Linux plugin build uses
@@ -1219,6 +1228,9 @@ the Plus user portal or key/quota controls.
   `command -v go` returned empty.
 - Bad: A local `build/` directory or generated plugin `.so` / `.h` appears in
   `git status` as an untracked production artifact.
+- Bad: A remote backup/deploy command is written as
+  `ssh host "TS=$(date ...); B=...; cp ... $B/..."` from PowerShell, causing
+  local expansion and partial remote side effects.
 
 ### 6. Tests Required
 - Shell smoke: `command -v go || true` plus the preferred explicit Go path
@@ -1245,6 +1257,16 @@ throwaway state outside the project runtime convention.
 
 The build uses the already-provisioned local runtime toolchain and produces
 repeatable evidence.
+
+#### Correct
+```powershell
+$script | ssh sjc-snap bash -s
+ssh sjc-snap 'sha256sum /opt/codex-stacks/cpa/plugins/linux/amd64/cpa-codexcont-executor.so'
+```
+
+The deployment script reaches the remote shell without PowerShell expanding
+remote variables, and each partial failure is followed by direct state
+verification before continuing.
 
 ## Scenario: CPA Governor plugin and CodexCont Engine rollout
 
