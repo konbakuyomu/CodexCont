@@ -322,7 +322,8 @@ func executorExecuteStream(raw []byte) ([]byte, error) {
 func foldHostStream(req executorCallRequest, execReq executorRequest, cfg executor.Config, base map[string]any) {
 	ctx := context.Background()
 	targetStreamID := req.StreamID
-	monitorID := monitor.Start(execReq, base)
+	monitorID, processingSummary := monitor.StartSummary(execReq, base)
+	saveExecutorSummary(processingSummary)
 	diagnostics := newStreamDiagnostics()
 	var streamErr string
 	defer func() {
@@ -338,12 +339,13 @@ func foldHostStream(req executorCallRequest, execReq executorRequest, cfg execut
 	result, err := executor.FoldStream(ctx, cfg, base, opener, emitter)
 	if err != nil {
 		streamErr = brief(err.Error(), 400)
+		saveExecutorSummary(failedProcessingSummary(processingSummary, streamErr))
 		monitor.Fail(monitorID, streamErr)
 		_, _ = hostCall(methodHostStreamEmit, hostStreamEmitRequest{StreamID: targetStreamID, Error: streamErr})
 		return
 	}
 	if result != nil {
-		monitor.Finish(monitorID, saveFoldSummary(execReq, result, diagnostics.Snapshot()))
+		monitor.Finish(monitorID, saveFoldSummaryReplacing(execReq, result, diagnostics.Snapshot(), monitorID))
 	}
 }
 
@@ -438,6 +440,10 @@ func (r *hostStreamReader) Close() error {
 }
 
 func saveFoldSummary(req executorRequest, result *executor.FoldResult, diagnostics map[string]any) map[string]any {
+	return saveFoldSummaryReplacing(req, result, diagnostics, "")
+}
+
+func saveFoldSummaryReplacing(req executorRequest, result *executor.FoldResult, diagnostics map[string]any, processingID string) map[string]any {
 	if result == nil {
 		return nil
 	}
@@ -447,20 +453,77 @@ func saveFoldSummary(req executorRequest, result *executor.FoldResult, diagnosti
 	if len(identity) > 0 {
 		summary["key_identity"] = identity
 	}
-	model := firstNonEmpty(req.Model, fmt.Sprint(summary["model"]))
+	model := firstNonEmpty(req.Model, cleanAnyString(summary["model"]))
 	if model != "" {
 		summary["model"] = model
 	}
 	if diagnostics != nil {
 		summary["diagnostics"] = diagnostics
 	}
-	requestID := firstNonEmpty(result.RequestID, fmt.Sprint(summary["request_id"]))
+	requestID := firstNonEmpty(result.RequestID, cleanAnyString(summary["request_id"]))
+	if requestID == "" && processingID != "" {
+		requestID = processingID
+		summary["request_id"] = processingID
+	}
 	store := loadedStore()
 	if store == nil {
 		return summary
 	}
 	_ = store.SaveCodexSummary(context.Background(), requestID, keyID, model, result.Protection, summary)
+	if processingID != "" && requestID != "" && requestID != processingID {
+		_ = store.DeleteCodexSummary(context.Background(), processingID)
+	}
 	return summary
+}
+
+func saveExecutorSummary(summary map[string]any) {
+	if len(summary) == 0 {
+		return
+	}
+	store := loadedStore()
+	if store == nil {
+		return
+	}
+	requestID := firstNonEmpty(cleanAnyString(summary["request_id"]))
+	if requestID == "" {
+		return
+	}
+	identity, _ := summary["key_identity"].(map[string]any)
+	keyID := keyIdentityID(identity)
+	model := firstNonEmpty(cleanAnyString(summary["model"]))
+	protection := firstNonEmpty(cleanAnyString(summary["protection"]))
+	_ = store.SaveCodexSummary(context.Background(), requestID, keyID, model, protection, summary)
+}
+
+func failedProcessingSummary(processing map[string]any, reason string) map[string]any {
+	if len(processing) == 0 {
+		return nil
+	}
+	out := cloneSummary(processing)
+	now := time.Now().UTC()
+	out["updated_at"] = now.Format(time.RFC3339Nano)
+	out["ended_at"] = now.Format(time.RFC3339Nano)
+	out["status"] = "failed"
+	out["final_status"] = "failed"
+	out["protection"] = "failed"
+	out["failure_reason"] = reason
+	if started, ok := parseSummaryTime(out["started_at"]); ok {
+		out["duration_ms"] = now.Sub(started).Milliseconds()
+	}
+	return out
+}
+
+func parseSummaryTime(value any) (time.Time, bool) {
+	raw := strings.TrimSpace(fmt.Sprint(value))
+	if raw == "" || raw == "<nil>" {
+		return time.Time{}, false
+	}
+	for _, layout := range []string{time.RFC3339Nano, time.RFC3339} {
+		if parsed, err := time.Parse(layout, raw); err == nil {
+			return parsed, true
+		}
+	}
+	return time.Time{}, false
 }
 
 func keyIdentityFromRequest(req executorRequest) map[string]any {
@@ -895,6 +958,14 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
+func cleanAnyString(value any) string {
+	text := strings.TrimSpace(fmt.Sprint(value))
+	if text == "<nil>" {
+		return ""
+	}
+	return text
+}
+
 func executorProtocol(value string) string {
 	value = strings.ToLower(strings.TrimSpace(value))
 	switch value {
@@ -1195,17 +1266,29 @@ func newSummaryMonitor(limit int) *summaryMonitor {
 }
 
 func (m *summaryMonitor) Start(req executorRequest, base map[string]any) string {
+	id, _ := m.StartSummary(req, base)
+	return id
+}
+
+func (m *summaryMonitor) StartSummary(req executorRequest, base map[string]any) (string, map[string]any) {
 	if m == nil {
-		return ""
+		return "", nil
 	}
-	now := time.Now().UTC().Format(time.RFC3339Nano)
+	now := time.Now().UTC()
 	id := fmt.Sprintf("processing-%d", time.Now().UnixNano())
-	model := firstNonEmpty(req.Model, fmt.Sprint(base["model"]))
+	item := processingSummary(req, base, id, now)
+	m.upsert(id, item)
+	return id, cloneSummary(item)
+}
+
+func processingSummary(req executorRequest, base map[string]any, id string, now time.Time) map[string]any {
+	nowText := now.UTC().Format(time.RFC3339Nano)
+	model := firstNonEmpty(req.Model, cleanAnyString(base["model"]))
 	item := map[string]any{
 		"request_id":         id,
 		"model":              model,
-		"started_at":         now,
-		"updated_at":         now,
+		"started_at":         nowText,
+		"updated_at":         nowText,
 		"status":             "processing",
 		"final_status":       "processing",
 		"protection":         "processing",
@@ -1216,8 +1299,7 @@ func (m *summaryMonitor) Start(req executorRequest, base map[string]any) string 
 	if identity := keyIdentityFromRequest(req); len(identity) > 0 {
 		item["key_identity"] = identity
 	}
-	m.upsert(id, item)
-	return id
+	return item
 }
 
 func (m *summaryMonitor) Finish(processingID string, summary map[string]any) {

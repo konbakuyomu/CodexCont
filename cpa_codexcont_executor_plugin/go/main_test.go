@@ -316,6 +316,72 @@ func TestSummariesIncludeProcessingMonitor(t *testing.T) {
 	}
 }
 
+func TestProcessingSummaryPersistsForPlusBridge(t *testing.T) {
+	configureTestState(t, true)
+	id, summary := monitor.StartSummary(executorRequest{
+		AuthID: "key-1",
+		Model:  "gpt-5.5",
+		AuthMetadata: map[string]any{
+			"key_name":  "kuma的官key",
+			"key_alias": "kuma专用",
+			"preview":   "abcd1234...ef5678",
+			"source":    "native_cpa",
+		},
+	}, map[string]any{"model": "gpt-5.5"})
+	saveExecutorSummary(summary)
+	items, err := state.store.RecentCodexSummaries(context.Background(), "key-1", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].RequestID != id || items[0].Protection != "processing" {
+		t.Fatalf("persisted processing summaries = %#v", items)
+	}
+	identity, _ := items[0].Summary["key_identity"].(map[string]any)
+	if identity["id"] != "key-1" || identity["name"] != "kuma的官key" || identity["alias"] != "kuma专用" {
+		t.Fatalf("persisted identity = %#v", identity)
+	}
+}
+
+func TestSaveFoldSummaryReplacesProcessingPlaceholder(t *testing.T) {
+	configureTestState(t, true)
+	id, summary := monitor.StartSummary(executorRequest{AuthID: "key-1", Model: "gpt-5.5"}, map[string]any{"model": "gpt-5.5"})
+	saveExecutorSummary(summary)
+	result := &executor.FoldResult{
+		RequestID:  "resp-final",
+		Protection: "protected_clean",
+		Summary: map[string]any{
+			"request_id": "resp-final",
+			"protection": "protected_clean",
+			"status":     "completed",
+		},
+	}
+	saveFoldSummaryReplacing(executorRequest{AuthID: "key-1", Model: "gpt-5.5"}, result, nil, id)
+	items, err := state.store.RecentCodexSummaries(context.Background(), "key-1", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].RequestID != "resp-final" || items[0].Protection != "protected_clean" {
+		t.Fatalf("final summary should replace processing placeholder: %#v", items)
+	}
+}
+
+func TestFailedProcessingSummaryPersistsTerminalFailure(t *testing.T) {
+	configureTestState(t, true)
+	id, summary := monitor.StartSummary(executorRequest{AuthID: "key-1", Model: "gpt-5.5"}, map[string]any{"model": "gpt-5.5"})
+	saveExecutorSummary(summary)
+	saveExecutorSummary(failedProcessingSummary(summary, "upstream disconnected"))
+	items, err := state.store.RecentCodexSummaries(context.Background(), "key-1", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].RequestID != id || items[0].Protection != "failed" {
+		t.Fatalf("failed summary should update processing row: %#v", items)
+	}
+	if got := items[0].Summary["failure_reason"]; got != "upstream disconnected" {
+		t.Fatalf("failure reason = %#v", got)
+	}
+}
+
 func TestKeyIdentityFromRequestUsesSafeMetadata(t *testing.T) {
 	req := executorRequest{
 		AuthID: "codex-upstream-auth",

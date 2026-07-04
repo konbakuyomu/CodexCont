@@ -95,6 +95,14 @@ func (s *Store) SaveCodexSummary(ctx context.Context, requestID, keyID, model, p
 	return err
 }
 
+func (s *Store) DeleteCodexSummary(ctx context.Context, requestID string) error {
+	if s == nil || s.db == nil || strings.TrimSpace(requestID) == "" {
+		return nil
+	}
+	_, err := s.db.ExecContext(ctx, `delete from codexcont_summaries where request_id = ?`, requestID)
+	return err
+}
+
 func (s *Store) RecentCodexSummaries(ctx context.Context, keyID string, limit int) ([]CodexSummary, error) {
 	if s == nil || s.db == nil {
 		return nil, nil

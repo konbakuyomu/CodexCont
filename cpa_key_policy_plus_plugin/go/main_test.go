@@ -997,6 +997,101 @@ func TestCodexRequestsAllowExecutorPreviewMatchAndHideOtherKeys(t *testing.T) {
 	}
 }
 
+func TestCodexRequestsIncludeCurrentKeyProcessingFromExecutorStore(t *testing.T) {
+	key := setupTestState(t)
+	execPath := filepath.Join(t.TempDir(), "executor.sqlite")
+	execStore, err := policyplus.OpenStore(execPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if err := execStore.SaveCodexSummary(context.Background(), "processing-live", key.ID, "gpt-5.5", "processing", map[string]any{
+		"request_id":   "processing-live",
+		"model":        "gpt-5.5",
+		"started_at":   now.Add(-20 * time.Second).Format(time.RFC3339Nano),
+		"updated_at":   now.Format(time.RFC3339Nano),
+		"status":       "processing",
+		"protection":   "processing",
+		"key_identity": map[string]any{"known": true, "id": key.ID, "preview": key.Preview},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := execStore.Close(); err != nil {
+		t.Fatal(err)
+	}
+	state.mu.Lock()
+	state.cfg.CodexSummaryDBPath = execPath
+	state.cfg.CodexContEnabled = false
+	state.mu.Unlock()
+	requests, source := codexRequestsForKey(key, 10)
+	if source != "codexcont_executor_store" || len(requests) != 1 || requests[0]["request_id"] != "processing-live" || requests[0]["protection"] != "processing" {
+		t.Fatalf("source=%s requests=%#v", source, requests)
+	}
+}
+
+func TestCodexRequestsHideOtherKeyProcessingFromExecutorStore(t *testing.T) {
+	key := setupTestState(t)
+	execPath := filepath.Join(t.TempDir(), "executor.sqlite")
+	execStore, err := policyplus.OpenStore(execPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if err := execStore.SaveCodexSummary(context.Background(), "processing-other", "other-key", "gpt-5.5", "processing", map[string]any{
+		"request_id":   "processing-other",
+		"model":        "gpt-5.5",
+		"updated_at":   now.Format(time.RFC3339Nano),
+		"status":       "processing",
+		"protection":   "processing",
+		"key_identity": map[string]any{"known": true, "id": "other-key", "preview": "other...key"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := execStore.Close(); err != nil {
+		t.Fatal(err)
+	}
+	state.mu.Lock()
+	state.cfg.CodexSummaryDBPath = execPath
+	state.cfg.CodexContEnabled = false
+	state.mu.Unlock()
+	requests, source := codexRequestsForKey(key, 10)
+	if source != "codexcont_executor_store" || len(requests) != 0 {
+		t.Fatalf("other-key processing should stay hidden: source=%s requests=%#v", source, requests)
+	}
+}
+
+func TestCodexRequestsHideStaleProcessingFromExecutorStore(t *testing.T) {
+	key := setupTestState(t)
+	execPath := filepath.Join(t.TempDir(), "executor.sqlite")
+	execStore, err := policyplus.OpenStore(execPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale := time.Now().UTC().Add(-codexProcessingStaleAfter - time.Minute)
+	if err := execStore.SaveCodexSummary(context.Background(), "processing-stale", key.ID, "gpt-5.5", "processing", map[string]any{
+		"request_id":   "processing-stale",
+		"model":        "gpt-5.5",
+		"started_at":   stale.Add(-time.Minute).Format(time.RFC3339Nano),
+		"updated_at":   stale.Format(time.RFC3339Nano),
+		"status":       "processing",
+		"protection":   "processing",
+		"key_identity": map[string]any{"known": true, "id": key.ID, "preview": key.Preview},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := execStore.Close(); err != nil {
+		t.Fatal(err)
+	}
+	state.mu.Lock()
+	state.cfg.CodexSummaryDBPath = execPath
+	state.cfg.CodexContEnabled = false
+	state.mu.Unlock()
+	requests, source := codexRequestsForKey(key, 10)
+	if source != "codexcont_executor_store" || len(requests) != 0 {
+		t.Fatalf("stale processing should be hidden: source=%s requests=%#v", source, requests)
+	}
+}
+
 func TestCodexRequestsExecutorBridgeEmptyCurrentKeyIsNotError(t *testing.T) {
 	key := setupTestState(t)
 	execPath := filepath.Join(t.TempDir(), "executor.sqlite")

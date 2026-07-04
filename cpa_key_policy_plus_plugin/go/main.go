@@ -25,6 +25,7 @@ const (
 	executorModelScopeBoth       = "both"
 	executorFormatOpenAIResponse = "openai-response"
 	policyDenyMetadataPrefix     = "policy_deny_"
+	codexProcessingStaleAfter    = 15 * time.Minute
 )
 
 var executorUsageModelAliases = map[string]string{
@@ -2062,6 +2063,9 @@ func fetchExecutorCodexSummaries(key policyplus.KeyRecord, limit int) ([]map[str
 		if safe == nil {
 			continue
 		}
+		if staleCodexProcessingSummary(safe, item.UpdatedAt, time.Now()) {
+			continue
+		}
 		out = append(out, safe)
 	}
 	if len(out) == 0 {
@@ -2070,6 +2074,9 @@ func fetchExecutorCodexSummaries(key policyplus.KeyRecord, limit int) ([]map[str
 			for _, item := range fallback {
 				safe := safeCodexSummary(item.Summary, key)
 				if safe == nil {
+					continue
+				}
+				if staleCodexProcessingSummary(safe, item.UpdatedAt, time.Now()) {
 					continue
 				}
 				out = append(out, safe)
@@ -2137,6 +2144,9 @@ func fetchCodexContRequests(key policyplus.KeyRecord, limit int) ([]map[string]a
 		if safe == nil {
 			continue
 		}
+		if staleCodexProcessingSummary(safe, time.Time{}, time.Now()) {
+			continue
+		}
 		out = append(out, safe)
 	}
 	sortCodexSummariesNewestFirst(out)
@@ -2164,6 +2174,29 @@ func codexSummaryDisplayTime(req map[string]any) (time.Time, bool) {
 		}
 	}
 	return time.Time{}, false
+}
+
+func staleCodexProcessingSummary(req map[string]any, rowUpdatedAt time.Time, now time.Time) bool {
+	if req == nil {
+		return false
+	}
+	status := strings.TrimSpace(fmt.Sprint(req["status"]))
+	protection := strings.TrimSpace(fmt.Sprint(req["protection"]))
+	if status != "processing" && protection != "processing" {
+		return false
+	}
+	updated, ok := parseCodexSummaryTime(req["updated_at"])
+	if !ok && !rowUpdatedAt.IsZero() {
+		updated = rowUpdatedAt
+		ok = true
+	}
+	if !ok {
+		return false
+	}
+	if now.IsZero() {
+		now = time.Now()
+	}
+	return now.Sub(updated) > codexProcessingStaleAfter
 }
 
 func parseCodexSummaryTime(value any) (time.Time, bool) {

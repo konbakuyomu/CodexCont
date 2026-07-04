@@ -1022,10 +1022,19 @@ Separate the key authority migration from the continuation-owner migration.
 - Plus may read the executor SQLite store through `codex_summary_db_path` for
   `/user/api/codexcont`; read failures degrade only protection summaries and
   must not affect login, quota, `/user/api/usage`, or `/user/api/events`.
+- The executor SQLite bridge must include live lifecycle rows, not only
+  terminal summaries. When a stream starts, executor writes a safe
+  `protection=processing` row keyed by the current safe key id; on success it
+  saves the terminal `resp_...` summary and deletes the `processing-...`
+  placeholder when the ids differ; on executor/host failure it updates the
+  placeholder to `protection=failed`.
 - `/user/api/codexcont` is current-key scoped. It may match executor summaries
   by trusted row `key_id` and by safe summary `key_identity.id` or
   `key_identity.preview`, but must not show other-key rows or guess ownership
   for summaries with no identity.
+- `/user/api/codexcont` must filter or downgrade stale `processing` rows from
+  the executor bridge so a CPA restart or stream crash does not keep the user's
+  active protection counter inflated. Terminal history can remain visible.
 - After production traffic is verified on the executor plugin, the old Docker
   sidecar chain must be retired all the way through operational entry points:
   remove the stopped `codexcont` container and image explicitly, disable or
@@ -1050,6 +1059,14 @@ Separate the key authority migration from the continuation-owner migration.
   switch is not one-click safe.
 - Missing executor summary DB -> Plus falls back to sidecar/local summaries or
   returns an empty protection list, while usage APIs continue to pass.
+- Executor creates only in-memory `processing` monitor rows and writes SQLite
+  only after completion -> `cpa-usage` cannot show realtime protection; this is
+  a bridge contract failure even if the CPAMP admin page looks correct.
+- Executor final summary request id differs from the processing placeholder ->
+  save the final summary and remove the placeholder so user/admin tables do not
+  show duplicate rows for one logical request.
+- Stale executor `processing` row is older than the user-page freshness window
+  -> do not count it as active and do not return it as a live current-key row.
 - Upstream EOF before terminal event -> executor emits `response.incomplete`
   and must not leak buffered tentative message/function-call output.
 - Structured upstream stream errors, especially context-window errors returned
@@ -1093,6 +1110,10 @@ Separate the key authority migration from the continuation-owner migration.
 - Good: The CPAMP plugin menu has `CodexCont Executor`, and it shows a
   polling realtime monitor backed by executor status/summaries without key or
   quota controls.
+- Good: While `kuma的官key` has an active Codex stream, CPAMP admin shows the
+  all-key `processing` row and `cpa-usage.konbakuyomu.us` shows the same
+  current-key `processing` row through `/user/api/codexcont`, without showing
+  other keys.
 - Good: `/v0/resource/plugins/cpa-codexcont-executor/admin` is routable inside
   the admin boundary, while `/v0/resource/plugins/cpa-codexcont-executor/status`
   is not a resource page and returns `404` through resource dispatch.
@@ -1137,6 +1158,11 @@ Separate the key authority migration from the continuation-owner migration.
 - Go unit: Plus reads executor summaries by key id through
   `codex_summary_db_path`, filters other users, and fails soft when the DB is
   missing.
+- Go unit: executor persists `processing` summaries with safe key identity,
+  replaces the processing placeholder on terminal success, and persists failed
+  terminal state on executor/host errors.
+- Go unit: Plus returns current-key `processing` rows from the executor bridge,
+  hides other-key processing rows, and ignores stale processing rows.
 
 ### 7. Wrong vs Correct
 
@@ -1157,6 +1183,22 @@ Plus -> optional read-only summary bridge for display
 
 The executor replaces the Docker sidecar and Governor's CodexCont monitor, not
 the Plus user portal or key/quota controls.
+
+#### Wrong
+```text
+executor memory monitor -> CPAMP admin sees processing
+executor SQLite bridge -> terminal summaries only
+```
+
+This makes the admin page look realtime while the user page can never show
+current-key processing.
+
+#### Correct
+```text
+executor Start -> safe processing row in SQLite
+executor Finish/Fail -> replace or update row
+Plus /user/api/codexcont -> current-key filtered live lifecycle
+```
 
 ## Scenario: Local linux/amd64 Go plugin build toolchain
 
