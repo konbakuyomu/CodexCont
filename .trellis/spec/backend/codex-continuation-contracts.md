@@ -860,8 +860,9 @@ Close read cursors before writes on the same single-connection Plus DB.
   `Cookie` header.
 - Go unit: user events and CodexCont summaries are filtered to the current key.
 - Go unit: Plus user HTML has no range dropdown, fixes usage/events requests to
-  `range=24h`, keeps `24H / 7D` and `5H / 本月` quota cards, and ignores
-  refresh-cancel aborts before rendering sync errors.
+  `range=24h`, renders separate `5 小时额度`, `24 小时额度`, `7 天额度`,
+  and `本月额度` cards, and ignores refresh-cancel aborts before rendering sync
+  errors.
 - Go unit: admin HTML points mutations at `/key-policy-plus/api`, model
   normalization preserves unknown configured models, and create/save/reset
   through the admin alias persist settings.

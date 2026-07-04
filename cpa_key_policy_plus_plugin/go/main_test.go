@@ -1102,13 +1102,23 @@ func TestUserHTMLFixedRangeUX(t *testing.T) {
 		`const PRIMARY_RANGE = "24h";`,
 		"${rangeLabel(PRIMARY_RANGE)}费用",
 		"${rangeLabel(PRIMARY_RANGE)} · 最近",
-		"24H / 7D",
-		"5H / 本月",
+		"5 小时额度",
+		"24 小时额度",
+		"7 天额度",
+		"本月额度",
+		"未设置上限",
+		"接近上限",
+		"已超限",
 		"api(`/usage?range=${encodeURIComponent(PRIMARY_RANGE)}`",
 		"api(`/events?range=${encodeURIComponent(PRIMARY_RANGE)}&limit=100`",
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("user fixed-range page missing %q", want)
+		}
+	}
+	for _, removed := range []string{"24H / 7D", "5H / 本月"} {
+		if strings.Contains(html, removed) {
+			t.Fatalf("user fixed-range page should not keep combined quota card %q", removed)
 		}
 	}
 }

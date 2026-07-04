@@ -41,6 +41,7 @@
 
   <section id="app" class="hidden">
     <section class="metrics" id="cards"></section>
+    <section class="user-quota-windows" id="quotaCards" aria-label="额度窗口"></section>
     <section class="panel">
       <div class="panel-body">
         <div class="tabs">
@@ -304,6 +305,43 @@ function limitForRange(limits, range){
   if (range === "month") return limits.monthly_usd;
   return null;
 }
+const quotaWindows = [
+  {range:"5h", title:"5 小时额度", desc:"最近 5 小时"},
+  {range:"24h", title:"24 小时额度", desc:"最近 24 小时"},
+  {range:"7d", title:"7 天额度", desc:"滚动 7 天"},
+  {range:"month", title:"本月额度", desc:"北京时间本月"}
+];
+function quotaState(used, limit){
+  if (limit == null || limit === "") return {text:"未设置上限", cls:"unset", percent:0};
+  const max = Number(limit || 0);
+  if (max <= 0) return {text:"已超限", cls:"bad", percent:100};
+  const percent = Math.min(Math.max(Number(used || 0) / max, 0), 1) * 100;
+  if (Number(used || 0) >= max) return {text:"已超限", cls:"bad", percent:100};
+  if (percent >= 80) return {text:"接近上限", cls:"warn", percent};
+  return {text:"正常", cls:"ok", percent};
+}
+function renderQuotaWindowCard(item, windows, limits){
+  const used = Number((windows || {})[item.range] || 0);
+  const limit = limitForRange(limits, item.range);
+  const state = quotaState(used, limit);
+  const hasLimit = !(limit == null || limit === "");
+  const remaining = hasLimit ? Math.max(Number(limit || 0) - used, 0) : null;
+  return `<article class="user-quota-card ${state.cls}">
+    <div class="user-quota-head">
+      <div>
+        <div class="user-quota-title">${esc(item.title)}</div>
+        <div class="user-quota-desc">${esc(item.desc)}</div>
+      </div>
+      <span class="user-quota-status">${esc(state.text)}</span>
+    </div>
+    <div class="user-quota-used"><span>已用</span><strong>${money(used, 3)}</strong></div>
+    <div class="user-quota-lines">
+      <div><span>上限</span><b>${hasLimit ? money(limit, 3) : "未设置"}</b></div>
+      <div><span>剩余</span><b>${hasLimit ? money(remaining, 3) : "不限额"}</b></div>
+    </div>
+    ${hasLimit ? `<div class="user-quota-progress" aria-label="${esc(item.title)}使用进度"><span style="width:${state.percent.toFixed(1)}%"></span></div>` : `<div class="user-quota-note">仅展示当前用量，暂不拦截该窗口。</div>`}
+  </article>`;
+}
 function renderCards(force=false){
   if (!state.me) return;
   const usageSummary = (state.usage || {}).summary || {};
@@ -324,9 +362,8 @@ function renderCards(force=false){
     <article class="metric"><div class="label">调用统计</div><div class="value">${num(calls)} 次</div><div class="hint">成功率 ${pct(successRate)} · 失败 ${num(failed)}</div></article>
     <article class="metric"><div class="label">Token</div><div class="value">${num(usage.total_tokens)}</div><div class="hint">I ${num(usage.input_tokens)} / O ${num(usage.output_tokens)}</div></article>
     <article class="metric"><div class="label">思考量</div><div class="value">${num(usage.reasoning_tokens)}</div><div class="hint">Responses reasoning tokens</div></article>
-    <article class="metric"><div class="label">缓存活动</div><div class="value">${num(cacheTotal)}</div><div class="hint">兼容命中 ${num(usage.cached_tokens)} · R ${num(usage.cache_read_tokens)} / W ${num(usage.cache_creation_tokens)}</div></article>
-    <article class="metric"><div class="label">24H / 7D</div><div class="value">${money(windows["24h"], 3)}</div><div class="hint">7D ${money(windows["7d"], 3)} · 周限 ${money(limits.weekly_usd, 3)}</div></article>
-    <article class="metric"><div class="label">5H / 本月</div><div class="value">${money(windows["5h"], 3)}</div><div class="hint">本月 ${money(windows.month, 3)} · 月限 ${money(limits.monthly_usd, 3)}</div></article>`;
+    <article class="metric"><div class="label">缓存活动</div><div class="value">${num(cacheTotal)}</div><div class="hint">兼容命中 ${num(usage.cached_tokens)} · R ${num(usage.cache_read_tokens)} / W ${num(usage.cache_creation_tokens)}</div></article>`;
+  $("quotaCards").innerHTML = quotaWindows.map((item) => renderQuotaWindowCard(item, windows, limits)).join("");
 }
 function eventDetail(ev){
   const usage = ev.usage || {};
