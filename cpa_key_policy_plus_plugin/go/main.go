@@ -1485,10 +1485,12 @@ func adminModels(_ managementRequest) ([]byte, error) {
 
 func adminModelCatalog() ([]policyplus.ModelOption, []string) {
 	warnings := []string{}
+	registryModels, registryWarnings := hostRegistryModelCatalog()
+	warnings = append(warnings, registryWarnings...)
 	hostModels, hostWarnings := hostAuthModelHints()
 	warnings = append(warnings, hostWarnings...)
 	configured := configuredModelOptions()
-	models := policyplus.MergeModelOptions(hostModels, configured)
+	models := policyplus.MergeModelOptions(registryModels, hostModels, configured)
 	if len(models) == 0 {
 		warnings = append(warnings, "当前没有从 CPA 或 Plus 配置中发现模型；可以先创建允许全部模型的 Key，或在编辑模型时手动输入模型名。")
 	}
@@ -1499,6 +1501,46 @@ func adminModelCatalog() ([]policyplus.ModelOption, []string) {
 		return strings.ToLower(models[i].ID) < strings.ToLower(models[j].ID)
 	})
 	return models, warnings
+}
+
+func hostRegistryModelCatalog() ([]policyplus.ModelOption, []string) {
+	result, err := callHost(methodHostModelsList, map[string]any{})
+	if err != nil {
+		return nil, []string{"CPA 模型注册表不可用，已使用宿主 auth 提示和 Plus 当前配置兜底。"}
+	}
+	var body hostModelsListResponse
+	if err := json.Unmarshal(result, &body); err != nil {
+		return nil, []string{"CPA 模型注册表格式无法解析，已使用宿主 auth 提示和 Plus 当前配置兜底。"}
+	}
+	out := make([]policyplus.ModelOption, 0, len(body.Models))
+	seen := map[string]bool{}
+	for _, item := range body.Models {
+		id := strings.TrimSpace(item.ID)
+		if id == "" {
+			continue
+		}
+		key := strings.ToLower(id)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		display := strings.TrimSpace(item.DisplayName)
+		if display == "" {
+			display = id
+		}
+		out = append(out, policyplus.ModelOption{
+			ID:          id,
+			DisplayName: display,
+			Type:        strings.TrimSpace(item.Type),
+			OwnedBy:     strings.TrimSpace(item.OwnedBy),
+			Provider:    strings.TrimSpace(item.Provider),
+			AuthID:      strings.TrimSpace(item.AuthID),
+			AuthName:    strings.TrimSpace(item.AuthName),
+			Source:      "cpa_registry",
+			Known:       true,
+		})
+	}
+	return out, nil
 }
 
 func configuredModelOptions() []policyplus.ModelOption {

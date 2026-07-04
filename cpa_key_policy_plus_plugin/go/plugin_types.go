@@ -29,6 +29,7 @@ const (
 	methodHostStreamEmit           = "host.stream.emit"
 	methodHostStreamClose          = "host.stream.close"
 	methodHostAuthList             = "host.auth.list"
+	methodHostModelsList           = "host.models.list"
 )
 
 const (
@@ -216,6 +217,21 @@ type hostStreamEmitRequest struct {
 type hostStreamCloseRequest struct {
 	StreamID string `json:"stream_id"`
 	Error    string `json:"error,omitempty"`
+}
+
+type hostModelListEntry struct {
+	ID          string `json:"id"`
+	DisplayName string `json:"display_name,omitempty"`
+	Type        string `json:"type,omitempty"`
+	OwnedBy     string `json:"owned_by,omitempty"`
+	Provider    string `json:"provider,omitempty"`
+	AuthID      string `json:"auth_id,omitempty"`
+	AuthName    string `json:"auth_name,omitempty"`
+	Source      string `json:"source,omitempty"`
+}
+
+type hostModelsListResponse struct {
+	Models []hostModelListEntry `json:"models"`
 }
 
 type usageFailure struct {

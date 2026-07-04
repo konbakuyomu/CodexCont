@@ -23,6 +23,9 @@ type ModelOption struct {
 	DisplayName string `json:"display_name,omitempty"`
 	Type        string `json:"type,omitempty"`
 	OwnedBy     string `json:"owned_by,omitempty"`
+	Provider    string `json:"provider,omitempty"`
+	AuthID      string `json:"auth_id,omitempty"`
+	AuthName    string `json:"auth_name,omitempty"`
 	Source      string `json:"source,omitempty"`
 	Known       bool   `json:"known"`
 }
@@ -406,6 +409,15 @@ func MergeModelOptions(groups ...[]ModelOption) []ModelOption {
 				if existing.OwnedBy == "" {
 					existing.OwnedBy = item.OwnedBy
 				}
+				if existing.Provider == "" {
+					existing.Provider = item.Provider
+				}
+				if existing.AuthID == "" {
+					existing.AuthID = item.AuthID
+				}
+				if existing.AuthName == "" {
+					existing.AuthName = item.AuthName
+				}
 				if existing.Source == "" {
 					existing.Source = item.Source
 				}
@@ -508,7 +520,10 @@ func parseModelOption(item any, source string) (ModelOption, bool) {
 			ID:          id,
 			DisplayName: display,
 			Type:        firstString(v, "type", "object"),
-			OwnedBy:     firstString(v, "owned_by", "ownedBy", "provider"),
+			OwnedBy:     firstString(v, "owned_by", "ownedBy"),
+			Provider:    firstString(v, "provider"),
+			AuthID:      firstString(v, "auth_id", "authID"),
+			AuthName:    firstString(v, "auth_name", "authName"),
 			Source:      src,
 			Known:       known,
 		}, true

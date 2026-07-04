@@ -172,7 +172,7 @@ func TestNormalizeModelOptionsAcceptsCommonPayloadShapes(t *testing.T) {
 	payload := map[string]any{
 		"models": []any{
 			map[string]any{"id": "gpt-5.5", "display_name": "GPT 5.5", "owned_by": "openai"},
-			map[string]any{"model": "gpt-5.4"},
+			map[string]any{"model": "gpt-5.4", "provider": "codex", "auth_name": "codex.json", "auth_id": "codex-auth"},
 			"gpt-5.5",
 			map[string]any{"alias": "codex-auto-review", "target_model": "gpt-5.5"},
 		},
@@ -186,6 +186,9 @@ func TestNormalizeModelOptionsAcceptsCommonPayloadShapes(t *testing.T) {
 	}
 	if options[2].ID != "codex-auto-review" {
 		t.Fatalf("alias model was not parsed: %#v", options)
+	}
+	if options[1].Provider != "codex" || options[1].AuthName != "codex.json" || options[1].AuthID != "codex-auth" {
+		t.Fatalf("provider/auth metadata was not parsed: %#v", options[1])
 	}
 }
 

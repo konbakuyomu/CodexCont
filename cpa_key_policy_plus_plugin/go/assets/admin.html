@@ -198,6 +198,7 @@
     .model-option:hover { background: rgba(148, 163, 184, .07); }
     .model-option input { min-height: auto; margin-top: 3px; }
     .model-option strong { font-size: 13px; overflow-wrap: anywhere; }
+    .model-meta { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 4px; }
     .selected-chips { min-height: 34px; display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 0 0; }
     .chip-button { border: 0; min-height: 20px; padding: 0 2px; background: transparent; color: inherit; font-weight: 900; }
     .price-table { width: 100%; min-width: 640px; table-layout: fixed; }
@@ -302,10 +303,12 @@
           <input id="edit-add-model" placeholder="手动添加模型名">
           <button id="edit-add-model-btn" class="btn mini" type="button">添加</button>
           <button id="edit-select-visible" class="btn mini" type="button">全选当前结果</button>
+          <button id="edit-use-discovered" class="btn mini" type="button">用当前发现模型替换</button>
           <button id="edit-clear-models" class="btn mini" type="button">清空</button>
         </div>
         <div id="edit-selected" class="selected-chips"></div>
         <div id="unknown-notice" class="notice hidden"></div>
+        <div id="price-warning" class="notice hidden"></div>
         <div class="selector-layout">
           <div class="model-list">
             <div class="model-list-head">
@@ -401,6 +404,24 @@ function limitsOf(k){ return k.limits || {}; }
 function usageOf(k){ return k.usage || {}; }
 function selectedModels(k){ return Array.isArray(k.models) ? [...k.models] : []; }
 function pricesOf(k){ return clone(k.prices || (k.pricing && k.pricing.models) || {}); }
+function sourceLabel(source){
+  source = String(source || "");
+  if (source === "cpa_registry") return "CPA 发现";
+  if (source === "host_auth") return "Auth 提示";
+  if (source === "plus_configured") return "Plus 已配置";
+  return source || "未知来源";
+}
+function optionMeta(o){
+  const parts = [];
+  if (o.provider) parts.push(o.provider);
+  if (o.auth_name) parts.push(o.auth_name);
+  parts.push(sourceLabel(o.source));
+  return parts.filter(Boolean).join(" · ");
+}
+function hasModelPrice(p){
+  if (!p) return false;
+  return ["input_per_million","output_per_million","cache_read_per_million","cache_creation_per_million"].some(f => Number(p[f] || 0) > 0);
+}
 function quotaOf(k, name){
   const q = (k.quota || {})[name] || {};
   const limits = limitsOf(k);
@@ -721,11 +742,18 @@ function renderModelOptions(container, selectedSet, search, options){
     container.innerHTML = `<div class="empty">没有匹配模型。</div>`;
     return;
   }
-  container.innerHTML = filtered.map(o => `
-    <label class="model-option">
-      <input type="checkbox" data-model-option="${escapeHTML(o.id)}" ${selectedSet.has(o.id) ? "checked" : ""}>
-      <span><strong>${escapeHTML(o.display_name || o.id)}</strong><small>${escapeHTML(o.id)} · ${escapeHTML(o.source || "")}</small></span>
-    </label>`).join("");
+  container.innerHTML = filtered.map(o => {
+    const selected = selectedSet.has(o.id);
+    const missingPrice = selected && state.editor && !hasModelPrice(state.editor.prices[o.id]);
+    return `<label class="model-option">
+      <input type="checkbox" data-model-option="${escapeHTML(o.id)}" ${selected ? "checked" : ""}>
+      <span>
+        <strong>${escapeHTML(o.display_name || o.id)}</strong>
+        <small>${escapeHTML(o.id)}</small>
+        <span class="model-meta"><span class="tag">${escapeHTML(optionMeta(o))}</span>${missingPrice ? `<span class="tag warn">未配置价格</span>` : ""}</span>
+      </span>
+    </label>`;
+  }).join("");
   container.querySelectorAll("[data-model-option]").forEach(input => input.onchange = () => {
     if (input.checked) selectedSet.add(input.dataset.modelOption);
     else selectedSet.delete(input.dataset.modelOption);
@@ -760,11 +788,15 @@ function renderEditor(){
   const unknown = [...editor.models].filter(m => !options.some(o => o.id === m && o.known));
   $("unknown-notice").classList.toggle("hidden", unknown.length === 0);
   $("unknown-notice").textContent = unknown.length ? `以下模型来自现有策略或手动输入：${unknown.join(", ")}` : "";
+  const missingPrices = [...editor.models].filter(m => !hasModelPrice(editor.prices[m]));
+  $("price-warning").classList.toggle("hidden", missingPrices.length === 0);
+  $("price-warning").textContent = missingPrices.length ? `以下模型未配置价格，费用额度统计可能不覆盖：${missingPrices.join(", ")}` : "";
   const models = [...editor.models].sort();
   $("price-body").innerHTML = models.map(model => {
     const p = editor.prices[model] || {model};
+    const priceTag = hasModelPrice(p) ? "" : ` <span class="tag warn">未配置价格</span>`;
     return `<tr>
-      <td><strong>${escapeHTML(model)}</strong></td>
+      <td><strong>${escapeHTML(model)}</strong>${priceTag}</td>
       <td><input data-price="${escapeHTML(model)}" data-field="input_per_million" type="number" min="0" step="0.000001" value="${priceNumber(p.input_per_million)}"></td>
       <td><input data-price="${escapeHTML(model)}" data-field="output_per_million" type="number" min="0" step="0.000001" value="${priceNumber(p.output_per_million)}"></td>
       <td><input data-price="${escapeHTML(model)}" data-field="cache_read_per_million" type="number" min="0" step="0.000001" value="${priceNumber(p.cache_read_per_million)}"></td>
@@ -818,6 +850,13 @@ $("edit-select-visible").onclick = () => {
   if (!state.editor) return;
   const search = $("edit-model-search").value || "";
   allModelOptions([...state.editor.models]).filter(o => optionMatches(o, search)).forEach(o => state.editor.models.add(o.id));
+  renderEditor();
+};
+$("edit-use-discovered").onclick = () => {
+  if (!state.editor) return;
+  const discovered = allModelOptions([...state.editor.models, ...Object.keys(state.editor.prices || {})]).filter(o => o.source === "cpa_registry" && o.known);
+  if (!discovered.length) return;
+  state.editor.models = new Set(discovered.map(o => o.id));
   renderEditor();
 };
 $("edit-clear-models").onclick = () => { if (state.editor) { state.editor.models.clear(); renderEditor(); } };

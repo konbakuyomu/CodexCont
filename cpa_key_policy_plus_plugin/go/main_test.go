@@ -861,6 +861,80 @@ func TestAdminModelsFallsBackToConfiguredModels(t *testing.T) {
 	}
 }
 
+func TestAdminModelsPrefersCPARegistryCatalog(t *testing.T) {
+	key := setupTestState(t)
+	key.Models = []string{"manual-custom"}
+	if err := loadedStore().SaveKeySettings(context.Background(), key); err != nil {
+		t.Fatal(err)
+	}
+	oldHostCall := hostCall
+	t.Cleanup(func() { hostCall = oldHostCall })
+	hostCall = func(method string, payload any) (json.RawMessage, error) {
+		switch method {
+		case methodHostModelsList:
+			return json.Marshal(hostModelsListResponse{Models: []hostModelListEntry{
+				{ID: "gpt-5.5", DisplayName: "Registry GPT 5.5", Type: "codex", OwnedBy: "openai", Provider: "codex", AuthID: "codex-auth", AuthName: "codex.json"},
+			}})
+		case methodHostAuthList:
+			return json.Marshal(map[string]any{"files": []any{
+				map[string]any{
+					"models": []any{
+						map[string]any{"id": "gpt-5.5", "display_name": "Host GPT 5.5"},
+						"host-only",
+					},
+				},
+			}})
+		default:
+			return nil, fmt.Errorf("unexpected host callback %s", method)
+		}
+	}
+
+	raw, err := adminModels(managementRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := decodeManagementBody(t, raw)
+	var resp struct {
+		OK       bool                     `json:"ok"`
+		Models   []policyplus.ModelOption `json:"models"`
+		Warnings []string                 `json:"warnings"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		t.Fatalf("decode models response: %v: %s", err, body)
+	}
+	byID := map[string]policyplus.ModelOption{}
+	for _, model := range resp.Models {
+		byID[model.ID] = model
+	}
+	got := byID["gpt-5.5"]
+	if got.Source != "cpa_registry" || got.DisplayName != "Registry GPT 5.5" || got.Provider != "codex" || got.AuthName != "codex.json" {
+		t.Fatalf("registry model metadata should win, got %#v", got)
+	}
+	if byID["host-only"].Source != "host_auth" {
+		t.Fatalf("host-only model should be preserved from host auth: %#v", byID["host-only"])
+	}
+	if byID["manual-custom"].Source != "plus_configured" || byID["manual-custom"].Known {
+		t.Fatalf("configured unknown model should be preserved: %#v", byID["manual-custom"])
+	}
+	if len(resp.Warnings) != 0 {
+		t.Fatalf("unexpected warnings: %#v", resp.Warnings)
+	}
+	keys, err := loadedStore().ListKeys(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var after policyplus.KeyRecord
+	for _, item := range keys {
+		if item.ID == key.ID {
+			after = item
+			break
+		}
+	}
+	if len(after.Models) != 1 || after.Models[0] != "manual-custom" {
+		t.Fatalf("model discovery must not mutate key allowlist: %#v", after.Models)
+	}
+}
+
 func TestUserHTMLUsesPolicyPlusHeader(t *testing.T) {
 	html := userHTML()
 	if !strings.Contains(html, "X-CPA-Key-Policy-Plus-Key") {
@@ -1259,7 +1333,7 @@ func TestAdminHTMLHasRenderedSharedCSS(t *testing.T) {
 			t.Fatalf("admin html should not expose Plus-side key lifecycle control %q", removed)
 		}
 	}
-	for _, want := range []string{"Key 策略", "保存策略", "当前官方 Key", "新原生 Key 默认启用", "未配置限额"} {
+	for _, want := range []string{"Key 策略", "保存策略", "当前官方 Key", "新原生 Key 默认启用", "未配置限额", "用当前发现模型替换", "CPA 发现", "未配置价格，费用额度统计可能不覆盖", "cpa_registry"} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("admin html missing native policy UI marker %q", want)
 		}

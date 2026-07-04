@@ -713,10 +713,18 @@ Close read cursors before writes on the same single-connection Plus DB.
   context must not be relied on to add an Authorization header for embedded
   plugin HTML, because the plugin page owns its own `fetch()` calls.
 - The model catalog endpoint returns safe `ModelOption` projections only:
-  `id`, optional display metadata, `source`, and `known`. It may merge CPA host
-  model hints with already configured Plus models, but it must preserve unknown
-  configured models instead of deleting them when online discovery is empty or
-  stale.
+  `id`, optional display metadata, provider/auth labels, `source`, and
+  `known`. It must prefer CPA registry discovery through `host.models.list`,
+  then fall back to CPA host auth hints, then preserve already configured Plus
+  models and price-only models.
+- `host.models.list` is a safe read-only host callback. It may expose
+  `id/display_name/type/owned_by/provider/auth_id/auth_name/source`, but must
+  not expose raw keys, auth storage JSON, OAuth tokens, cookies, request or
+  response bodies, encrypted reasoning, or full secret hashes.
+- Provider-discovered models update selectable candidates only. They must not
+  automatically mutate per-key model allowlists or prices. Admin UI may offer
+  an explicit replacement action, and must warn when selected models have no
+  configured price because USD quota accounting may not cover them.
 - `5h`, `24h`, and `7d` are rolling USD windows. `month` is the current
   Asia/Shanghai calendar month. Reset writes a soft watermark and does not
   delete historical `usage_events`.
