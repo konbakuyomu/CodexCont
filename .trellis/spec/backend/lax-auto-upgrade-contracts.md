@@ -40,6 +40,10 @@
 - Daily report is read-only. It may read adapter state, Docker remote digests, and capacity snapshots, but must not upgrade, clean, delete, or restart anything.
 - Daily report must not leave covered running services as permanent notify-only or manual-only chores after adapters are installed.
 - Daily report must use governor adapter state as a fallback for `autoupgrade.enable=true` containers when remote registry digest probing is unavailable. A registry probe failure must not override a recent `current` or `upgraded` adapter state, but `adapter-blocked`, `rolled-back`, and `failed` states must remain visible.
+- A newly labeled `autoupgrade.enable=true` container may be present in
+  `docker ps` before `/var/lib/lax-auto-upgrade-governor/state.json` has a
+  per-container entry. Daily report must treat that missing adapter state as
+  `{}` and continue reporting the container as covered.
 - Secrets must never be printed or written to task artifacts.
 
 ### 4. Validation & Error Matrix
@@ -53,6 +57,9 @@
 - Official 1Panel package or checksum cannot be fetched or verified -> adapter returns `adapter-blocked` or `failed`; do not fake coverage.
 - Official 1Panel package verifies but lacks `upgrade.sh` -> adapter returns `adapter-blocked`; do not run `install.sh`.
 - Daily report sees Docker Engine / Compose updates but no adapter state -> report `adapter-blocked`, not permanent manual-only work.
+- Daily report sees a covered Docker container with no per-container adapter
+  state yet -> continue with empty state and registry/image checks; do not
+  throw an exception.
 - LAX direct SSH failure is not a rollout failure if `ssh lax-via-sjc` succeeds.
 
 ### 5. Good/Base/Bad Cases
@@ -62,6 +69,9 @@
 - Good: 1Panel upgrades through verified offline package and `1panel-core` / `1panel-agent` remain in their pre-upgrade active or inactive states.
 - Good: Docker Engine and Compose update through apt, Docker validates with `docker version`, `docker compose version`, `docker ps`, and critical containers running; adapter state records `upgraded`.
 - Base: a service is current by digest; upgrade exits without recreating the container.
+- Base: a just-added app container has labels and passes dry-run before the
+  governor has recorded state; daily report still counts it as automatic
+  upgrade coverage.
 - Bad: adding a separate whitelist file in addition to compose labels.
 - Bad: running `docker system prune`, `docker image prune -af`, volume deletion, recursive deletion, package purge/remove/autoremove, or database cleanup to make room for upgrades.
 - Bad: daily report performs cleanup or upgrades.
@@ -77,6 +87,8 @@
 - Network validation: `/mihomo -t -d /root/.config/mihomo`.
 - Host adapter validation: versions before/after, `systemctl is-active docker`, `docker version`, `docker compose version`, `docker ps`, 1Panel version, 1Panel unit states, and critical service health.
 - Reporting validation: `daily-update-report.py --host-label LAX --dry-run --no-telegram` shows adapter statuses and does not list covered services as manual-only chores after successful rollout.
+- Reporting validation must also pass immediately after adding a new labeled
+  app, before any persisted adapter state exists for that app.
 
 ### 7. Wrong vs Correct
 #### Wrong
