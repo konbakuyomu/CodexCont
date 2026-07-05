@@ -1,5 +1,5 @@
 {"file": ".trellis/spec/backend/lax-auto-upgrade-contracts.md", "reason": "Full coverage LAX auto-upgrade contract"}
 {"file": ".trellis/tasks/archive/2026-07/07-05-lax-unified-auto-upgrade-governor/evidence.md", "reason": "Previous partial coverage rollout evidence"}
-{"file": ".trellis/tasks/07-05-lax-full-coverage-auto-upgrade-governor/prd.md", "reason": "Requirements and acceptance criteria"}
-{"file": ".trellis/tasks/07-05-lax-full-coverage-auto-upgrade-governor/design.md", "reason": "Adapter design and execution order"}
-{"file": ".trellis/tasks/07-05-lax-full-coverage-auto-upgrade-governor/implement.md", "reason": "Execution and validation checklist"}
+{"file": ".trellis/tasks/archive/2026-07/07-05-lax-full-coverage-auto-upgrade-governor/prd.md", "reason": "Requirements and acceptance criteria"}
+{"file": ".trellis/tasks/archive/2026-07/07-05-lax-full-coverage-auto-upgrade-governor/design.md", "reason": "Adapter design and execution order"}
+{"file": ".trellis/tasks/archive/2026-07/07-05-lax-full-coverage-auto-upgrade-governor/implement.md", "reason": "Execution and validation checklist"}
