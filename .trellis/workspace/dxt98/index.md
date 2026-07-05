@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 28
+- **Total Sessions**: 29
 - **Last Active**: 2026-07-05
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~940 | Active |
+| `journal-1.md` | ~973 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 29 | 2026-07-05 | LAX full coverage auto-upgrade governor | `1b791ae` | `codex/codexcont-executor-migration` |
 | 28 | 2026-07-05 | LAX unified auto-upgrade governor | `f78d6cf` | `codex/codexcont-executor-migration` |
 | 27 | 2026-07-05 | SJC unified auto-upgrade governor | `90caea5` | `codex/codexcont-executor-migration` |
 | 26 | 2026-07-05 | System disk cleanup closeout | `ee8034e` | `codex/codexcont-executor-migration` |

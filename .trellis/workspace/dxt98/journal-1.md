@@ -938,3 +938,36 @@ Deployed and documented the LAX auto-upgrade governor, Docker app labels, Docker
 ### Next Steps
 
 - None - task complete
+
+
+## Session 29: LAX full coverage auto-upgrade governor
+
+**Date**: 2026-07-05
+**Task**: LAX full coverage auto-upgrade governor
+**Branch**: `codex/codexcont-executor-migration`
+
+### Summary
+
+Implemented and rolled out full-coverage LAX auto-upgrade governor: all 15 running Docker services enrolled with adapter groups, Docker/Compose current, OpenWebUI assets preserved, data/network/observability checks passed, and 1Panel recorded as adapter-blocked because the verified public package has install.sh but no upgrade.sh.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `1b791ae` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
