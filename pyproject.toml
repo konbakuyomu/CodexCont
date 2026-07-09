@@ -10,5 +10,8 @@ dependencies = [
     "zstandard>=0.23",
 ]
 
+[project.scripts]
+vibe = "vibe_flow.cli:main"
+
 [dependency-groups]
 dev = []

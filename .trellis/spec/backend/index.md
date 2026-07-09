@@ -22,6 +22,7 @@ This directory contains guidelines for backend development. Fill in each file wi
 | [Codex Continuation Contracts](./codex-continuation-contracts.md) | Responses continuation, CPA integration, and egress contracts | Active |
 | [SJC Auto-Upgrade Contracts](./sjc-auto-upgrade-contracts.md) | SJC low-disk upgrade, host adapters, reporting, and rollback contracts | Active |
 | [LAX Auto-Upgrade Contracts](./lax-auto-upgrade-contracts.md) | LAX main-business host upgrade, adapter, reporting, and rollback contracts | Active |
+| [Vibe Flow Contracts](./vibe-flow-contracts.md) | Trellis + CodeStable bridge state, gate feasibility, and next-action contracts | Active |
 
 ---
 
