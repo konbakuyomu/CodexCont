@@ -971,3 +971,36 @@ Implemented and rolled out full-coverage LAX auto-upgrade governor: all 15 runni
 ### Next Steps
 
 - None - task complete
+
+
+## Session 30: vibe-flow bridge CLI 0.1.6
+
+**Date**: 2026-07-10
+**Task**: vibe-flow bridge CLI 0.1.6
+**Branch**: `codex/codexcont-executor-migration`
+
+### Summary
+
+实现并全局部署 Trellis + CodeStable 桥接 CLI，修复历史任务、显式 cs、会话、issue 与提交归档确认语误路由；39 项测试及 Obsidian 实机验证通过。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `7ba00bd` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
