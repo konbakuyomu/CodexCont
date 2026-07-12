@@ -11,6 +11,7 @@ const DefaultCodexUpstreamModel = "gpt-5.3-codex-spark"
 type Config struct {
 	Enabled               bool              `yaml:"enabled"`
 	RouteEnabled          bool              `yaml:"route_enabled"`
+	RoutePolicy           RoutePolicy       `yaml:"route_policy"`
 	StateDBPath           string            `yaml:"state_db_path"`
 	CPAMPAliasDBPath      string            `yaml:"cpamp_alias_db_path"`
 	CPAMPAliasDBPaths     string            `yaml:"cpamp_alias_db_paths"`
@@ -54,6 +55,7 @@ func (c Config) Normalize() Config {
 		c.FailMode = "fallback"
 	}
 	c.UpstreamModel = strings.TrimSpace(c.UpstreamModel)
+	c.RoutePolicy = c.RoutePolicy.Normalize()
 	clean := make(map[string]string, len(c.UpstreamModelAliases))
 	for alias, target := range c.UpstreamModelAliases {
 		alias = strings.TrimSpace(alias)

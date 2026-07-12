@@ -350,6 +350,36 @@ func TestRouteSwitch(t *testing.T) {
 	if !resp.Handled || resp.TargetKind != routeTargetSelf {
 		t.Fatalf("enabled route did not handle streaming response: %#v", resp)
 	}
+	configureTestStateWithConfig(t, func(cfg *executor.Config) {
+		cfg.RouteEnabled = true
+		cfg.RoutePolicy.BypassKeyAliases = []string{"baseline-cpa-only"}
+	})
+	raw, err = routeModel(mustJSON(t, modelRouteRequest{
+		SourceFormat: "openai-response",
+		Stream:       true,
+		Body:         body,
+		Metadata:     map[string]any{"key_alias": "baseline-cpa-only"},
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	unwrapEnvelope(t, raw, &resp)
+	if resp.Handled || resp.Reason != "key_bypass_selected" {
+		t.Fatalf("bypass route should leave CPA provider path available: %#v", resp)
+	}
+	raw, err = routeModel(mustJSON(t, modelRouteRequest{
+		SourceFormat: "openai-response",
+		Stream:       true,
+		Body:         body,
+		Metadata:     map[string]any{"key_alias": "regular"},
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	unwrapEnvelope(t, raw, &resp)
+	if !resp.Handled || resp.Reason != "protect_all" {
+		t.Fatalf("regular key should still be protected: %#v", resp)
+	}
 	raw, err = routeModel(mustJSON(t, modelRouteRequest{SourceFormat: "openai", Stream: true, Body: []byte(`{"model":"gpt-5.5","stream":true,"messages":[{"role":"user","content":"hi"}]}`)}))
 	if err != nil {
 		t.Fatal(err)
@@ -830,6 +860,10 @@ func TestExecuteStreamAcceptsOfficialFlattenedRPCPayload(t *testing.T) {
 	if gotSummary["model"] != "gpt-5.5" {
 		t.Fatalf("summary model = %#v, want gpt-5.5", gotSummary["model"])
 	}
+	routeDecision, _ := gotSummary["route_decision"].(map[string]any)
+	if routeDecision["protected"] != true || routeDecision["reason"] != "protect_all" {
+		t.Fatalf("summary route decision = %#v", routeDecision)
+	}
 	diagnostics, _ := gotSummary["diagnostics"].(map[string]any)
 	diagRounds, _ := diagnostics["rounds"].([]any)
 	if len(diagRounds) == 0 {
@@ -851,6 +885,93 @@ func TestExecuteStreamAcceptsOfficialFlattenedRPCPayload(t *testing.T) {
 	}
 	if firstDiag["first_read_payload_bytes"].(float64) <= 0 {
 		t.Fatalf("first read diagnostics did not record payload length: %#v", firstDiag)
+	}
+}
+
+func TestExecuteStreamPolicyBypassPersistsRouteDecisionSummary(t *testing.T) {
+	configureTestStateWithConfig(t, func(cfg *executor.Config) {
+		cfg.RouteEnabled = true
+		cfg.RoutePolicy.BypassKeyAliases = []string{"baseline-cpa-only"}
+	})
+	originalHostCall := hostCall
+	t.Cleanup(func() { hostCall = originalHostCall })
+	hostCall = func(method string, payload any) (json.RawMessage, error) {
+		t.Fatalf("bypassed request should not call host callback %s with %#v", method, payload)
+		return nil, nil
+	}
+
+	requestBody := []byte(`{"model":"gpt-5.5","stream":true,"input":[{"role":"user","content":"hi"}]}`)
+	raw, err := executorExecuteStream(mustJSON(t, map[string]any{
+		"AuthID":       "key-1",
+		"AuthMetadata": map[string]any{"key_alias": "baseline-cpa-only"},
+		"Model":        "gpt-5.5",
+		"Format":       "openai-response",
+		"Stream":       true,
+		"SourceFormat": "openai-response",
+		"Payload":      requestBody,
+		"stream_id":    "client-bypass",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var env envelope
+	if err := json.Unmarshal(raw, &env); err != nil {
+		t.Fatal(err)
+	}
+	if env.OK || env.Error == nil || env.Error.Code != "codexcont_executor_bypassed" {
+		t.Fatalf("bypass response = %#v", env)
+	}
+	summaries := recentExecutorSummaries(t, "5")
+	if len(summaries) == 0 {
+		t.Fatal("expected bypass summary")
+	}
+	got := summaries[0]
+	if got["protection"] != "bypassed" || got["passthrough"] != true {
+		t.Fatalf("bypass summary = %#v", got)
+	}
+	routeDecision, _ := got["route_decision"].(map[string]any)
+	if routeDecision["protected"] != false || routeDecision["reason"] != "key_bypass_selected" || routeDecision["key_scope"] != "baseline-cpa-only" {
+		t.Fatalf("route decision summary = %#v", routeDecision)
+	}
+	rawSummary, _ := json.Marshal(got)
+	if strings.Contains(string(rawSummary), "Bearer") || strings.Contains(string(rawSummary), "sk-") {
+		t.Fatalf("bypass summary leaked raw credential material: %s", rawSummary)
+	}
+}
+
+func TestExecuteStreamPolicyBypassHonorsFailClosed(t *testing.T) {
+	configureTestStateWithConfig(t, func(cfg *executor.Config) {
+		cfg.RouteEnabled = true
+		cfg.FailMode = "fail_closed"
+		cfg.RoutePolicy.Mode = executor.RoutePolicyModeOff
+	})
+	requestBody := []byte(`{"model":"gpt-5.5","stream":true,"input":[{"role":"user","content":"hi"}]}`)
+	raw, err := executorExecuteStream(mustJSON(t, map[string]any{
+		"AuthID":       "key-1",
+		"Model":        "gpt-5.5",
+		"Format":       "openai-response",
+		"Stream":       true,
+		"SourceFormat": "openai-response",
+		"Payload":      requestBody,
+		"stream_id":    "client-fail-closed",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var env envelope
+	if err := json.Unmarshal(raw, &env); err != nil {
+		t.Fatal(err)
+	}
+	if env.OK || env.Error == nil || env.Error.Code != "codexcont_route_bypassed" {
+		t.Fatalf("fail-closed bypass response = %#v", env)
+	}
+	summaries := recentExecutorSummaries(t, "5")
+	if len(summaries) == 0 {
+		t.Fatal("expected policy off summary")
+	}
+	routeDecision, _ := summaries[0]["route_decision"].(map[string]any)
+	if routeDecision["reason"] != "policy_off" || routeDecision["fail_mode"] != "fail_closed" {
+		t.Fatalf("policy off route decision summary = %#v", routeDecision)
 	}
 }
 

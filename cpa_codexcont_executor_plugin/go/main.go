@@ -163,6 +163,13 @@ func pluginRegistration() registration {
 			ConfigFields: []configField{
 				{Name: "enabled", Type: configBoolean, Description: "Enable the plugin."},
 				{Name: "route_enabled", Type: configBoolean, Description: "Route streaming Responses requests to the CodexCont executor."},
+				{Name: "route_policy.mode", Type: configEnum, EnumValues: []string{"protect_all", "protect_selected", "off"}, Description: "Optional per-request route policy mode. Default protect_all when unset."},
+				{Name: "route_policy.protected_models", Type: configString, Description: "YAML list of models protected when mode=protect_selected. Supports exact IDs, trailing wildcards (gpt-5.6*), and family prefixes (gpt-5.5 matches gpt-5.5-pro)."},
+				{Name: "route_policy.bypass_models", Type: configString, Description: "YAML list of models that bypass the executor. Same matching rules as protected_models."},
+				{Name: "route_policy.protected_key_aliases", Type: configString, Description: "Optional YAML list of safe key aliases/scopes protected when mode=protect_selected."},
+				{Name: "route_policy.bypass_key_aliases", Type: configString, Description: "Optional YAML list of safe key aliases/scopes that bypass the executor for canary CPA-only tests. Exact or trailing * only."},
+				{Name: "route_policy.max_request_body_bytes", Type: configInteger, Description: "Optional request body size threshold for bypass or limited budget."},
+				{Name: "route_policy.large_context_max_continue", Type: configInteger, Description: "When body exceeds max_request_body_bytes, keep protection but clamp max_continue to this value (0 = bypass instead)."},
 				{Name: "state_db_path", Type: configString, Description: "SQLite path for safe executor summaries."},
 				{Name: "cpamp_alias_db_path", Type: configString, Description: "Optional CPAMP SQLite path for safe api_key_aliases lookup."},
 				{Name: "cpamp_alias_db_paths", Type: configString, Description: "Optional comma/semicolon-separated CPAMP SQLite alias DB fallbacks."},
@@ -291,13 +298,17 @@ func routeModel(raw []byte) ([]byte, error) {
 		return nil, err
 	}
 	cfg := loadedConfig()
-	if !cfg.Enabled || !cfg.RouteEnabled || !req.Stream || !isResponsesRequest(req.SourceFormat, req.Body) {
+	if !req.Stream || !isResponsesRequest(req.SourceFormat, req.Body) {
 		return okEnvelope(modelRouteResponse{Handled: false})
+	}
+	decision := executor.DecideRoute(cfg, firstNonEmpty(modelFromBody(req.Body), req.RequestedModel), routeIdentityFromModelRoute(req), int64(len(req.Body)))
+	if !decision.Protected {
+		return okEnvelope(modelRouteResponse{Handled: false, Reason: decision.Reason})
 	}
 	return okEnvelope(modelRouteResponse{
 		Handled:    true,
 		TargetKind: routeTargetSelf,
-		Reason:     "cpa_codexcont_executor_enabled",
+		Reason:     decision.Reason,
 	})
 }
 
@@ -376,14 +387,20 @@ func executorExecuteStream(raw []byte) ([]byte, error) {
 	if err := json.Unmarshal(payload, &base); err != nil {
 		return errorEnvelope("invalid_responses_payload", err.Error()), nil
 	}
-	go foldHostStream(req, execReq, cfg, base)
+	decision := executor.DecideRoute(cfg, firstNonEmpty(modelFromBody(payload), execReq.Model), routeIdentityFromExecutorRequest(execReq), int64(len(payload)))
+	if !decision.Protected {
+		saveBypassRouteDecisionSummary(execReq, base, decision)
+		return executorUnavailableForDecision(decision)
+	}
+	go foldHostStream(req, execReq, decision.EffectiveConfig(cfg), base, decision)
 	return okEnvelope(executorStreamResponse{Headers: http.Header{"Content-Type": []string{"text/event-stream"}}})
 }
 
-func foldHostStream(req executorCallRequest, execReq executorRequest, cfg executor.Config, base map[string]any) {
+func foldHostStream(req executorCallRequest, execReq executorRequest, cfg executor.Config, base map[string]any, decision executor.RouteDecision) {
 	ctx := context.Background()
 	targetStreamID := req.StreamID
 	monitorID, processingSummary := monitor.StartSummary(execReq, base)
+	attachRouteDecision(processingSummary, decision)
 	saveExecutorSummary(processingSummary)
 	diagnostics := newStreamDiagnostics()
 	var streamErr string
@@ -412,7 +429,7 @@ func foldHostStream(req executorCallRequest, execReq executorRequest, cfg execut
 		return
 	}
 	if result != nil {
-		monitor.Finish(monitorID, saveFoldSummaryReplacing(execReq, result, diagnostics.Snapshot(), monitorID))
+		monitor.Finish(monitorID, saveFoldSummaryReplacingWithRouteDecision(execReq, result, diagnostics.Snapshot(), monitorID, decision))
 	}
 }
 
@@ -526,10 +543,15 @@ func saveFoldSummary(req executorRequest, result *executor.FoldResult, diagnosti
 }
 
 func saveFoldSummaryReplacing(req executorRequest, result *executor.FoldResult, diagnostics map[string]any, processingID string) map[string]any {
+	return saveFoldSummaryReplacingWithRouteDecision(req, result, diagnostics, processingID, executor.RouteDecision{})
+}
+
+func saveFoldSummaryReplacingWithRouteDecision(req executorRequest, result *executor.FoldResult, diagnostics map[string]any, processingID string, decision executor.RouteDecision) map[string]any {
 	if result == nil {
 		return nil
 	}
 	summary := cloneSummary(result.Summary)
+	attachRouteDecision(summary, decision)
 	identity := keyIdentityFromRequest(req)
 	keyID := keyIdentityID(identity)
 	if len(identity) > 0 {
@@ -557,6 +579,47 @@ func saveFoldSummaryReplacing(req executorRequest, result *executor.FoldResult, 
 		_ = store.DeleteCodexSummary(context.Background(), processingID)
 	}
 	return summary
+}
+
+func saveBypassRouteDecisionSummary(req executorRequest, base map[string]any, decision executor.RouteDecision) {
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	summary := map[string]any{
+		"request_id":         fmt.Sprintf("bypass-%d", time.Now().UnixNano()),
+		"model":              firstNonEmpty(req.Model, cleanAnyString(base["model"]), decision.Model),
+		"started_at":         now,
+		"updated_at":         now,
+		"ended_at":           now,
+		"status":             "bypassed",
+		"final_status":       "bypassed",
+		"protection":         "bypassed",
+		"passthrough":        true,
+		"passthrough_reason": decision.Reason,
+		"latest_round":       0,
+		"continuation_count": 0,
+	}
+	if identity := keyIdentityFromRequest(req); len(identity) > 0 {
+		summary["key_identity"] = identity
+	}
+	attachRouteDecision(summary, decision)
+	saveExecutorSummary(summary)
+}
+
+func attachRouteDecision(summary map[string]any, decision executor.RouteDecision) {
+	if len(summary) == 0 || strings.TrimSpace(decision.Reason) == "" && strings.TrimSpace(decision.Mode) == "" {
+		return
+	}
+	summary["route_decision"] = decision.SafeSummary()
+}
+
+func executorUnavailableForDecision(decision executor.RouteDecision) ([]byte, error) {
+	reason := strings.TrimSpace(decision.Reason)
+	if reason == "" {
+		reason = "not_protected"
+	}
+	if strings.EqualFold(decision.FailMode, "fail_closed") {
+		return errorEnvelope("codexcont_route_bypassed", "CodexCont executor route bypassed: "+reason), nil
+	}
+	return errorEnvelope("codexcont_executor_bypassed", "CodexCont executor is not handling this request: "+reason), nil
 }
 
 func saveExecutorSummary(summary map[string]any) {
@@ -801,6 +864,31 @@ func keyIdentityFromRequest(req executorRequest) map[string]any {
 		return nil
 	}
 	return out
+}
+
+func routeIdentityFromExecutorRequest(req executorRequest) executor.RouteIdentity {
+	return routeIdentityFromMap(keyIdentityFromRequest(req))
+}
+
+func routeIdentityFromModelRoute(req modelRouteRequest) executor.RouteIdentity {
+	return routeIdentityFromMap(keyIdentityFromRequest(executorRequest{
+		Model:    req.RequestedModel,
+		Headers:  req.Headers,
+		Metadata: req.Metadata,
+	}))
+}
+
+func routeIdentityFromMap(identity map[string]any) executor.RouteIdentity {
+	if identity == nil {
+		return executor.RouteIdentity{}
+	}
+	return executor.RouteIdentity{
+		ID:      cleanAnyString(identity["id"]),
+		Alias:   cleanAnyString(identity["alias"]),
+		Name:    cleanAnyString(identity["name"]),
+		Preview: cleanAnyString(identity["preview"]),
+		Source:  cleanAnyString(identity["source"]),
+	}
 }
 
 func identityFromAuthorization(headers http.Header) map[string]string {
@@ -1110,6 +1198,7 @@ func statusPayload() map[string]any {
 		"store_available":          storeAvailable,
 		"truncation_step":          cfg.TruncationStep,
 		"max_continue":             cfg.MaxContinue,
+		"route_policy":             routePolicyStatus(cfg.RoutePolicy),
 		"mode":                     "executor_only",
 		"monitor":                  "cpamp_admin_resource",
 		"upstream_model":           cfg.UpstreamModel,
@@ -1128,6 +1217,23 @@ func statusPayload() map[string]any {
 		out["last_host_error_at"] = lastHostError.At.Format(time.RFC3339)
 	}
 	return out
+}
+
+func routePolicyStatus(policy executor.RoutePolicy) map[string]any {
+	policy = policy.Normalize()
+	mode := policy.Mode
+	if mode == "" {
+		mode = executor.RoutePolicyModeProtectAll
+	}
+	return map[string]any{
+		"mode":                       mode,
+		"protected_model_count":      len(policy.ProtectedModels),
+		"bypass_model_count":         len(policy.BypassModels),
+		"protected_key_alias_count":  len(policy.ProtectedKeyAliases),
+		"bypass_key_alias_count":     len(policy.BypassKeyAliases),
+		"max_request_body_bytes":     policy.MaxRequestBodyBytes,
+		"large_context_max_continue": policy.LargeContextMaxContinue,
+	}
 }
 
 func okEnvelope(result any) ([]byte, error) {

@@ -1,0 +1,23 @@
+# Drop-in snippet for LAX CPA config.yaml under:
+# plugins.configs.cpa-codexcont-executor
+#
+# Rollout order:
+# 1) Deploy the new cpa-codexcont-executor.so with route_policy support
+# 2) Restart/reload CPA while leaving mode unset (protect_all default)
+# 3) Apply this snippet, then reload CPA config
+# 4) Smoke gpt-5.5 / gpt-5.6-sol (protected) and gpt-5.4 / grok-4.5 (bypassed)
+# 5) Rollback: set route_policy.mode: protect_all  OR  route_enabled: false
+
+enabled: true
+route_enabled: true
+fail_mode: fallback
+state_db_path: /CLIProxyAPI/plugin-state/cpa-codexcont-executor/executor.sqlite
+cpamp_alias_db_path: /CLIProxyAPI/cpamp-data/usage.sqlite
+route_policy:
+  mode: protect_selected
+  protected_models:
+    - gpt-5.5      # gpt-5.5, gpt-5.5-pro, gpt-5.5-2026-04-23, ...
+    - gpt-5.6*     # gpt-5.6, gpt-5.6-sol, gpt-5.6-terra, gpt-5.6-luna, ...
+  # Optional CPA-only canary key alias (exact or trailing *):
+  # bypass_key_aliases:
+  #   - baseline-cpa-only

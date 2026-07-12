@@ -50,6 +50,39 @@ plugins:
 `route_enabled: false` leaves CPA's normal upstream route untouched. Turn it on
 only after local and server executor folding validation passes.
 
+## Production Route Policy (GPT-5.5 / GPT-5.6 only)
+
+When `route_enabled: true`, leave `route_policy.mode` unset to keep the legacy
+protect-all behavior. For production continuation folding limited to the GPT-5.5
+and GPT-5.6 families:
+
+```yaml
+plugins:
+  configs:
+    cpa-codexcont-executor:
+      enabled: true
+      route_enabled: true
+      fail_mode: fallback
+      route_policy:
+        mode: protect_selected
+        protected_models:
+          - gpt-5.5      # also matches gpt-5.5-pro / gpt-5.5-2026-04-23
+          - gpt-5.6*     # gpt-5.6, gpt-5.6-sol, gpt-5.6-terra, gpt-5.6-luna, ...
+        # Optional canary: one test key skips CodexCont and uses plain CPA path.
+        # bypass_key_aliases:
+        #   - baseline-cpa-only
+```
+
+Matching rules for `protected_models` / `bypass_models`:
+
+- exact ID (case-insensitive): `gpt-5.5`
+- trailing wildcard: `gpt-5.6*` matches any model with that prefix
+- family prefix: `gpt-5.5` matches `gpt-5.5-pro` / dated snapshots, but not `gpt-5.4`
+
+Non-selected models (for example `gpt-5.4`, `gpt-5.4-mini`, `grok-4.5`) bypass
+the executor and use CPA's normal upstream path. `route_enabled: false` remains
+the global kill switch.
+
 Both `plugin.register` and `plugin.reconfigure` must return the full plugin
 registration object. CPA decodes reconfigure through the same metadata and
 capability path; a lightweight acknowledgement causes CPA to drop the plugin
