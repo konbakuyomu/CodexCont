@@ -1,4 +1,0 @@
-# vibe-flow bridge configuration
-schema_version: 1
-default_mode: status-first
-allow_run_next: true

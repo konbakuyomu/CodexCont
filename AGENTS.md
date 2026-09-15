@@ -20,32 +20,12 @@ Managed by Trellis. Edits outside this block are preserved; edits inside may be 
 
 <!-- TRELLIS:END -->
 
-<!-- VIBE-FLOW:START -->
-# Vibe Flow Bridge
+## Independent Development Tools
 
-This project uses `vibe-flow` as the Trellis + CodeStable bridge.
+This project uses native Trellis task management and independently enabled Agent Notes. The Vibe Flow bridge and CodeStable development workflow are retired here. Historical CodeStable statuses and gates do not route current work.
 
-When the user invokes `cs` or any `cs-*` CodeStable workflow, first run the status and
-next-action checks below. Use `next_action.label` as the routing signal; explicit
-`cs` / `cs-*` requests remain passthrough and must not auto-advance to later
-gates, even if the same request also contains words such as "continue".
-
-Before deciding the workflow stage, run:
-
-```bash
-vibe status --json
-```
-
-Before continuing or autonomously advancing work, run:
-
-```bash
-vibe next --intent "<user request>" --json
-```
-
-Explicit `cs` / `cs-*` requests preserve CodeStable's original stage semantics. Do not
-auto-run `vibe run next --json` unless the user explicitly asks to
-execute the proposed next action.
-
-When `next_action.label` is `direct-owner-action`, follow the owner's explicit
-Git/Trellis lifecycle request and do not invent a `cs-*` stage.
-<!-- VIBE-FLOW:END -->
+- Read relevant current contracts and existing decision Notes before a non-trivial change. Follow the independently installed `write-notes-like-deepseek` skill; do not require a Trellis task solely to read or update a Note.
+- Task requirements and execution steps stay in task files; current contracts stay in their owning specs/module docs; alternatives and rationale stay in Notes. Link rather than duplicate.
+- A task and a decision have independent lifecycles. Never synchronize their status or archive a Note because a task finished. Use Trellis's existing file-context manifests when a worker needs a particular Note.
+- During closeout, run the independent checks documented in `.agents/notes/AGENTS.md` and relevant code tests. State actual coverage and remaining gaps. Mechanical changes need not create a new Note.
+- Before moving a referenced file, identify inbound links; update current consumers in the same batch and check links again after the move. Preserve original historical evidence.
