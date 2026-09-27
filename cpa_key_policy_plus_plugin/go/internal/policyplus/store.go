@@ -19,6 +19,10 @@ type Store struct {
 	db *sql.DB
 }
 
+type sqlExecer interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}
+
 type UsageEvent struct {
 	ID              int64         `json:"-"`
 	RequestID       string        `json:"request_id"`
@@ -41,13 +45,24 @@ type UsageEvent struct {
 	Usage           TokenUsage    `json:"usage"`
 	Cost            float64       `json:"cost"`
 	CostBreakdown   CostBreakdown `json:"cost_breakdown"`
+	BillingPending  bool          `json:"billing_pending,omitempty"`
+	BillingReason   string        `json:"billing_pending_reason,omitempty"`
+	BillingModel    string        `json:"billing_price_model,omitempty"`
+	// AuthIndex is the upstream credential that served the request, used to
+	// attribute carpool (pool) consumption to one subscription account.
+	AuthIndex string `json:"auth_index,omitempty"`
+	AuthID    string `json:"-"`
+	// ConsumedAtMS is when the upstream finished the request (requested_at +
+	// latency, millisecond precision); pool attribution orders costs by it.
+	ConsumedAtMS int64 `json:"-"`
 }
 
 type UsageSummary struct {
-	Calls     int64      `json:"calls"`
-	Failed    int64      `json:"failed"`
-	TotalCost float64    `json:"total_cost"`
-	Usage     TokenUsage `json:"usage"`
+	Calls          int64      `json:"calls"`
+	Failed         int64      `json:"failed"`
+	BillingPending int64      `json:"billing_pending"`
+	TotalCost      float64    `json:"total_cost"`
+	Usage          TokenUsage `json:"usage"`
 }
 
 type CodexSummary struct {
@@ -147,6 +162,7 @@ func (s *Store) EnsureSchema(ctx context.Context) error {
 			daily_limit_usd real,
 			weekly_limit_usd real,
 			monthly_limit_usd real,
+			weekly_only integer not null default 0,
 			archived integer not null default 0,
 			archived_at integer not null default 0,
 			source text default '',
@@ -156,6 +172,10 @@ func (s *Store) EnsureSchema(ctx context.Context) error {
 			inherit_conflict integer not null default 0,
 			hidden integer not null default 0,
 			last_enabled integer not null default 0,
+			billing_hold_reason text not null default '',
+			billing_hold_model text not null default '',
+			billing_hold_service_tier text not null default '',
+			billing_hold_at integer not null default 0,
 			updated_at integer not null
 		)`,
 		`create table if not exists reset_watermarks (
@@ -199,7 +219,10 @@ func (s *Store) EnsureSchema(ctx context.Context) error {
 			reasoning_tokens integer,
 			total_tokens integer,
 			cost real,
-			cost_breakdown_json text
+			cost_breakdown_json text,
+			billing_pending integer not null default 0,
+			billing_pending_reason text not null default '',
+			billing_price_model text not null default ''
 		)`,
 		`create table if not exists codexcont_summaries (
 			request_id text primary key,
@@ -222,6 +245,92 @@ func (s *Store) EnsureSchema(ctx context.Context) error {
 			value text not null,
 			updated_at integer not null
 		)`,
+		`create table if not exists quota_accounts (
+			auth_index text primary key,
+			auth_id text not null default '',
+			provider text not null default '',
+			plan_type text not null default '',
+			weekly_minutes integer not null default 0,
+			weekly_used real,
+			weekly_reset_at integer not null default 0,
+			short_minutes integer not null default 0,
+			short_used real,
+			short_reset_at integer not null default 0,
+			limit_reached integer not null default 0,
+			observed_at_ms integer not null default 0,
+			updated_at integer not null default 0
+		)`,
+		`create table if not exists quota_observations (
+			auth_index text not null,
+			cycle_reset_at integer not null,
+			used_percent real not null,
+			observed_at_ms integer not null,
+			window_minutes integer not null default 0,
+			primary key(auth_index, cycle_reset_at, used_percent)
+		)`,
+		`create index if not exists idx_quota_observations_time on quota_observations(auth_index, observed_at_ms)`,
+		`create table if not exists pools (
+			id text primary key,
+			name text not null,
+			auth_index text not null default '',
+			model_prefix text not null default '',
+			visibility text not null default 'anonymous',
+			burst_mode text not null default '',
+			burst_started_at integer not null default 0,
+			burst_cycle_reset_at integer not null default 0,
+			burst_snapshot_json text not null default '',
+			sub2pool_account_id integer not null default 0,
+			lend_during_burst integer not null default 0,
+			hide_account integer not null default 0,
+			routed_since integer not null default 0,
+			created_at integer not null,
+			updated_at integer not null
+		)`,
+		`create table if not exists pool_lend_windows (
+			pool_id text not null,
+			auth_index text not null,
+			started_at integer not null,
+			until_at integer not null,
+			ended_at integer not null default 0,
+			primary key(pool_id, started_at)
+		)`,
+		`create index if not exists idx_pool_lend_windows_auth on pool_lend_windows(auth_index, started_at)`,
+		`create table if not exists pool_members (
+			key_id text primary key,
+			pool_id text not null,
+			share_percent real,
+			role text not null default '',
+			joined_at integer not null default 0,
+			created_at integer not null
+		)`,
+		`create table if not exists pool_carry (
+			pool_id text not null,
+			key_id text not null,
+			cycle_reset_at integer not null,
+			pp real not null,
+			source_cycle_reset_at integer not null,
+			created_at integer not null,
+			primary key(pool_id, key_id, cycle_reset_at)
+		)`,
+		`create table if not exists member_bursts (
+			pool_id text not null,
+			key_id text not null,
+			cycle_reset_at integer not null,
+			mode text not null,
+			started_at integer not null,
+			stopped_at integer not null default 0,
+			primary key(pool_id, key_id, cycle_reset_at)
+		)`,
+		`create table if not exists pool_settlements (
+			pool_id text not null,
+			cycle_reset_at integer not null,
+			started_at integer not null default 0,
+			mode text not null,
+			status text not null,
+			detail_json text not null default '',
+			created_at integer not null,
+			primary key(pool_id, cycle_reset_at, started_at)
+		)`,
 	}
 	for _, stmt := range stmts {
 		if _, err := s.db.ExecContext(ctx, stmt); err != nil {
@@ -229,28 +338,62 @@ func (s *Store) EnsureSchema(ctx context.Context) error {
 		}
 	}
 	if err := s.ensureColumns(ctx, "usage_events", map[string]string{
-		"requested_model":  "text default ''",
-		"actual_model":     "text default ''",
-		"provider":         "text default ''",
-		"executor_type":    "text default ''",
-		"ttft_ms":          "integer default 0",
-		"reasoning_effort": "text default ''",
-		"service_tier":     "text default ''",
-		"status_code":      "integer default 0",
+		"billing_pending":        "integer not null default 0",
+		"billing_pending_reason": "text not null default ''",
+		"billing_price_model":    "text not null default ''",
+		"requested_model":        "text default ''",
+		"actual_model":           "text default ''",
+		"provider":               "text default ''",
+		"executor_type":          "text default ''",
+		"ttft_ms":                "integer default 0",
+		"reasoning_effort":       "text default ''",
+		"service_tier":           "text default ''",
+		"status_code":            "integer default 0",
+		"auth_index":             "text not null default ''",
+		"auth_id":                "text not null default ''",
+		"consumed_at_ms":         "integer not null default 0",
 	}); err != nil {
 		return err
 	}
+	if err := s.ensureColumns(ctx, "pools", map[string]string{
+		"burst_snapshot_json": "text not null default ''",
+		"sub2pool_account_id": "integer not null default 0",
+		"lend_during_burst":   "integer not null default 0",
+		"hide_account":        "integer not null default 0",
+		"routed_since":        "integer not null default 0",
+	}); err != nil {
+		return err
+	}
+	if err := s.ensureColumns(ctx, "pool_members", map[string]string{
+		"role":      "text not null default ''",
+		"joined_at": "integer not null default 0",
+	}); err != nil {
+		return err
+	}
+	for _, stmt := range []string{
+		`create index if not exists idx_usage_events_key_time on usage_events(key_id, requested_at)`,
+		`create index if not exists idx_usage_events_auth_time on usage_events(auth_index, consumed_at_ms)`,
+	} {
+		if _, err := s.db.ExecContext(ctx, stmt); err != nil {
+			return err
+		}
+	}
 	if err := s.ensureColumns(ctx, "keys", map[string]string{
-		"max_active_sessions": "integer default 0",
-		"archived":            "integer not null default 0",
-		"archived_at":         "integer not null default 0",
-		"source":              "text default ''",
-		"source_present":      "integer not null default 1",
-		"alias":               "text default ''",
-		"inherited_from":      "text default ''",
-		"inherit_conflict":    "integer not null default 0",
-		"hidden":              "integer not null default 0",
-		"last_enabled":        "integer not null default 0",
+		"billing_hold_reason":       "text not null default ''",
+		"billing_hold_model":        "text not null default ''",
+		"billing_hold_service_tier": "text not null default ''",
+		"billing_hold_at":           "integer not null default 0",
+		"weekly_only":               "integer not null default 0",
+		"max_active_sessions":       "integer default 0",
+		"archived":                  "integer not null default 0",
+		"archived_at":               "integer not null default 0",
+		"source":                    "text default ''",
+		"source_present":            "integer not null default 1",
+		"alias":                     "text default ''",
+		"inherited_from":            "text default ''",
+		"inherit_conflict":          "integer not null default 0",
+		"hidden":                    "integer not null default 0",
+		"last_enabled":              "integer not null default 0",
 	}); err != nil {
 		return err
 	}
@@ -296,15 +439,18 @@ func (s *Store) UpsertKey(ctx context.Context, key KeyRecord) error {
 	if key.Source == "" {
 		key.SourcePresent = true
 	}
+	if IsWeeklyOnlyQuota(key) {
+		key.WeeklyOnly = true
+	}
 	models, _ := json.Marshal(key.Models)
 	prices, _ := json.Marshal(key.Prices)
 	_, err := s.db.ExecContext(
 		ctx,
 		`insert into keys(
 			id, name, key_hash, enabled, preview, rpm, concurrency, max_active_sessions, models_json, prices_json,
-			five_hour_limit_usd, daily_limit_usd, weekly_limit_usd, monthly_limit_usd,
+			five_hour_limit_usd, daily_limit_usd, weekly_limit_usd, monthly_limit_usd, weekly_only,
 			archived, archived_at, source, source_present, alias, inherited_from, inherit_conflict, hidden, last_enabled, updated_at
-		) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		on conflict(id) do update set
 			name=excluded.name,
 			key_hash=excluded.key_hash,
@@ -315,10 +461,11 @@ func (s *Store) UpsertKey(ctx context.Context, key KeyRecord) error {
 			max_active_sessions=excluded.max_active_sessions,
 			models_json=excluded.models_json,
 			prices_json=excluded.prices_json,
-			five_hour_limit_usd=coalesce(keys.five_hour_limit_usd, excluded.five_hour_limit_usd),
-			daily_limit_usd=excluded.daily_limit_usd,
-			weekly_limit_usd=excluded.weekly_limit_usd,
-			monthly_limit_usd=coalesce(keys.monthly_limit_usd, excluded.monthly_limit_usd),
+			five_hour_limit_usd=case when coalesce(keys.weekly_only, 0) != 0 or excluded.weekly_only != 0 then null else coalesce(keys.five_hour_limit_usd, excluded.five_hour_limit_usd) end,
+			daily_limit_usd=case when coalesce(keys.weekly_only, 0) != 0 or excluded.weekly_only != 0 then null else excluded.daily_limit_usd end,
+			weekly_limit_usd=case when coalesce(keys.weekly_only, 0) != 0 then coalesce(keys.weekly_limit_usd, excluded.weekly_limit_usd) else excluded.weekly_limit_usd end,
+			monthly_limit_usd=case when coalesce(keys.weekly_only, 0) != 0 or excluded.weekly_only != 0 then null else coalesce(keys.monthly_limit_usd, excluded.monthly_limit_usd) end,
+			weekly_only=case when excluded.weekly_only != 0 then 1 else coalesce(keys.weekly_only, 0) end,
 			archived=case when excluded.archived != 0 then excluded.archived else keys.archived end,
 			archived_at=case when excluded.archived != 0 then excluded.archived_at else keys.archived_at end,
 			source=case when excluded.source != '' then excluded.source else keys.source end,
@@ -343,6 +490,7 @@ func (s *Store) UpsertKey(ctx context.Context, key KeyRecord) error {
 		key.DailyLimitUSD,
 		key.WeeklyLimitUSD,
 		key.MonthlyLimitUSD,
+		boolInt(key.WeeklyOnly),
 		boolInt(key.Archived),
 		key.ArchivedAt,
 		key.Source,
@@ -452,8 +600,8 @@ func (s *Store) importLegacyPortalLimits(ctx context.Context, db *sql.DB) (int, 
 			continue
 		}
 		res, err := s.db.ExecContext(ctx, `update keys set
-			five_hour_limit_usd=coalesce(five_hour_limit_usd, ?),
-			monthly_limit_usd=coalesce(monthly_limit_usd, ?),
+			five_hour_limit_usd=case when coalesce(weekly_only, 0) != 0 then null else coalesce(five_hour_limit_usd, ?) end,
+			monthly_limit_usd=case when coalesce(weekly_only, 0) != 0 then null else coalesce(monthly_limit_usd, ?) end,
 			updated_at=?
 			where id=?`,
 			nullFloatValue(fiveHour), nullFloatValue(monthly), time.Now().Unix(), id)
@@ -493,10 +641,10 @@ func (s *Store) importLegacyGovernorLimits(ctx context.Context, db *sql.DB) (int
 			continue
 		}
 		res, err := s.db.ExecContext(ctx, `update keys set
-			five_hour_limit_usd=coalesce(five_hour_limit_usd, ?),
-			daily_limit_usd=coalesce(daily_limit_usd, ?),
+			five_hour_limit_usd=case when coalesce(weekly_only, 0) != 0 then null else coalesce(five_hour_limit_usd, ?) end,
+			daily_limit_usd=case when coalesce(weekly_only, 0) != 0 then null else coalesce(daily_limit_usd, ?) end,
 			weekly_limit_usd=coalesce(weekly_limit_usd, ?),
-			monthly_limit_usd=coalesce(monthly_limit_usd, ?),
+			monthly_limit_usd=case when coalesce(weekly_only, 0) != 0 then null else coalesce(monthly_limit_usd, ?) end,
 			updated_at=?
 			where id=?`,
 			nullFloatValue(fiveHour), nullFloatValue(daily), nullFloatValue(weekly),
@@ -548,6 +696,15 @@ func (s *Store) importLegacyResets(ctx context.Context, db *sql.DB) (int, error)
 		if strings.TrimSpace(id) == "" || strings.TrimSpace(window) == "" || !resetAt.Valid {
 			continue
 		}
+		if strings.EqualFold(strings.TrimSpace(window), Range7D) {
+			weeklyOnly, err := s.isWeeklyOnlyKey(ctx, id)
+			if err != nil {
+				return count, err
+			}
+			if weeklyOnly {
+				continue
+			}
+		}
 		ts := resetAt.Int64
 		if ts > 1_000_000_000_000 {
 			ts = ts / 1000
@@ -563,6 +720,15 @@ func (s *Store) importLegacyResets(ctx context.Context, db *sql.DB) (int, error)
 		}
 	}
 	return count, rows.Err()
+}
+
+func (s *Store) isWeeklyOnlyKey(ctx context.Context, id string) (bool, error) {
+	var weeklyOnly int
+	err := s.db.QueryRowContext(ctx, `select coalesce(weekly_only, 0) from keys where id=?`, id).Scan(&weeklyOnly)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	return weeklyOnly != 0, err
 }
 
 func (s *Store) syncDeletedKeys(ctx context.Context, seen map[string]bool) error {
@@ -596,7 +762,8 @@ func (s *Store) ListKeys(ctx context.Context) ([]KeyRecord, error) {
 	rows, err := s.db.QueryContext(ctx, `select id, name, key_hash, enabled, preview, rpm, concurrency, max_active_sessions, models_json, prices_json,
 		five_hour_limit_usd, daily_limit_usd, weekly_limit_usd, monthly_limit_usd, archived, archived_at,
 			coalesce(source, ''), coalesce(source_present, 1), coalesce(alias, ''), coalesce(inherited_from, ''),
-		coalesce(inherit_conflict, 0), coalesce(hidden, 0), coalesce(last_enabled, enabled)
+		coalesce(inherit_conflict, 0), coalesce(hidden, 0), coalesce(last_enabled, enabled), coalesce(weekly_only, 0),
+		coalesce(billing_hold_reason, ''), coalesce(billing_hold_model, ''), coalesce(billing_hold_service_tier, ''), coalesce(billing_hold_at, 0)
 		from keys order by hidden asc, name collate nocase`)
 	if err != nil {
 		return nil, err
@@ -605,14 +772,15 @@ func (s *Store) ListKeys(ctx context.Context) ([]KeyRecord, error) {
 	var out []KeyRecord
 	for rows.Next() {
 		var key KeyRecord
-		var enabled, archived, sourcePresent, inheritConflict, hidden, lastEnabled int
+		var enabled, archived, sourcePresent, inheritConflict, hidden, lastEnabled, weeklyOnly int
 		var modelsJSON, pricesJSON string
 		var fiveHour, daily, weekly, monthly sql.NullFloat64
 		if err := rows.Scan(
 			&key.ID, &key.Name, &key.KeyHash, &enabled, &key.Preview, &key.RPM, &key.Concurrency, &key.MaxActiveSessions,
 			&modelsJSON, &pricesJSON, &fiveHour, &daily, &weekly, &monthly,
 			&archived, &key.ArchivedAt, &key.Source, &sourcePresent, &key.Alias, &key.InheritedFrom,
-			&inheritConflict, &hidden, &lastEnabled,
+			&inheritConflict, &hidden, &lastEnabled, &weeklyOnly,
+			&key.BillingHoldReason, &key.BillingHoldModel, &key.BillingHoldTier, &key.BillingHoldAt,
 		); err != nil {
 			return nil, err
 		}
@@ -622,6 +790,7 @@ func (s *Store) ListKeys(ctx context.Context) ([]KeyRecord, error) {
 		key.InheritConflict = inheritConflict != 0
 		key.Hidden = hidden != 0
 		key.LastEnabled = lastEnabled != 0
+		key.WeeklyOnly = weeklyOnly != 0
 		key.FiveHourUSD = nullFloatPtr(fiveHour)
 		key.DailyLimitUSD = nullFloatPtr(daily)
 		key.WeeklyLimitUSD = nullFloatPtr(weekly)
@@ -714,7 +883,12 @@ func (s *Store) SetLimits(ctx context.Context, id string, fiveHour, monthly *flo
 			return fmt.Errorf("usd limits must not be negative")
 		}
 	}
-	res, err := s.db.ExecContext(ctx, `update keys set five_hour_limit_usd=?, monthly_limit_usd=?, updated_at=? where id=?`, fiveHour, monthly, time.Now().Unix(), id)
+	res, err := s.db.ExecContext(ctx, `update keys set
+		five_hour_limit_usd=?,
+		monthly_limit_usd=?,
+		weekly_only=case when ? is not null or ? is not null then 0 else weekly_only end,
+		updated_at=?
+		where id=?`, fiveHour, monthly, fiveHour, monthly, time.Now().Unix(), id)
 	if err != nil {
 		return err
 	}
@@ -724,12 +898,45 @@ func (s *Store) SetLimits(ctx context.Context, id string, fiveHour, monthly *flo
 	return s.Audit(ctx, "admin", "set_limits", id, map[string]any{"five_hour_usd": fiveHour, "monthly_usd": monthly})
 }
 
+// EnableWeeklyOnly is the safe migration operation for an existing policy.
+// It changes no identity, allowlist, RPM, usage event, or reset watermark. An
+// optional weekly limit fills only a previously unlimited key; it never
+// overwrites the already-authoritative weekly budget.
+func (s *Store) EnableWeeklyOnly(ctx context.Context, id string, weekly *float64) error {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return fmt.Errorf("missing key id")
+	}
+	if weekly != nil && *weekly < 0 {
+		return fmt.Errorf("usd limits must not be negative")
+	}
+	res, err := s.db.ExecContext(ctx, `update keys set
+		five_hour_limit_usd=null,
+		daily_limit_usd=null,
+		weekly_limit_usd=coalesce(weekly_limit_usd, ?),
+		monthly_limit_usd=null,
+		weekly_only=1,
+		updated_at=?
+		where id=?`, weekly, time.Now().Unix(), id)
+	if err != nil {
+		return err
+	}
+	if affected, _ := res.RowsAffected(); affected == 0 {
+		return fmt.Errorf("unknown key: %s", id)
+	}
+	return s.Audit(ctx, "admin", "enable_weekly_only", id, map[string]any{
+		"weekly_usd_fallback": weekly,
+		"preserved":           []string{"identity", "rpm", "models", "usage_events", "reset_watermarks"},
+	})
+}
+
 func (s *Store) SaveKeySettings(ctx context.Context, key KeyRecord) error {
 	if err := ValidateKeyRecord(key); err != nil {
 		return err
 	}
 	models, _ := json.Marshal(key.Models)
 	prices, _ := json.Marshal(key.Prices)
+	weeklyOnly := IsWeeklyOnlyQuota(key)
 	res, err := s.db.ExecContext(ctx, `update keys set
 		enabled=?,
 		rpm=?,
@@ -741,6 +948,7 @@ func (s *Store) SaveKeySettings(ctx context.Context, key KeyRecord) error {
 		daily_limit_usd=?,
 		weekly_limit_usd=?,
 		monthly_limit_usd=?,
+		weekly_only=?,
 		last_enabled=?,
 		updated_at=?
 		where id=?`,
@@ -754,6 +962,7 @@ func (s *Store) SaveKeySettings(ctx context.Context, key KeyRecord) error {
 		key.DailyLimitUSD,
 		key.WeeklyLimitUSD,
 		key.MonthlyLimitUSD,
+		boolInt(weeklyOnly),
 		boolInt(key.Enabled),
 		time.Now().Unix(),
 		key.ID,
@@ -769,6 +978,7 @@ func (s *Store) SaveKeySettings(ctx context.Context, key KeyRecord) error {
 		"rpm":                 key.RPM,
 		"concurrency":         key.Concurrency,
 		"max_active_sessions": key.MaxActiveSessions,
+		"weekly_only":         weeklyOnly,
 	})
 }
 
@@ -1021,24 +1231,165 @@ func (s *Store) InsertUsage(ctx context.Context, event UsageEvent) error {
 	if event.RequestedAt.IsZero() {
 		event.RequestedAt = time.Now()
 	}
+	if event.BillingPending {
+		tx, err := s.db.BeginTx(ctx, nil)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = tx.Rollback() }()
+		if err := insertUsage(ctx, tx, event); err != nil {
+			return err
+		}
+		res, err := tx.ExecContext(ctx, `update keys set
+			billing_hold_reason=?, billing_hold_model=?, billing_hold_service_tier=?, billing_hold_at=?, updated_at=?
+			where id=?`,
+			event.BillingReason, event.BillingModel, event.ServiceTier, time.Now().Unix(), time.Now().Unix(), event.KeyID)
+		if err != nil {
+			return err
+		}
+		if affected, _ := res.RowsAffected(); affected == 0 {
+			return fmt.Errorf("unknown key: %s", event.KeyID)
+		}
+		if err := tx.Commit(); err != nil {
+			return err
+		}
+		_ = s.Audit(ctx, "system", "billing_hold_set", event.KeyID, map[string]any{
+			"model": event.BillingModel, "service_tier": event.ServiceTier, "reason": event.BillingReason, "request_id": event.RequestID,
+		})
+		return nil
+	}
+	return insertUsage(ctx, s.db, event)
+}
+
+func insertUsage(ctx context.Context, execer sqlExecer, event UsageEvent) error {
 	breakdown, _ := json.Marshal(event.CostBreakdown)
-	_, err := s.db.ExecContext(
+	_, err := execer.ExecContext(
 		ctx,
 		`insert into usage_events(
 			request_id, key_id, key_preview, model, requested_model, actual_model, provider, executor_type,
 			endpoint, requested_at, latency_ms, ttft_ms, reasoning_effort, service_tier, status_code, failed, failure,
 			input_tokens, output_tokens, cached_tokens, cache_read_tokens, cache_creation_tokens,
-			reasoning_tokens, total_tokens, cost, cost_breakdown_json
-		) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			reasoning_tokens, total_tokens, cost, cost_breakdown_json, billing_pending, billing_pending_reason, billing_price_model,
+			auth_index, auth_id, consumed_at_ms
+		) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		event.RequestID, event.KeyID, event.KeyPreview, event.Model, event.RequestedModel, event.ActualModel,
 		event.Provider, event.ExecutorType, event.Endpoint, event.RequestedAt.Unix(),
 		event.LatencyMS, event.TTFTMS, event.ReasoningEffort, event.ServiceTier, event.StatusCode,
 		boolInt(event.Failed), event.Failure,
 		event.Usage.InputTokens, event.Usage.OutputTokens, event.Usage.CachedTokens, event.Usage.CacheReadTokens,
 		event.Usage.CacheCreationTokens, event.Usage.ReasoningTokens, event.Usage.TotalTokens,
-		event.Cost, string(breakdown),
+		event.Cost, string(breakdown), boolInt(event.BillingPending), event.BillingReason, event.BillingModel,
+		strings.TrimSpace(event.AuthIndex), strings.TrimSpace(event.AuthID), consumedAtMS(event),
 	)
 	return err
+}
+
+func consumedAtMS(event UsageEvent) int64 {
+	if event.ConsumedAtMS > 0 {
+		return event.ConsumedAtMS
+	}
+	return event.RequestedAt.UnixMilli() + max(event.LatencyMS, 0)
+}
+
+// ResolvePendingBilling only touches rows explicitly marked billing_pending.
+// It never recalculates ordinary history, and clears the durable key hold only
+// after every pending row has a currently verified CPAMP price.
+func (s *Store) ResolvePendingBilling(ctx context.Context, keyID string, book PriceBook) (int, error) {
+	keyID = strings.TrimSpace(keyID)
+	if keyID == "" {
+		return 0, fmt.Errorf("missing key id")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	rows, err := tx.QueryContext(ctx, `select id, coalesce(billing_price_model, ''), coalesce(actual_model, ''),
+		coalesce(requested_model, ''), coalesce(model, ''), coalesce(service_tier, ''),
+		coalesce(input_tokens, 0), coalesce(output_tokens, 0), coalesce(cached_tokens, 0), coalesce(cache_read_tokens, 0),
+		coalesce(cache_creation_tokens, 0), coalesce(reasoning_tokens, 0), coalesce(total_tokens, 0)
+		from usage_events where key_id=? and coalesce(billing_pending, 0) != 0 order by id`, keyID)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+	type update struct {
+		id        int64
+		model     string
+		cost      float64
+		breakdown CostBreakdown
+	}
+	updates := []update{}
+	for rows.Next() {
+		var item update
+		var actualModel, requestedModel, visibleModel, serviceTier string
+		var usage TokenUsage
+		if err := rows.Scan(
+			&item.id, &item.model, &actualModel, &requestedModel, &visibleModel, &serviceTier,
+			&usage.InputTokens, &usage.OutputTokens, &usage.CachedTokens, &usage.CacheReadTokens,
+			&usage.CacheCreationTokens, &usage.ReasoningTokens, &usage.TotalTokens,
+		); err != nil {
+			return 0, err
+		}
+		item.model = firstNonEmpty(item.model, actualModel, requestedModel, visibleModel)
+		breakdown, priced := CostForUsageFromPriceBook(book, usage, item.model, serviceTier)
+		if !priced {
+			return 0, fmt.Errorf("verified CPAMP price is still unavailable for pending model %s", item.model)
+		}
+		item.cost = breakdown.Costs["total"]
+		item.breakdown = breakdown
+		updates = append(updates, item)
+	}
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	if err := rows.Close(); err != nil {
+		return 0, err
+	}
+	if len(updates) == 0 {
+		return 0, fmt.Errorf("no pending billing events for key: %s", keyID)
+	}
+	stmt, err := tx.PrepareContext(ctx, `update usage_events set
+		cost=?, cost_breakdown_json=?, billing_pending=0, billing_pending_reason='', billing_price_model=?
+		where id=? and coalesce(billing_pending, 0) != 0`)
+	if err != nil {
+		return 0, err
+	}
+	defer stmt.Close()
+	for _, item := range updates {
+		raw, _ := json.Marshal(item.breakdown)
+		res, err := stmt.ExecContext(ctx, item.cost, string(raw), item.model, item.id)
+		if err != nil {
+			return 0, err
+		}
+		if affected, _ := res.RowsAffected(); affected != 1 {
+			return 0, fmt.Errorf("pending billing changed during resolution for event %d", item.id)
+		}
+	}
+	res, err := tx.ExecContext(ctx, `update keys set
+		billing_hold_reason='', billing_hold_model='', billing_hold_service_tier='', billing_hold_at=0, updated_at=?
+		where id=? and not exists (
+			select 1 from usage_events where key_id=? and coalesce(billing_pending, 0) != 0
+		)`, time.Now().Unix(), keyID, keyID)
+	if err != nil {
+		return 0, err
+	}
+	if affected, _ := res.RowsAffected(); affected == 0 {
+		var exists int
+		err := tx.QueryRowContext(ctx, `select count(1) from keys where id=?`, keyID).Scan(&exists)
+		if err != nil {
+			return 0, err
+		}
+		if exists == 0 {
+			return 0, fmt.Errorf("unknown key: %s", keyID)
+		}
+		return 0, fmt.Errorf("pending billing changed during resolution for key: %s", keyID)
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	_ = s.Audit(ctx, "admin", "billing_hold_resolved", keyID, map[string]any{"events": len(updates), "price_source": book.NormalizedSource()})
+	return len(updates), nil
 }
 
 func (s *Store) RecalculateUsageCosts(ctx context.Context, since time.Time, book PriceBook) (int, error) {
@@ -1048,7 +1399,7 @@ func (s *Store) RecalculateUsageCosts(ctx context.Context, since time.Time, book
 	rows, err := s.db.QueryContext(ctx, `select id, coalesce(model, ''), coalesce(requested_model, ''), coalesce(service_tier, ''),
 		coalesce(input_tokens, 0), coalesce(output_tokens, 0), coalesce(cached_tokens, 0), coalesce(cache_read_tokens, 0),
 		coalesce(cache_creation_tokens, 0), coalesce(reasoning_tokens, 0), coalesce(total_tokens, 0)
-		from usage_events where requested_at >= ?`, since.Unix())
+		from usage_events where requested_at >= ? and coalesce(billing_pending, 0) = 0`, since.Unix())
 	if err != nil {
 		return 0, err
 	}
@@ -1107,6 +1458,40 @@ func (s *Store) RecalculateUsageCosts(ctx context.Context, since time.Time, book
 	return len(updates), nil
 }
 
+// RequestRate is a key's request pace: requests in the last 60 seconds and
+// the most seen in any 60 seconds since the queried start.
+type RequestRate struct {
+	LastMinute int `json:"last_minute"`
+	Peak       int `json:"peak"`
+}
+
+func (s *Store) RequestRate(ctx context.Context, keyID string, since, now time.Time) (RequestRate, error) {
+	rows, err := s.db.QueryContext(ctx, `select requested_at from usage_events
+		where key_id = ? and requested_at >= ? and requested_at <= ? order by requested_at`, keyID, since.Unix(), now.Unix())
+	if err != nil {
+		return RequestRate{}, err
+	}
+	defer rows.Close()
+	var out RequestRate
+	var times []int64
+	start := 0
+	for rows.Next() {
+		var at int64
+		if err := rows.Scan(&at); err != nil {
+			return RequestRate{}, err
+		}
+		times = append(times, at)
+		for times[start] <= at-60 {
+			start++
+		}
+		out.Peak = max(out.Peak, len(times)-start)
+	}
+	for i := len(times) - 1; i >= 0 && times[i] > now.Unix()-60; i-- {
+		out.LastMinute++
+	}
+	return out, rows.Err()
+}
+
 func (s *Store) UsageSum(ctx context.Context, keyID string, window Window) (float64, error) {
 	var total sql.NullFloat64
 	from := window.From.Unix()
@@ -1114,7 +1499,7 @@ func (s *Store) UsageSum(ctx context.Context, keyID string, window Window) (floa
 		from = resetAt
 	}
 	args := []any{from, window.To.Unix()}
-	query := `select coalesce(sum(cost), 0) from usage_events where requested_at >= ? and requested_at <= ?`
+	query := `select coalesce(sum(cost), 0) from usage_events where requested_at >= ? and requested_at <= ? and coalesce(billing_pending, 0) = 0`
 	if keyID != "" && keyID != "all" {
 		query += ` and key_id = ?`
 		args = append(args, keyID)
@@ -1148,7 +1533,8 @@ func (s *Store) UsageSummary(ctx context.Context, keyID string, window Window) (
 	query := `select
 		count(*),
 		coalesce(sum(case when failed != 0 then 1 else 0 end), 0),
-		coalesce(sum(cost), 0),
+		coalesce(sum(case when billing_pending != 0 then 1 else 0 end), 0),
+		coalesce(sum(case when billing_pending = 0 then cost else 0 end), 0),
 		coalesce(sum(input_tokens), 0),
 		coalesce(sum(output_tokens), 0),
 		coalesce(sum(cached_tokens), 0),
@@ -1165,6 +1551,7 @@ func (s *Store) UsageSummary(ctx context.Context, keyID string, window Window) (
 	if err := s.db.QueryRowContext(ctx, query, args...).Scan(
 		&summary.Calls,
 		&summary.Failed,
+		&summary.BillingPending,
 		&summary.TotalCost,
 		&summary.Usage.InputTokens,
 		&summary.Usage.OutputTokens,
@@ -1179,6 +1566,144 @@ func (s *Store) UsageSummary(ctx context.Context, keyID string, window Window) (
 	return summary, nil
 }
 
+// UsageBucket is one slice of a key's spend timeline. Cost skips
+// billing_pending rows exactly like UsageSum, so the buckets of a window add up
+// to the amount the quota check sees.
+type UsageBucket struct {
+	Start          int64   `json:"start"`
+	End            int64   `json:"end"`
+	Calls          int64   `json:"calls"`
+	Failed         int64   `json:"failed"`
+	BillingPending int64   `json:"billing_pending"`
+	Cost           float64 `json:"cost"`
+}
+
+type UsageSeries struct {
+	Range         string        `json:"range"`
+	From          int64         `json:"from"`
+	To            int64         `json:"to"`
+	ResetAt       int64         `json:"reset_at,omitempty"`
+	BucketSeconds int64         `json:"bucket_seconds"`
+	TotalCost     float64       `json:"total_cost"`
+	Buckets       []UsageBucket `json:"buckets"`
+}
+
+// UsageSeries buckets one key's usage inside window. Bucket edges follow the
+// viewer's local clock through offsetSeconds (east of UTC is positive). The
+// first bucket starts at the window start and the last one ends at the window
+// end, so a partial hour or day at either edge stays in the series.
+func (s *Store) UsageSeries(ctx context.Context, keyID string, window Window, bucket time.Duration, offsetSeconds int64) (UsageSeries, error) {
+	size := int64(bucket / time.Second)
+	if size <= 0 {
+		return UsageSeries{}, fmt.Errorf("bucket must be at least one second")
+	}
+	if keyID == "" || keyID == "all" {
+		return UsageSeries{}, fmt.Errorf("usage series needs a single key")
+	}
+	from := window.From.Unix()
+	to := window.To.Unix()
+	out := UsageSeries{Range: window.Name, From: from, To: to, BucketSeconds: size, Buckets: []UsageBucket{}}
+	if to < from {
+		return out, nil
+	}
+	counted := from
+	if resetAt, ok := s.ResetAt(ctx, keyID, window.Name); ok && resetAt > from {
+		out.ResetAt = resetAt
+		counted = resetAt
+	}
+	align := func(ts int64) int64 {
+		shifted := ts + offsetSeconds
+		return shifted - ((shifted%size)+size)%size - offsetSeconds
+	}
+	first := align(from)
+	for start := first; start <= to; start += size {
+		out.Buckets = append(out.Buckets, UsageBucket{Start: max(start, from), End: min(start+size, to)})
+	}
+	rows, err := s.db.QueryContext(ctx, `select requested_at, coalesce(failed, 0), coalesce(billing_pending, 0), coalesce(cost, 0)
+		from usage_events where key_id = ? and requested_at >= ? and requested_at <= ?`, keyID, counted, to)
+	if err != nil {
+		return UsageSeries{}, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var ts int64
+		var failed, pending int
+		var cost float64
+		if err := rows.Scan(&ts, &failed, &pending, &cost); err != nil {
+			return UsageSeries{}, err
+		}
+		idx := int((align(ts) - first) / size)
+		if idx < 0 || idx >= len(out.Buckets) {
+			continue
+		}
+		item := &out.Buckets[idx]
+		item.Calls++
+		if failed != 0 {
+			item.Failed++
+		}
+		if pending != 0 {
+			item.BillingPending++
+			continue
+		}
+		item.Cost += cost
+		out.TotalCost += cost
+	}
+	return out, rows.Err()
+}
+
+// WindowRecoveryAt answers when an exhausted rolling window falls back under
+// limit if no new usage arrives. The quota check blocks at used >= limit, so
+// recovery is the moment enough of the oldest settled spend leaves the window.
+// ok is false when the window is not exhausted, does not roll, or cannot
+// recover through aging alone (a zero limit).
+func (s *Store) WindowRecoveryAt(ctx context.Context, keyID string, window Window, limit float64) (time.Time, bool, error) {
+	duration := RollingWindowDuration(window.Name)
+	if duration <= 0 || keyID == "" || keyID == "all" || limit <= 0 {
+		return time.Time{}, false, nil
+	}
+	from := window.From.Unix()
+	if resetAt, ok := s.ResetAt(ctx, keyID, window.Name); ok && resetAt > from {
+		from = resetAt
+	}
+	rows, err := s.db.QueryContext(ctx, `select requested_at, coalesce(cost, 0) from usage_events
+		where key_id = ? and requested_at >= ? and requested_at <= ? and coalesce(billing_pending, 0) = 0
+		order by requested_at asc, id asc`, keyID, from, window.To.Unix())
+	if err != nil {
+		return time.Time{}, false, err
+	}
+	defer rows.Close()
+	type spend struct {
+		ts   int64
+		cost float64
+	}
+	var items []spend
+	total := 0.0
+	for rows.Next() {
+		var item spend
+		if err := rows.Scan(&item.ts, &item.cost); err != nil {
+			return time.Time{}, false, err
+		}
+		items = append(items, item)
+		total += item.cost
+	}
+	if err := rows.Err(); err != nil {
+		return time.Time{}, false, err
+	}
+	if total < limit {
+		return time.Time{}, false, nil
+	}
+	remaining := total
+	for _, item := range items {
+		remaining -= item.cost
+		if remaining < limit {
+			// UsageSum keeps rows with requested_at >= now-duration, so a row
+			// stops counting one second after it is exactly duration old.
+			return time.Unix(item.ts, 0).Add(duration + time.Second), true, nil
+		}
+	}
+	return time.Time{}, false, nil
+}
+
 func (s *Store) RecentEvents(ctx context.Context, keyID string, limit int) ([]UsageEvent, error) {
 	if limit <= 0 || limit > 200 {
 		limit = 100
@@ -1188,7 +1713,8 @@ func (s *Store) RecentEvents(ctx context.Context, keyID string, limit int) ([]Us
 		coalesce(endpoint, ''), requested_at, coalesce(latency_ms, 0), coalesce(ttft_ms, 0),
 		coalesce(reasoning_effort, ''), coalesce(service_tier, ''), coalesce(status_code, 0), coalesce(failed, 0), coalesce(failure, ''),
 		coalesce(input_tokens, 0), coalesce(output_tokens, 0), coalesce(cached_tokens, 0), coalesce(cache_read_tokens, 0),
-		coalesce(cache_creation_tokens, 0), coalesce(reasoning_tokens, 0), coalesce(total_tokens, 0), coalesce(cost, 0), coalesce(cost_breakdown_json, '{}')
+		coalesce(cache_creation_tokens, 0), coalesce(reasoning_tokens, 0), coalesce(total_tokens, 0), coalesce(cost, 0), coalesce(cost_breakdown_json, '{}'),
+		coalesce(billing_pending, 0), coalesce(billing_pending_reason, ''), coalesce(billing_price_model, '')
 		from usage_events`
 	args := []any{}
 	if keyID != "" && keyID != "all" {
@@ -1207,6 +1733,7 @@ func (s *Store) RecentEvents(ctx context.Context, keyID string, limit int) ([]Us
 		var event UsageEvent
 		var ts int64
 		var failed int
+		var billingPending int
 		var breakdown string
 		if err := rows.Scan(
 			&event.RequestID, &event.KeyID, &event.KeyPreview, &event.Model, &event.RequestedModel, &event.ActualModel,
@@ -1214,11 +1741,13 @@ func (s *Store) RecentEvents(ctx context.Context, keyID string, limit int) ([]Us
 			&event.ReasoningEffort, &event.ServiceTier, &event.StatusCode, &failed, &event.Failure,
 			&event.Usage.InputTokens, &event.Usage.OutputTokens, &event.Usage.CachedTokens, &event.Usage.CacheReadTokens,
 			&event.Usage.CacheCreationTokens, &event.Usage.ReasoningTokens, &event.Usage.TotalTokens, &event.Cost, &breakdown,
+			&billingPending, &event.BillingReason, &event.BillingModel,
 		); err != nil {
 			return nil, err
 		}
 		event.RequestedAt = time.Unix(ts, 0)
 		event.Failed = failed != 0
+		event.BillingPending = billingPending != 0
 		_ = json.Unmarshal([]byte(breakdown), &event.CostBreakdown)
 		out = append(out, event)
 	}
@@ -1238,7 +1767,8 @@ func (s *Store) RecentEventsWindow(ctx context.Context, keyID string, window Win
 		coalesce(endpoint, ''), requested_at, coalesce(latency_ms, 0), coalesce(ttft_ms, 0),
 		coalesce(reasoning_effort, ''), coalesce(service_tier, ''), coalesce(status_code, 0), coalesce(failed, 0), coalesce(failure, ''),
 		coalesce(input_tokens, 0), coalesce(output_tokens, 0), coalesce(cached_tokens, 0), coalesce(cache_read_tokens, 0),
-		coalesce(cache_creation_tokens, 0), coalesce(reasoning_tokens, 0), coalesce(total_tokens, 0), coalesce(cost, 0), coalesce(cost_breakdown_json, '{}')
+		coalesce(cache_creation_tokens, 0), coalesce(reasoning_tokens, 0), coalesce(total_tokens, 0), coalesce(cost, 0), coalesce(cost_breakdown_json, '{}'),
+		coalesce(billing_pending, 0), coalesce(billing_pending_reason, ''), coalesce(billing_price_model, '')
 		from usage_events where requested_at >= ? and requested_at <= ?`
 	args := []any{from, window.To.Unix()}
 	if keyID != "" && keyID != "all" {
@@ -1257,6 +1787,7 @@ func (s *Store) RecentEventsWindow(ctx context.Context, keyID string, window Win
 		var event UsageEvent
 		var ts int64
 		var failed int
+		var billingPending int
 		var breakdown string
 		if err := rows.Scan(
 			&event.RequestID, &event.KeyID, &event.KeyPreview, &event.Model, &event.RequestedModel, &event.ActualModel,
@@ -1264,11 +1795,13 @@ func (s *Store) RecentEventsWindow(ctx context.Context, keyID string, window Win
 			&event.ReasoningEffort, &event.ServiceTier, &event.StatusCode, &failed, &event.Failure,
 			&event.Usage.InputTokens, &event.Usage.OutputTokens, &event.Usage.CachedTokens, &event.Usage.CacheReadTokens,
 			&event.Usage.CacheCreationTokens, &event.Usage.ReasoningTokens, &event.Usage.TotalTokens, &event.Cost, &breakdown,
+			&billingPending, &event.BillingReason, &event.BillingModel,
 		); err != nil {
 			return nil, err
 		}
 		event.RequestedAt = time.Unix(ts, 0)
 		event.Failed = failed != 0
+		event.BillingPending = billingPending != 0
 		_ = json.Unmarshal([]byte(breakdown), &event.CostBreakdown)
 		out = append(out, event)
 	}

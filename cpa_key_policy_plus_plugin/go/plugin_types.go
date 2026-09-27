@@ -7,14 +7,21 @@ import (
 )
 
 const (
-	abiVersion    uint32 = 1
-	schemaVersion uint32 = 1
+	abiVersion uint32 = 1
+	// Schema v2 is required for request-interceptor termination responses.
+	// Below v6 CPA HTML-escapes every string in management JSON responses
+	// ("a&b" arrives as "a&amp;b"), which the admin page would show and save
+	// back escaped. v6 keeps them raw; the page escapes on render. v3–v5 only
+	// change stream-chunk and WebSocket observers, which this plugin does not use.
+	schemaVersion uint32 = 6
 
 	methodPluginRegister           = "plugin.register"
 	methodPluginReconfigure        = "plugin.reconfigure"
 	methodFrontendAuthIdentifier   = "frontend_auth.identifier"
 	methodFrontendAuthAuthenticate = "frontend_auth.authenticate"
 	methodModelRoute               = "model.route"
+	methodRequestInterceptBefore   = "request.intercept_before"
+	methodRequestInterceptAfter    = "request.intercept_after"
 	methodExecutorIdentifier       = "executor.identifier"
 	methodExecutorExecute          = "executor.execute"
 	methodExecutorExecuteStream    = "executor.execute_stream"
@@ -79,6 +86,35 @@ type modelRouteResponse struct {
 	Target      string `json:"Target,omitempty"`
 	TargetModel string `json:"TargetModel,omitempty"`
 	Reason      string `json:"Reason,omitempty"`
+}
+
+// requestInterceptRequest mirrors CPA schema-v2 RequestInterceptRequest.
+// The host sends these fields with Go's default exported-field JSON names.
+type requestInterceptRequest struct {
+	RequestID      string         `json:"RequestID"`
+	TraceID        string         `json:"TraceID"`
+	SourceFormat   string         `json:"SourceFormat"`
+	ToFormat       string         `json:"ToFormat"`
+	Model          string         `json:"Model"`
+	RequestedModel string         `json:"RequestedModel"`
+	Stream         bool           `json:"Stream"`
+	Headers        http.Header    `json:"Headers"`
+	Body           []byte         `json:"Body"`
+	Metadata       map[string]any `json:"Metadata"`
+	HostCallbackID string         `json:"host_callback_id,omitempty"`
+}
+
+// requestInterceptResponse mirrors CPA schema-v2 RequestInterceptResponse.
+// Terminate produces a direct downstream response before any upstream executor
+// or usage callback is started.
+type requestInterceptResponse struct {
+	Headers         http.Header `json:"Headers,omitempty"`
+	Body            []byte      `json:"Body,omitempty"`
+	ClearHeaders    []string    `json:"ClearHeaders,omitempty"`
+	Terminate       bool        `json:"Terminate,omitempty"`
+	StatusCode      int         `json:"StatusCode,omitempty"`
+	ResponseHeaders http.Header `json:"ResponseHeaders,omitempty"`
+	ResponseBody    []byte      `json:"ResponseBody,omitempty"`
 }
 
 type managementRegistrationResponse struct {

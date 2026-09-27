@@ -91,7 +91,7 @@ func cliproxyPluginCall(method *C.char, request *C.uint8_t, requestLen C.size_t,
 	if request != nil && requestLen > 0 {
 		requestBytes = C.GoBytes(unsafe.Pointer(request), C.int(requestLen))
 	}
-	raw, errHandle := handleMethod(C.GoString(method), requestBytes)
+	raw, errHandle := handleMethodSafely(C.GoString(method), requestBytes)
 	if errHandle != nil {
 		writeCResponse(response, errorEnvelope("plugin_error", errHandle.Error()))
 		return 1

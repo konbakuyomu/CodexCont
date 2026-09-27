@@ -35,6 +35,29 @@ func WindowFor(rangeName string, now time.Time) Window {
 	}
 }
 
+// RollingWindowDuration is the length of a rolling quota window, or zero for
+// windows that do not roll (the Beijing-time month).
+func RollingWindowDuration(rangeName string) time.Duration {
+	switch strings.ToLower(strings.TrimSpace(rangeName)) {
+	case Range5H:
+		return 5 * time.Hour
+	case Range24H:
+		return 24 * time.Hour
+	case Range7D:
+		return 7 * 24 * time.Hour
+	default:
+		return 0
+	}
+}
+
+// MonthResetAt is the start of the next Beijing-time month, when the month
+// window restarts from zero.
+func MonthResetAt(now time.Time) time.Time {
+	loc := time.FixedZone("Asia/Shanghai", 8*60*60)
+	local := now.In(loc)
+	return time.Date(local.Year(), local.Month()+1, 1, 0, 0, 0, 0, loc)
+}
+
 type QuotaDecision struct {
 	Allowed  bool     `json:"allowed"`
 	Reason   string   `json:"reason,omitempty"`

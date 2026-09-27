@@ -3,451 +3,542 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="light dark">
   <title>CPA Key Policy+</title>
+  <script>
+    // CPAMP paints its theme into this iframe only after load; read it from the
+    // parent first so the page does not flash the wrong theme.
+    (function () {
+      try {
+        if (window.parent && window.parent !== window) {
+          var theme = window.parent.document.documentElement.getAttribute("data-theme");
+          if (theme) document.documentElement.setAttribute("data-theme", theme === "dark" ? "dark" : "white");
+        }
+      } catch (_) {}
+    })();
+  </script>
   <style>{{CSS}}</style>
   <style>
-    .admin-shell { width: min(1720px, calc(100% - 32px)); }
-    .admin-board {
-      display: grid;
-      grid-template-columns: minmax(700px, 1fr) minmax(520px, 620px);
-      gap: 14px;
-      align-items: start;
+    /* Fallbacks carry CPAMP's own token values for when the page is opened
+       outside CPAMP; inside CPAMP the injected variables win. */
+    :root {
+      --kpf-bg: #ffffff;
+      --kpf-sunken: #f6faff;
+      --kpf-hover: #f1f7fe;
+      --kpf-text: #2c3e50;
+      --kpf-text-2: #5f6c7b;
+      --kpf-line: rgba(15, 23, 42, .08);
+      --kpf-line-strong: rgba(15, 23, 42, .12);
+      --kpf-primary: #409eff;
+      --kpf-success: #67c23a;
+      --kpf-warning: #e6a23c;
+      --kpf-danger: #f56c6c;
     }
-    .admin-shell .metrics {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 8px;
-      margin-bottom: 14px;
+    :root[data-theme="dark"] {
+      --kpf-bg: #181c28;
+      --kpf-sunken: rgba(255, 255, 255, .06);
+      --kpf-hover: rgba(64, 158, 255, .12);
+      --kpf-text: #e5e5e5;
+      --kpf-text-2: #a3a3a3;
+      --kpf-line: rgba(255, 255, 255, .08);
+      --kpf-line-strong: rgba(255, 255, 255, .12);
     }
-    .admin-shell .metric {
-      min-height: 42px;
-      flex: 1 1 190px;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 12px;
-      padding: 9px 12px;
-      border-radius: 8px;
+    @media (prefers-color-scheme: dark) {
+      :root:not([data-theme]) {
+        --kpf-bg: #181c28;
+        --kpf-sunken: rgba(255, 255, 255, .06);
+        --kpf-hover: rgba(64, 158, 255, .12);
+        --kpf-text: #e5e5e5;
+        --kpf-text-2: #a3a3a3;
+        --kpf-line: rgba(255, 255, 255, .08);
+        --kpf-line-strong: rgba(255, 255, 255, .12);
+      }
     }
-    .admin-shell .metric .label { font-size: 12px; }
-    .admin-shell .metric .value { margin-top: 0; font-size: 18px; white-space: nowrap; }
-    .admin-shell .metric .hint { display: none; }
-    .key-list-table { min-width: 720px; table-layout: fixed; }
-    .key-list-table th:nth-child(1) { width: 38%; }
-    .key-list-table th:nth-child(2) { width: 18%; }
-    .key-list-table th:nth-child(3) { width: 26%; }
-    .key-list-table th:nth-child(4) { width: 18%; }
-    .key-row { cursor: pointer; }
-    .key-row.selected { background: rgba(59, 130, 246, .08); }
-    .key-row td { white-space: normal; }
-    .key-title { display: grid; gap: 4px; min-width: 0; }
-    .key-title strong,
-    .key-title small { overflow-wrap: anywhere; }
-    .stack { display: grid; gap: 6px; }
-    .tag-row { display: flex; flex-wrap: wrap; gap: 6px; min-width: 0; }
-    .tag {
-      display: inline-flex;
-      align-items: center;
-      min-height: 24px;
-      padding: 0 8px;
-      border: 1px solid var(--line);
-      border-radius: 999px;
-      background: #1a2230;
-      color: #cbd5e1;
-      font-size: 12px;
-      font-weight: 720;
-      white-space: nowrap;
+    body.kp-admin {
+      --kp-figures: var(--kp-font);
+      --kp-bg: var(--bg-primary, var(--kpf-bg));
+      --kp-surface: var(--bg-primary, var(--kpf-bg));
+      --kp-sunken: var(--surface-subtle, var(--kpf-sunken));
+      --kp-hover: var(--surface-subtle-hover, var(--kpf-hover));
+      --kp-text: var(--text-primary, var(--kpf-text));
+      --kp-text-2: var(--text-secondary, var(--kpf-text-2));
+      --kp-text-3: var(--text-secondary, var(--kpf-text-2));
+      --kp-line: var(--border-color, var(--kpf-line));
+      --kp-line-strong: var(--border-primary, var(--kpf-line-strong));
+      --kp-accent: var(--primary-color, var(--kpf-primary));
+      --kp-accent-ink: var(--primary-contrast, #ffffff);
+      --kp-ok: var(--success-color, var(--kpf-success));
+      --kp-warn: var(--warning-color, var(--kpf-warning));
+      --kp-over: var(--danger-color, var(--kpf-danger));
+      --kp-pending: var(--primary-color, var(--kpf-primary));
+      --kp-ok-ink: color-mix(in srgb, var(--kp-ok) 45%, var(--kp-text));
+      --kp-warn-ink: color-mix(in srgb, var(--kp-warn) 45%, var(--kp-text));
+      --kp-over-ink: color-mix(in srgb, var(--kp-over) 55%, var(--kp-text));
+      --kp-pending-ink: color-mix(in srgb, var(--kp-pending) 55%, var(--kp-text));
+      --kp-radius: var(--app-radius-md, 12px);
+      --kp-radius-sm: var(--app-radius-sm, 8px);
+      --kp-focus: var(--kp-accent);
+      --kp-meter-fill: var(--kp-accent);
+      padding: 20px 24px 0;
     }
-    .tag.warn { color: #ffd893; border-color: rgba(244, 185, 66, .3); background: var(--amber-soft); }
-    .tag.ok { color: #a9f2a2; border-color: rgba(104, 214, 95, .28); background: var(--green-soft); }
-    .tag.bad { color: #ffb8b8; border-color: rgba(248, 113, 113, .3); background: var(--red-soft); }
-    .tag.soft { color: #a9c8ff; border-color: rgba(59, 130, 246, .28); background: var(--blue-soft); }
-    .status-summary { display: grid; gap: 5px; }
-    .bar {
-      height: 5px;
-      margin-top: 7px;
-      border-radius: 999px;
-      background: #0e1420;
-      overflow: hidden;
-    }
-    .bar > span {
-      display: block;
-      height: 100%;
-      width: 0;
-      border-radius: inherit;
-      background: var(--blue);
-    }
-    .bar.warn > span { background: var(--amber); }
-    .bar.bad > span { background: var(--red); }
-    .detail-panel { position: sticky; top: 14px; }
-    .detail-body { display: grid; gap: 12px; }
-    .detail-summary {
-      display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: 8px;
-    }
-    .summary-card {
-      min-width: 0;
-      padding: 10px;
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      background: #111722;
-    }
-    .summary-card small { display: block; margin-bottom: 4px; }
-    .summary-card strong { overflow-wrap: anywhere; }
-    .field-grid {
-      display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 10px;
-    }
-    .field-grid label,
-    .field {
-      display: grid;
-      gap: 6px;
-      color: var(--muted);
-      font-size: 12px;
-      font-weight: 720;
-    }
-    .field-grid .span-2 { grid-column: span 2; }
-    .field-grid input,
-    .field-grid select { width: 100%; min-width: 0; }
-    .quota-editor {
-      display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 10px;
-    }
-    .quota-card {
-      display: grid;
-      gap: 9px;
-      min-width: 0;
-      padding: 11px;
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      background: #111722;
-    }
-    .quota-card-head {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 8px;
-    }
-    .quota-values {
-      display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: 7px;
-      margin: 0;
-    }
-    .quota-values div { min-width: 0; }
-    .quota-values dt {
-      color: var(--muted);
-      font-size: 11px;
-      font-weight: 720;
-    }
-    .quota-values dd {
-      margin: 2px 0 0;
-      font-weight: 780;
-      overflow-wrap: anywhere;
-    }
-    .quota-limit-field {
-      display: grid;
-      gap: 5px;
-      color: var(--muted);
-      font-size: 12px;
-      font-weight: 720;
-    }
-    .quota-card input { width: 100%; min-width: 0; }
-    .model-summary {
-      display: grid;
-      gap: 8px;
-      padding: 10px;
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      background: #111722;
-    }
-    .section-title {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 8px;
-      padding-top: 4px;
-    }
-    .admin-shell button {
-      transform: translateY(0);
-      transition: border-color .18s ease, background .18s ease, color .18s ease, transform .12s ease, box-shadow .18s ease;
-    }
-    .admin-shell button:hover:not(:disabled) {
-      transform: translateY(-1px);
-      box-shadow: 0 8px 20px rgba(0, 0, 0, .18);
-    }
-    .admin-shell button:active:not(:disabled) { transform: translateY(0); }
-    .admin-shell button.is-busy {
-      border-color: rgba(59, 130, 246, .48);
-      color: #c8dcff;
-    }
-    .admin-shell button.is-busy::before {
-      content: "";
-      width: 10px;
-      height: 10px;
-      border: 2px solid currentColor;
-      border-right-color: transparent;
-      border-radius: 999px;
-      animation: spin .72s linear infinite;
-    }
-    .admin-shell button.is-done {
-      border-color: rgba(104, 214, 95, .38);
-      background: var(--green-soft);
-      color: #a9f2a2;
-    }
-    .modal-action-group {
-      display: flex;
-      flex-wrap: wrap;
-      align-items: center;
-      gap: 8px;
-    }
-    .modal-backdrop {
-      position: fixed;
-      inset: 0;
-      z-index: 40;
-      display: none;
-      align-items: center;
-      justify-content: center;
-      padding: 20px;
-      background: rgba(5, 10, 18, .72);
-    }
-    .modal-backdrop.open { display: flex; }
-    .modal {
-      width: min(980px, 100%);
-      max-height: min(88vh, 920px);
-      display: flex;
-      flex-direction: column;
-      border: 1px solid var(--line-strong);
-      border-radius: 8px;
-      background: #151b27;
-      box-shadow: 0 24px 70px rgba(0, 0, 0, .42);
-      overflow: hidden;
-    }
-    .modal-head,
-    .modal-foot {
-      padding: 14px;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 10px;
-      border-bottom: 1px solid var(--line);
-    }
-    .modal-foot {
-      border-top: 1px solid var(--line);
-      border-bottom: 0;
-      justify-content: flex-end;
-    }
-    .modal-body { padding: 14px; overflow: auto; }
-    .selector-layout {
-      display: grid;
-      grid-template-columns: 1fr;
-      gap: 12px;
-      margin-top: 12px;
-    }
-    .model-list {
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      background: #111722;
-      overflow: hidden;
-    }
-    .model-list-head {
-      min-height: 44px;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 8px;
-      padding: 10px;
-      border-bottom: 1px solid var(--line);
-    }
-    .model-items { max-height: 390px; overflow: auto; padding: 6px; }
-    .model-option {
-      display: grid;
-      grid-template-columns: 24px 1fr;
-      gap: 8px;
-      align-items: start;
-      padding: 8px;
-      border-radius: 7px;
-      cursor: pointer;
-    }
-    .model-option:hover { background: rgba(148, 163, 184, .07); }
-    .model-option input { min-height: auto; margin-top: 3px; }
-    .model-option strong { font-size: 13px; overflow-wrap: anywhere; }
-    .model-meta { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 4px; }
-    .selected-chips { min-height: 34px; display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 0 0; }
-    .chip-button { border: 0; min-height: 20px; padding: 0 2px; background: transparent; color: inherit; font-weight: 900; }
-    .notice {
-      margin-top: 10px;
-      padding: 10px;
-      border: 1px solid rgba(244, 185, 66, .26);
-      border-radius: 8px;
-      background: var(--amber-soft);
-      color: #ffd893;
-      font-size: 12px;
-    }
-    @media (max-width: 1180px) {
-      .admin-board { grid-template-columns: 1fr; }
-      .detail-panel { position: static; }
-    }
-    @media (max-width: 820px) {
-      .admin-shell { width: min(1800px, calc(100% - 20px)); }
-      .field-grid,
-      .selector-layout,
-      .detail-summary,
-      .quota-editor,
-      .quota-values { grid-template-columns: 1fr; }
-      .field-grid .span-2 { grid-column: auto; }
-      .quota-card { grid-template-columns: 1fr; }
-      .modal-backdrop { align-items: stretch; padding: 10px; }
-      .modal { max-height: calc(100vh - 20px); }
-    }
-    @keyframes spin {
-      to { transform: rotate(360deg); }
+
+    .admin { max-width: 1480px; margin: 0 auto; }
+    .admin-head { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 12px 24px; }
+    .admin-head h1 { font-size: 1.5rem; font-weight: 700; line-height: 1.3; }
+    .admin-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+    .sync { display: flex; align-items: center; gap: 7px; margin-right: 4px; font-size: var(--kp-fs-sm); color: var(--kp-text-2); }
+    .sync b { font-weight: 600; color: var(--kp-text-2); }
+    .sync-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--kp-text-2); }
+    .sync[data-state="ok"] .sync-dot { background: var(--kp-ok); }
+    .sync[data-state="warn"] .sync-dot { background: var(--kp-warn); }
+    .sync[data-state="bad"] .sync-dot { background: var(--kp-over); }
+    .sync[data-state="warn"] b { color: var(--kp-warn-ink); }
+    .sync[data-state="bad"] b { color: var(--kp-over-ink); }
+    .sync[data-state="info"] .sync-dot { background: transparent; border: 2px solid var(--kp-accent); border-right-color: transparent; animation: kp-spin .8s linear infinite; }
+
+    .facts-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 22px; margin-top: 16px; padding: 10px 14px; border-radius: var(--kp-radius-sm); background: var(--kp-sunken); font-size: var(--kp-fs-sm); color: var(--kp-text-2); }
+    .fact b { margin-right: 6px; font-size: var(--kp-fs-md); font-weight: 700; color: var(--kp-text); font-variant-numeric: tabular-nums; }
+    .fact.is-warn b { color: var(--kp-warn-ink); }
+    .fact-price { margin-left: auto; }
+    .fact-price b { margin-right: 0; font-size: var(--kp-fs-sm); font-weight: 600; color: var(--kp-text-2); }
+    .fact-price + .fact-price { margin-left: 0; }
+
+    .section-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-bottom: 10px; }
+    .section-head h2 { font-size: var(--kp-fs-lg); font-weight: 700; }
+    .count { min-width: 22px; padding: 0 7px; border-radius: 999px; background: var(--kp-sunken); font-size: var(--kp-fs-xs); font-weight: 700; line-height: 20px; text-align: center; color: var(--kp-text-2); }
+    .count:empty { display: none; }
+
+    .inbox { margin-top: 22px; }
+    .todo-list { display: grid; }
+    .todo { display: grid; grid-template-columns: 8px minmax(0, 1fr) auto; align-items: center; gap: 12px; padding: 10px 2px; border-bottom: 1px solid var(--kp-line); }
+    .todo:first-child { border-top: 1px solid var(--kp-line); }
+    .todo-mark { width: 8px; height: 8px; border-radius: 2px; background: var(--kp-text-2); }
+    .sev-over .todo-mark { background: var(--kp-over); }
+    .sev-warn .todo-mark { background: var(--kp-warn); }
+    .sev-pending .todo-mark { background: var(--kp-pending); }
+    .todo-main { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 10px; min-width: 0; }
+    .todo-name { font-weight: 700; overflow-wrap: anywhere; }
+    .todo-text { color: var(--kp-text-2); overflow-wrap: anywhere; }
+    .sev-over .todo-text { color: var(--kp-over-ink); }
+    .sev-pending .todo-text { color: var(--kp-pending-ink); }
+    .todo-clear { grid-template-columns: minmax(0, 1fr); color: var(--kp-text-2); }
+    .todo-clear .todo-main { color: var(--kp-text-2); }
+
+    .keys { margin-top: 26px; }
+    .keys-search { width: min(280px, 100%); margin-left: auto; }
+    .table-scroll { overflow-x: auto; }
+    .key-table { width: 100%; min-width: 900px; border-collapse: collapse; }
+    .key-table th { padding: 9px 10px; border-bottom: 1px solid var(--kp-line); font-size: var(--kp-fs-xs); font-weight: 600; text-align: left; white-space: nowrap; color: var(--kp-text-2); }
+    .key-table td { padding: 10px; border-bottom: 1px solid var(--kp-line); vertical-align: middle; }
+    .key-table .r { text-align: right; }
+    .key-row { cursor: pointer; transition: background-color .15s ease; }
+    .key-row:hover, .key-row.is-open { background: var(--kp-hover); }
+    .c-key { min-width: 220px; }
+    .key-toggle { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; cursor: pointer; }
+    .key-chev { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; transition: transform .2s var(--kp-ease); }
+    .is-open .key-chev { transform: rotate(90deg); }
+    .key-id { display: grid; min-width: 0; }
+    .key-name { font-weight: 700; overflow-wrap: anywhere; }
+    .key-prev { font-size: var(--kp-fs-xs); }
+    .key-badges { display: flex; flex-wrap: wrap; gap: 4px; margin: 4px 0 0 22px; }
+    .key-badges:empty { display: none; }
+    .badge { padding: 0 6px; border: 1px solid var(--kp-line-strong); border-radius: 4px; font-size: 11px; font-weight: 600; line-height: 18px; color: var(--kp-text-2); }
+    .badge-dirty { border-color: var(--kp-warn); color: var(--kp-warn-ink); }
+    .badge-hold { border-color: var(--kp-pending); color: var(--kp-pending-ink); }
+    .c-num { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+    .c-q { width: 12%; min-width: 118px; }
+    .q-top { display: flex; align-items: baseline; justify-content: space-between; gap: 6px; }
+    .q-pct { font-variant-numeric: tabular-nums; white-space: nowrap; }
+    .q-note { margin-top: 3px; font-size: var(--kp-fs-xs); color: var(--kp-text-3); white-space: nowrap; }
+    .q-note.st-warn { color: var(--kp-warn-ink); }
+    .q-amt { font-size: var(--kp-fs-xs); color: var(--kp-text-2); white-space: nowrap; }
+    .c-q .meter { height: 4px; margin-top: 5px; }
+    .empty { padding: 28px 12px; text-align: center; color: var(--kp-text-2); }
+
+    .ed-row > td { padding: 0 0 4px; background: var(--kp-hover); }
+    .editor { display: grid; gap: 14px; margin: 0 10px 10px; padding: 16px; border: 1px solid var(--kp-line); border-radius: var(--kp-radius-sm); background: var(--kp-surface); }
+    .ed-grid { display: grid; grid-template-columns: minmax(220px, 300px) minmax(0, 1fr); gap: 14px 28px; }
+    .ed-block h3 { margin-bottom: 10px; font-size: var(--kp-fs-sm); font-weight: 700; }
+    .ed-block + .ed-block { padding-top: 14px; border-top: 1px solid var(--kp-line); }
+    .ed-grid .ed-block + .ed-block { padding-top: 0; border-top: 0; }
+    .ed-check { display: flex; align-items: center; gap: 8px; min-height: 34px; cursor: pointer; }
+    .ed-check input { width: 16px; height: 16px; margin: 0; accent-color: var(--kp-accent); }
+    .ed-field, .ed-win { display: grid; gap: 5px; margin-top: 8px; }
+    .ed-label { font-size: var(--kp-fs-xs); font-weight: 600; color: var(--kp-text-2); }
+    .ed-hint { margin-top: 8px; font-size: var(--kp-fs-xs); color: var(--kp-text-2); }
+    .ed-windows { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+    .ed-windows .ed-win { margin-top: 0; }
+    .ed-proj { font-size: var(--kp-fs-xs); color: var(--kp-text-2); font-variant-numeric: tabular-nums; }
+    .ed-proj.st-warn { color: var(--kp-warn-ink); font-weight: 600; }
+    .ed-proj.st-over { color: var(--kp-over-ink); font-weight: 600; }
+    .ed-alert { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; padding: 10px 12px; border: 1px solid var(--kp-line-strong); border-radius: var(--kp-radius-sm); background: var(--kp-sunken); color: var(--kp-text); }
+    .ed-alert.sev-pending { border-color: color-mix(in srgb, var(--kp-pending) 45%, transparent); }
+    .ed-alert.sev-over { border-color: color-mix(in srgb, var(--kp-over) 45%, transparent); color: var(--kp-over-ink); }
+    .ed-alert.sev-ok { border-color: color-mix(in srgb, var(--kp-ok) 45%, transparent); color: var(--kp-ok-ink); }
+    .ed-models-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+    .ed-models-head h3 { margin: 0; }
+    .ed-models-head b { font-weight: 600; color: var(--kp-text-2); }
+    .ed-models-head .btn { margin-left: auto; }
+    .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+    .chip { display: inline-flex; align-items: center; gap: 4px; min-height: 24px; padding: 0 8px; border: 1px solid var(--kp-line-strong); border-radius: 6px; background: var(--kp-sunken); font-size: var(--kp-fs-xs); font-weight: 600; }
+    .chip.is-unpriced { border-color: var(--kp-warn); }
+    .chip-x { width: 18px; height: 18px; padding: 0; border: 0; border-radius: 4px; background: transparent; color: inherit; line-height: 1; cursor: pointer; }
+    .chip-x svg { width: 10px; height: 10px; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
+    .chips-empty { font-size: var(--kp-fs-xs); color: var(--kp-text-2); }
+    .picker { display: grid; gap: 10px; margin-top: 12px; padding: 12px; border: 1px solid var(--kp-line); border-radius: var(--kp-radius-sm); background: var(--kp-sunken); }
+    .picker-tools { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 8px; }
+    .picker-add { display: flex; gap: 8px; }
+    .picker-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+    .picker-source { flex: 1 1 200px; font-size: var(--kp-fs-xs); color: var(--kp-text-2); }
+    .picker-warn { display: grid; gap: 4px; font-size: var(--kp-fs-xs); }
+    .picker-warn:empty { display: none; }
+    .picker-warn .st-warn { font-weight: 600; }
+    .picker-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 2px 12px; max-height: 320px; overflow: auto; padding: 4px; border-radius: 6px; background: var(--kp-surface); }
+    .opt { display: grid; grid-template-columns: 18px minmax(0, 1fr); gap: 8px; align-items: start; padding: 7px 8px; border-radius: 6px; cursor: pointer; }
+    .opt:hover { background: var(--kp-hover); }
+    .opt input { width: 15px; height: 15px; margin: 2px 0 0; accent-color: var(--kp-accent); }
+    .opt-name { display: block; font-weight: 600; overflow-wrap: anywhere; }
+    .opt-meta { display: block; font-size: 11px; color: var(--kp-text-2); overflow-wrap: anywhere; }
+    .opt-warn { display: block; font-size: 11px; font-weight: 600; color: var(--kp-warn-ink); }
+    .ed-resets { display: flex; flex-wrap: wrap; gap: 8px; }
+
+    .savebar { position: sticky; bottom: 0; z-index: 5; display: flex; flex-wrap: wrap; align-items: center; gap: 10px 12px; margin: 18px -24px 0; padding: 12px 24px; border-top: 1px solid var(--kp-line-strong); background: var(--kp-bg); box-shadow: 0 -8px 20px -16px rgba(15, 23, 42, .5); }
+    .savebar[hidden] { display: none; }
+    .savebar-text { flex: 1 1 260px; min-width: 0; font-size: var(--kp-fs-sm); color: var(--kp-warn-ink); font-weight: 600; overflow-wrap: anywhere; }
+    .page-end { height: 24px; }
+
+
+    /* Carpool pools: one block per upstream account */
+    .pools { margin-top: 26px; }
+    .pools-new { margin-left: auto; }
+    .pool-list { display: grid; gap: 16px; }
+    .pool { border: 1px solid var(--kp-line-strong); border-radius: var(--kp-radius); background: var(--kp-surface); }
+    .pool-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; padding: 14px 16px 12px; border-bottom: 1px solid var(--kp-line); }
+    .pool-name { min-width: 0; margin-right: auto; }
+    .pool-name h3 { font-size: var(--kp-fs-md); font-weight: 700; line-height: 1.35; }
+    .pool-acct { margin-top: 2px; font-size: var(--kp-fs-xs); color: var(--kp-text-2); overflow-wrap: anywhere; }
+    .pool-live { display: flex; align-items: center; gap: 7px; font-size: var(--kp-fs-xs); color: var(--kp-text-2); }
+    .pool-live b { font-weight: 600; }
+    .pool-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--kp-text-2); }
+    .pool-live[data-state="live"] .pool-dot { background: var(--kp-ok); }
+    .pool-live[data-state="stale"] .pool-dot,
+    .pool-live[data-state="reset_pending"] .pool-dot { background: transparent; border: 1.5px solid var(--kp-text-2); }
+    .pool-body { display: grid; gap: 14px; padding: 14px 16px 16px; }
+
+    .pool-figs { display: grid; grid-template-columns: minmax(150px, 1.3fr) repeat(4, minmax(110px, 1fr)); gap: 12px 20px; margin: 0; }
+    .pool-figs.has-short { grid-template-columns: minmax(150px, 1.3fr) repeat(5, minmax(104px, 1fr)); }
+    .pf { min-width: 0; color: var(--kp-text-2); }
+    .pf dt { font-size: var(--kp-fs-xs); font-weight: 600; }
+    .pf dd { margin: 3px 0 0; }
+    .pf b { display: block; color: var(--kp-text); font-size: var(--kp-fs-lg); font-weight: 700; font-variant-numeric: tabular-nums; line-height: 1.3; white-space: nowrap; }
+    .pf .pf-big { font-size: var(--kp-fs-xl); }
+    .pf-sub { margin-top: 2px; font-size: var(--kp-fs-xs); color: var(--kp-text-2); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+    .pf .meter { height: 5px; margin-top: 6px; }
+    .pf.is-over b { color: var(--kp-over-ink); }
+    .pf.is-warn b { color: var(--kp-warn-ink); }
+
+    .pool-chart { display: grid; gap: 6px; }
+    .chart-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 12px; }
+    .chart-title { font-size: var(--kp-fs-sm); font-weight: 700; }
+    .chart-note { font-size: var(--kp-fs-xs); color: var(--kp-text-2); }
+    .pool-seg { display: inline-flex; overflow: hidden; border: 1px solid var(--kp-line-strong); border-radius: var(--kp-radius-sm); }
+    .pool-seg button { min-height: 28px; padding: 0 12px; border: 0; background: transparent; color: var(--kp-text-2); font-size: var(--kp-fs-xs); font-weight: 600; cursor: pointer; }
+    .pool-seg button + button { border-left: 1px solid var(--kp-line-strong); }
+    .pool-seg button[aria-pressed="true"] { background: var(--kp-sunken); color: var(--kp-text); }
+    .chart-plot { position: relative; height: 150px; cursor: crosshair; touch-action: pan-y; }
+    .chart-plot svg { display: block; width: 100%; height: 100%; overflow: visible; }
+    .chart-plot:focus-visible { outline-offset: 3px; border-radius: 4px; }
+    .ch-grid { stroke: var(--kp-line); stroke-width: 1; }
+    .ch-axis { fill: var(--kp-text-2); font-size: 11px; font-variant-numeric: tabular-nums; }
+    .ch-band { fill: color-mix(in srgb, var(--kp-accent) 14%, transparent); }
+    .ch-line { fill: none; stroke: var(--kp-accent); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+    .ch-dot { fill: var(--kp-accent); }
+    .ch-day { fill: var(--kp-surface); stroke: var(--kp-text-2); stroke-width: 1.2; }
+    .ch-now { stroke: var(--kp-text-2); stroke-width: 1; stroke-dasharray: 3 3; }
+    .ch-guide { stroke: var(--kp-text); stroke-width: 1; opacity: .35; }
+    .ch-focus { fill: var(--kp-surface); stroke: var(--kp-accent); stroke-width: 2; }
+    .chart-empty { display: grid; place-items: center; min-height: 96px; padding: 12px 16px; border-radius: var(--kp-radius-sm); background: var(--kp-sunken); font-size: var(--kp-fs-sm); color: var(--kp-text-2); text-align: center; text-wrap: pretty; }
+    .pool-list > .chart-empty { min-height: 0; padding: 16px; }
+    .chart-tip { display: block; min-height: 1.5em; font-size: var(--kp-fs-xs); color: var(--kp-text-2); font-variant-numeric: tabular-nums; }
+
+    .pool-table { width: 100%; border-collapse: collapse; }
+    .pool-table th { padding: 8px 10px; border-bottom: 1px solid var(--kp-line); font-size: var(--kp-fs-xs); font-weight: 600; text-align: left; white-space: nowrap; color: var(--kp-text-2); }
+    .pool-table td { padding: 9px 10px; border-bottom: 1px solid var(--kp-line); vertical-align: middle; }
+    .pool-table .r { text-align: right; }
+    .pm-row { cursor: pointer; transition: background-color .15s ease; }
+    .pm-row:hover, .pm-row.is-open { background: var(--kp-hover); }
+    .pm-who { display: grid; min-width: 0; }
+    .pm-name { font-weight: 700; overflow-wrap: anywhere; }
+    .pm-sub { font-size: var(--kp-fs-xs); color: var(--kp-text-2); font-variant-numeric: tabular-nums; }
+    .pm-num { font-variant-numeric: tabular-nums; white-space: nowrap; }
+    .pm-num b { font-weight: 700; }
+    .pm-state { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; font-weight: 600; }
+    .pm-mark { width: 8px; height: 8px; border-radius: 2px; background: var(--kp-text-2); }
+    .pm-state.is-ok .pm-mark { background: var(--kp-ok); }
+    .pm-state.is-near { color: var(--kp-warn-ink); }
+    .pm-state.is-near .pm-mark { background: var(--kp-warn); }
+    .pm-state.is-over { color: var(--kp-over-ink); }
+    .pm-state.is-over .pm-mark { background: var(--kp-over); }
+    .pm-state.is-burst { color: var(--kp-pending-ink); }
+    .pm-state.is-burst .pm-mark { background: var(--kp-pending); }
+    .pm-state.is-quiet { color: var(--kp-text-2); font-weight: 400; }
+    .pm-over b { color: var(--kp-over-ink); }
+    .c-heat { width: 1%; }
+
+    .heat { display: grid; grid-template-columns: repeat(24, 7px); grid-auto-rows: 7px; gap: 1px; }
+    .heat i, .heat-days i, .heat-legend i { display: block; border-radius: 1.5px; background: color-mix(in srgb, var(--kp-text) 8%, transparent); }
+    .heat i.l1, .heat-days i.l1, .heat-legend i.l1 { background: color-mix(in srgb, var(--kp-accent) 28%, var(--kp-surface)); }
+    .heat i.l2, .heat-days i.l2, .heat-legend i.l2 { background: color-mix(in srgb, var(--kp-accent) 48%, var(--kp-surface)); }
+    .heat i.l3, .heat-days i.l3, .heat-legend i.l3 { background: color-mix(in srgb, var(--kp-accent) 72%, var(--kp-surface)); }
+    .heat i.l4, .heat-days i.l4, .heat-legend i.l4 { background: var(--kp-accent); }
+    .heat i.is-future { background: transparent; box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--kp-text) 8%, transparent); }
+    .pm-days > td { padding: 6px 10px 14px; background: var(--kp-hover); }
+    .days-wrap { display: grid; gap: 6px; }
+    .days-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 6px 16px; font-size: var(--kp-fs-xs); color: var(--kp-text-2); }
+    .days-head b { color: var(--kp-text); font-weight: 700; }
+    .heat-days { display: grid; grid-template-columns: repeat(30, minmax(10px, 1fr)); gap: 3px; max-width: 720px; }
+    .heat-days i { aspect-ratio: 1; min-height: 10px; }
+    .heat-axis { display: grid; grid-template-columns: repeat(30, minmax(10px, 1fr)); gap: 3px; max-width: 720px; font-size: 10px; color: var(--kp-text-2); font-variant-numeric: tabular-nums; }
+    .heat-axis div { white-space: nowrap; }
+    .heat-legend { display: flex; align-items: center; gap: 3px; font-size: 10px; color: var(--kp-text-2); }
+    .heat-legend i { width: 8px; height: 8px; }
+
+    .pool-foot { display: flex; flex-wrap: wrap; gap: 4px 16px; font-size: var(--kp-fs-xs); color: var(--kp-text-2); font-variant-numeric: tabular-nums; }
+    .pool-foot abbr { text-decoration: underline dotted; text-underline-offset: 3px; cursor: help; }
+    .pool-warn { display: grid; gap: 4px; }
+    .pool-warn div { display: flex; gap: 8px; align-items: baseline; font-size: var(--kp-fs-xs); color: var(--kp-warn-ink); }
+    .pool-warn div::before { content: ""; flex: none; width: 7px; height: 7px; border-radius: 2px; background: var(--kp-warn); transform: translateY(-1px); }
+    .pool-warn div.is-note { color: var(--kp-text-2); }
+    .pool-warn div.is-note::before { background: var(--kp-ok); }
+
+    .burst { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; padding: 10px 12px; border-radius: var(--kp-radius-sm); background: var(--kp-sunken); }
+    .burst-text { flex: 1 1 280px; min-width: 0; font-size: var(--kp-fs-sm); color: var(--kp-text-2); text-wrap: pretty; }
+    .burst-text b { color: var(--kp-text); }
+    .burst.is-on .burst-text b { color: var(--kp-pending-ink); }
+    .burst.is-on .burst-text b::before { content: ""; display: inline-block; width: 8px; height: 8px; margin-right: 7px; border-radius: 2px; background: var(--kp-pending); vertical-align: 1px; }
+    .burst-pick { display: grid; gap: 10px; width: 100%; }
+    .pm-days .burst { margin-bottom: 12px; }
+    .burst-opts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+    .burst-opt { display: grid; gap: 4px; padding: 10px 12px; border: 1px solid var(--kp-line-strong); border-radius: var(--kp-radius-sm); background: var(--kp-surface); cursor: pointer; }
+    .burst-opt.is-picked { border-color: var(--kp-accent); box-shadow: 0 0 0 1px var(--kp-accent); }
+    .burst-opt input { margin: 0 6px 0 0; accent-color: var(--kp-accent); }
+    .burst-opt-title { font-weight: 700; color: var(--kp-text); }
+    .burst-opt-text { font-size: var(--kp-fs-xs); color: var(--kp-text-2); text-wrap: pretty; }
+    .burst-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+    .burst-notify, .pe-lend { display: flex; align-items: center; gap: 8px; font-size: var(--kp-fs-sm); cursor: pointer; }
+    .burst-notify input, .pe-lend input { width: 16px; height: 16px; margin: 0; accent-color: var(--kp-accent); }
+    .settle-line { font-size: var(--kp-fs-xs); color: var(--kp-text-2); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+
+    .pool .pool-editor { margin: 0; border: 0; background: var(--kp-sunken); }
+    .pe-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 20px; }
+    .pe-field { display: grid; gap: 5px; align-content: start; }
+    .pe-members { display: grid; gap: 8px; }
+    .pe-member { display: grid; grid-template-columns: minmax(0, 1fr) 110px auto 34px; gap: 8px; align-items: center; }
+    .pe-share { display: flex; align-items: center; gap: 6px; }
+    .pe-share .input { text-align: right; font-variant-numeric: tabular-nums; }
+    .pe-role { width: 124px; }
+    .ch-prior { stroke: var(--kp-text-2); stroke-width: 1.5; stroke-dasharray: 5 4; }
+    .ch-prior-label { fill: var(--kp-text-2); font-size: 11px; }
+    .pe-owner { display: flex; align-items: center; gap: 6px; font-size: var(--kp-fs-sm); white-space: nowrap; cursor: pointer; }
+    .pe-owner input { width: 16px; height: 16px; margin: 0; accent-color: var(--kp-accent); }
+    .pe-total { font-size: var(--kp-fs-sm); font-weight: 600; font-variant-numeric: tabular-nums; }
+    .pe-total.st-over { color: var(--kp-over-ink); }
+    .pe-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+    .pe-actions .pe-delete { margin-left: auto; }
+    .pe-error { font-size: var(--kp-fs-sm); font-weight: 600; color: var(--kp-over-ink); }
+    .pe-error:empty { display: none; }
+    .select { min-height: 34px; width: 100%; min-width: 0; padding: 0 28px 0 10px; border: 1px solid var(--kp-line-strong); border-radius: var(--kp-radius-sm); background: var(--kp-surface); color: var(--kp-text); }
+
+    /* Elements that must not take CPAMP's injected button and text styling. */
+    #kp .key-toggle { min-height: 0 !important; padding: 2px 0 !important; border: 0 !important; border-radius: 6px !important; background: transparent !important; box-shadow: none !important; color: var(--kp-text) !important; font-weight: 400 !important; }
+    #kp .key-toggle:hover { background: transparent !important; color: var(--kp-text) !important; }
+    #kp .chip-x { min-height: 0 !important; padding: 0 !important; border: 0 !important; border-radius: 4px !important; background: transparent !important; color: var(--kp-text-2) !important; }
+    #kp .chip-x:hover { background: var(--kp-hover) !important; color: var(--kp-over-ink) !important; }
+    #kp .key-prev, #kp .opt-meta { color: var(--kp-text-2) !important; }
+    #kp .opt-warn { color: var(--kp-warn-ink) !important; }
+    #kp .btn.is-armed { border-color: var(--kp-over) !important; color: var(--kp-over-ink) !important; }
+    /* White on CPAMP's #409eff is 2.8:1; a deeper accent keeps the host hue at 4.9:1. */
+    #kp .btn.primary { border-color: color-mix(in srgb, var(--kp-accent) 72%, #000) !important; background: color-mix(in srgb, var(--kp-accent) 72%, #000) !important; color: #ffffff !important; }
+    #kp .btn.primary:hover:not(:disabled) { border-color: color-mix(in srgb, var(--kp-accent) 62%, #000) !important; background: color-mix(in srgb, var(--kp-accent) 62%, #000) !important; }
+    /* CPAMP tints hovered buttons with #409eff text; on light surfaces that is 2.5:1. */
+    :root:not([data-theme="dark"]) #kp .btn:hover:not(:disabled):not(.primary) { color: color-mix(in srgb, var(--kp-accent) 72%, #000) !important; }
+    @media (prefers-color-scheme: dark) { :root:not([data-theme]) #kp .btn:hover:not(:disabled):not(.primary) { color: var(--kp-accent) !important; } }
+    #kp input::placeholder { color: var(--kp-text-2) !important; opacity: .8; }
+    #kp .pool-seg button { min-height: 28px !important; padding: 0 12px !important; border: 0 !important; border-radius: 0 !important; background: transparent !important; box-shadow: none !important; color: var(--kp-text-2) !important; font-size: var(--kp-fs-xs) !important; }
+    #kp .pool-seg button + button { border-left: 1px solid var(--kp-line-strong) !important; }
+    #kp .pool-seg button[aria-pressed="true"] { background: var(--kp-sunken) !important; color: var(--kp-text) !important; }
+    #kp .pm-sub, #kp .pool-acct, #kp .pf-sub, #kp .chart-note { color: var(--kp-text-2) !important; }
+
+    @media (max-width: 860px) {
+      body.kp-admin { padding: 14px 14px 0; }
+      .fact-price { margin-left: 0; }
+      .key-table { min-width: 0; }
+      .key-table thead { display: none; }
+      .key-table, .key-table tbody, .key-table tr, .key-table td { display: block; }
+      .key-table .key-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 14px; padding: 12px 2px; border-bottom: 1px solid var(--kp-line); }
+      .key-table .key-row > td { padding: 0; border: 0; }
+      .key-row > .c-key { grid-column: 1 / -1; }
+      .key-row > td[data-label]::before { content: attr(data-label); display: block; margin-bottom: 2px; font-size: 11px; font-weight: 600; color: var(--kp-text-2); }
+      .c-num { text-align: left; }
+      .ed-row > td { padding: 0; }
+      .editor { margin: 0 0 10px; padding: 14px; }
+      .ed-grid, .picker-tools { grid-template-columns: minmax(0, 1fr); }
+      .ed-windows { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .savebar { margin: 18px -14px 0; padding: 12px 14px; }
+      .pool-figs, .pool-figs.has-short { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .pool-figs > .pf:first-child { grid-column: 1 / -1; }
+      .pool-head, .pool-body { padding-left: 12px; padding-right: 12px; }
+      .pool-table thead { display: none; }
+      .pool-table, .pool-table tbody, .pool-table tr, .pool-table td { display: block; }
+      .pool-table .pm-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 14px; padding: 10px 2px; border-bottom: 1px solid var(--kp-line); }
+      .pool-table .pm-row > td { padding: 0; border: 0; }
+      .pm-row > td:first-child, .pm-row > .c-heat { grid-column: 1 / -1; }
+      .pm-row > td[data-label]::before { content: attr(data-label); display: block; margin-bottom: 2px; font-size: 11px; font-weight: 600; color: var(--kp-text-2); }
+      .pool-table .r { text-align: left; }
+      .pool-table .c-heat { width: auto; }
+      .burst-opts, .pe-grid { grid-template-columns: minmax(0, 1fr); }
+      .pe-member { grid-template-columns: minmax(0, 1fr) 96px; }
     }
   </style>
 </head>
-<body>
-  <div class="shell admin-shell">
-    <header class="topbar">
-      <div class="brand">
-        <div class="mark">K+</div>
-        <div>
-          <h1>CPA Key Policy+</h1>
-          <p class="subtitle">Key 策略层：跟随 CPA 当前 Key，只编辑 RPM、模型白名单和额度窗口</p>
-        </div>
+<body class="kp-admin">
+  <div id="kp" class="admin">
+    <header class="admin-head">
+      <div>
+        <h1>CPA Key Policy+</h1>
       </div>
-      <div class="toolbar">
-        <span id="sync" class="chip stream info"><span class="dot"></span>准备同步</span>
-        <button id="save" class="btn primary" type="button">保存策略</button>
+      <div class="admin-actions">
+        <div id="sync" class="sync" data-state="info" role="status"><span class="sync-dot" aria-hidden="true"></span><b>准备同步</b></div>
+        <button id="reload-models" class="btn" type="button">重新获取模型</button>
         <button id="refresh" class="btn" type="button">刷新</button>
       </div>
     </header>
 
-    <section class="metrics" id="metrics"></section>
+    <div id="metrics" class="facts-row" aria-label="概况"></div>
 
-    <section class="admin-board">
-      <section class="panel">
-        <div class="panel-head">
-          <div>
-            <h2>Key 策略</h2>
-            <p>Key 的新增、删除、复制和别名在 CPA/CPAMP 管理；这里仅维护 Plus 策略。</p>
-          </div>
-          <button id="reload-models" class="btn mini" type="button">重新获取模型</button>
-        </div>
-        <div class="table-wrap">
-          <table class="data-table key-list-table">
-            <thead>
-              <tr>
-                <th>Key</th>
-                <th>启用</th>
-                <th>配额</th>
-                <th>模型</th>
-              </tr>
-            </thead>
-            <tbody id="keys-body">
-              <tr><td colspan="4" class="empty">加载中...</td></tr>
-            </tbody>
-          </table>
-        </div>
-      </section>
-
-      <aside class="panel detail-panel" id="detail-panel">
-        <div class="panel-head">
-          <div>
-            <h2>策略详情</h2>
-            <p id="detail-subtitle">选择左侧 Key 后编辑。</p>
-          </div>
-        </div>
-        <div id="detail-body" class="panel-body detail-body">
-          <div class="empty">尚未选择 Key。</div>
-        </div>
-      </aside>
+    <section class="inbox" aria-labelledby="inboxTitle">
+      <div class="section-head"><h2 id="inboxTitle">需要处理</h2><b id="inboxCount" class="count"></b></div>
+      <ul id="inbox" class="todo-list"></ul>
     </section>
-  </div>
 
-  <div id="editor-modal" class="modal-backdrop" aria-hidden="true">
-    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="editor-title">
-      <div class="modal-head">
-        <div>
-          <h2 id="editor-title">编辑模型白名单</h2>
-          <p class="subtitle">价格统一跟随 CPAMP 模型价格；这里仅选择当前 Key 允许使用的模型。</p>
-        </div>
-        <button class="btn mini" data-close="editor-modal" type="button">关闭</button>
+    <section id="pools" class="pools hidden" aria-labelledby="poolsTitle">
+      <div class="section-head">
+        <h2 id="poolsTitle">拼车</h2><b id="poolsCount" class="count"></b>
+        <button id="newPool" class="btn small pools-new" type="button">新建拼车池</button>
       </div>
-      <div class="modal-body">
-        <div class="toolbar">
-          <input id="edit-model-search" placeholder="搜索模型">
-          <input id="edit-add-model" placeholder="手动添加模型名">
-          <div class="modal-action-group">
-            <button id="edit-add-model-btn" class="btn mini" type="button">添加</button>
-            <button id="edit-select-visible" class="btn mini" type="button">全选当前结果</button>
-            <button id="edit-use-discovered" class="btn mini" type="button">套用 CPA 发现模型</button>
-            <button id="edit-clear-models" class="btn mini" type="button">清空选择</button>
-          </div>
-        </div>
-        <div id="edit-selected" class="selected-chips"></div>
-        <div id="unknown-notice" class="notice hidden"></div>
-        <div id="price-warning" class="notice hidden"></div>
-        <div class="selector-layout">
-          <div class="model-list">
-            <div class="model-list-head">
-              <h3>模型列表</h3>
-              <span id="model-source-hint" class="muted"></span>
-            </div>
-            <div id="edit-model-list" class="model-items"></div>
-          </div>
-        </div>
+      <div id="poolList" class="pool-list"></div>
+    </section>
+
+    <section class="keys" aria-labelledby="keysTitle">
+      <div class="section-head">
+        <h2 id="keysTitle">Key 策略</h2><b id="keysCount" class="count"></b>
+        <input id="keySearch" class="input keys-search" type="search" placeholder="搜索名称或 Key 预览" aria-label="搜索 Key">
       </div>
-      <div class="modal-foot">
-        <button class="btn" data-close="editor-modal" type="button">取消</button>
-        <button id="editor-apply" class="btn primary" type="button">应用到当前 Key</button>
+      <div class="table-scroll">
+        <table class="key-table">
+          <thead>
+            <tr>
+              <th scope="col">Key</th>
+              <th scope="col">状态</th>
+              <th scope="col" class="r">RPM</th>
+              <th scope="col">5 小时</th>
+              <th scope="col">24 小时</th>
+              <th scope="col">7 天</th>
+              <th scope="col">本月</th>
+              <th scope="col" class="r">模型</th>
+            </tr>
+          </thead>
+          <tbody id="keys-body">
+            <tr><td colspan="8" class="empty">加载中…</td></tr>
+          </tbody>
+        </table>
       </div>
+    </section>
+
+    <div id="savebar" class="savebar" hidden>
+      <div id="dirtyText" class="savebar-text" role="status"></div>
+      <button id="discard" class="btn" type="button">放弃改动</button>
+      <button id="save" class="btn primary" type="button">保存策略</button>
     </div>
+    <div class="page-end"></div>
   </div>
 
 <script>
 const API = String(window.CPA_KEY_POLICY_PLUS_API_BASE || "/key-policy-plus/api").replace(/\/$/, "");
+const WINDOWS = [
+  {name:"5h", label:"5 小时", field:"five_hour_usd"},
+  {name:"24h", label:"24 小时", field:"daily_usd"},
+  {name:"7d", label:"7 天", field:"weekly_usd"},
+  {name:"month", label:"本月", field:"monthly_usd"}
+];
+const RESETS = [["5h", "清 5H"], ["24h", "清 24H"], ["7d", "清 7D"], ["month", "清本月"], ["all", "清全部"]];
 const state = {
   keys: [],
+  edits: {},
   modelOptions: [],
   modelWarnings: [],
   pricing: null,
-  selectedId: "",
-  dirty: false,
-  editor: null
+  cpampAlias: null,
+  expanded: "",
+  picker: "",
+  pickerSearch: "",
+  search: "",
+  armed: {},
+  notes: {},
+  lastSync: 0,
+  pollTimer: null,
+  poolData: null,
+  poolsUnavailable: false,
+  poolChart: {},
+  poolIndex: {},
+  poolOpenMember: {},
+  poolEdit: null,
+  burstPick: {},
+  poolArmed: {}
 };
-const windows = [
-  ["5h", "5H", "five_hour_usd"],
-  ["24h", "24H", "daily_usd"],
-  ["7d", "7D", "weekly_usd"],
-  ["month", "月", "monthly_usd"]
-];
 const $ = id => document.getElementById(id);
 
 function escapeHTML(s){
   return String(s ?? "").replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
-function num(v){ const n = Number(v ?? 0); return Number.isFinite(n) ? n : 0; }
-function money(v, digits=3){
+function money(v, digits=2){
   if (v === null || v === undefined || v === "") return "未设";
   const n = Number(v);
   return Number.isFinite(n) ? "$" + n.toFixed(digits) : "未设";
 }
-function inputMoney(v){
+function limitInputValue(v){
   if (v === null || v === undefined || v === "") return "";
   const n = Number(v);
-  return Number.isFinite(n) && n > 0 ? n.toFixed(3) : "";
+  return Number.isFinite(n) ? String(Math.round(n * 1000) / 1000) : "";
 }
-function pct(v){
-  const n = Number(v);
-  if (!Number.isFinite(n)) return "-";
-  return Math.round(Math.max(0, Math.min(n, 9.99)) * 100) + "%";
+function domId(id){ return String(id).replace(/[^a-zA-Z0-9_-]/g, "_"); }
+function relTime(ms){
+  const minutes = Math.round((Date.now() - Number(ms)) / 60000);
+  if (!Number.isFinite(minutes) || minutes < 1) return "刚刚";
+  if (minutes < 60) return `${minutes} 分钟前`;
+  if (minutes < 48 * 60) return `${Math.round(minutes / 60)} 小时前`;
+  return `${Math.round(minutes / 1440)} 天前`;
+}
+function reasonText(reason){
+  const text = ({
+    model_price_unavailable: "模型价格缺失",
+    cpamp_price_unavailable: "CPAMP 价格不可用",
+    billing_price_unavailable: "计费价格不可用",
+    model_or_service_tier_price_unavailable: "模型或服务等级价格缺失"
+  })[reason];
+  return text ? `${text}（${reason}）` : (reason || "价格规则待核验");
+}
+function whenLabel(unix){
+  const d = new Date(Number(unix) * 1000);
+  const minutes = Math.round((d.getTime() - Date.now()) / 60000);
+  const hm = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+  if (minutes < 60) return `${hm}（约 ${Math.max(minutes, 1)} 分钟后）`;
+  if (minutes < 24 * 60) return `${hm}（约 ${Math.round(minutes / 60)} 小时后）`;
+  return `${d.getMonth() + 1}月${d.getDate()}日 ${hm}`;
 }
 function setSync(text, cls="info"){
-  $("sync").className = "chip stream " + cls;
-  $("sync").innerHTML = `<span class="dot"></span>${escapeHTML(text)}`;
+  $("sync").dataset.state = cls;
+  $("sync").querySelector("b").textContent = text;
 }
 function setButtonState(btn, stateText, cls){
   if (!btn) return () => {};
@@ -484,10 +575,11 @@ async function api(path, opts={}){
   const r = await fetch(API + path, {cache:"no-store", credentials:"same-origin", ...opts});
   let d = {};
   try { d = await r.json(); } catch (_) {}
-  if (!r.ok || !d.ok) throw new Error(d.message || d.error || `HTTP ${r.status}`);
+  if (!r.ok || !d.ok) throw Object.assign(new Error(d.message || d.error || `HTTP ${r.status}`), {status:r.status, data:d});
   return d;
 }
-function clone(value){ return JSON.parse(JSON.stringify(value || {})); }
+
+/* Key helpers */
 function limitsOf(k){ return k.limits || {}; }
 function usageOf(k){ return k.usage || {}; }
 function selectedModels(k){ return Array.isArray(k.models) ? [...k.models] : []; }
@@ -509,80 +601,83 @@ function optionMeta(o){
   return parts.filter(Boolean).join(" · ");
 }
 function hasGlobalModelPrice(model){ return pricedModelSet().has(String(model || "").toLowerCase()); }
-function quotaOf(k, name){
-  const q = (k.quota || {})[name] || {};
-  const limits = limitsOf(k);
-  const used = Number(q.used_usd ?? usageOf(k)[name] ?? 0);
-  const limit = q.limit_usd ?? (
-    name === "5h" ? limits.five_hour_usd :
-    name === "24h" ? limits.daily_usd :
-    name === "7d" ? limits.weekly_usd :
-    limits.monthly_usd
-  );
-  let remaining = q.remaining_usd;
-  let percent = q.percent;
-  if (remaining == null && limit != null) remaining = Math.max(Number(limit) - used, 0);
-  if (percent == null && limit != null && Number(limit) > 0) percent = used / Number(limit);
-  return {used, limit, remaining, percent};
+function findKey(id){ return state.keys.find(k => k.id === id); }
+function visibleKeys(){ return state.keys.filter(k => !k.hidden && k.source_present !== false); }
+function effective(k){
+  const e = state.edits[k.id];
+  if (!e) return k;
+  return {
+    ...k,
+    enabled: e.enabled ?? k.enabled,
+    rpm: e.rpm ?? k.rpm,
+    models: e.models ?? k.models,
+    limits: e.limits ? {...limitsOf(k), ...e.limits} : k.limits
+  };
 }
+function editOf(id){ return state.edits[id] || (state.edits[id] = {}); }
+function sameModels(a, b){
+  const left = [...new Set((a || []).map(String))].sort();
+  const right = [...new Set((b || []).map(String))].sort();
+  return left.length === right.length && left.every((v, i) => v === right[i]);
+}
+function sameLimit(a, b){
+  const na = a === null || a === undefined || a === "" ? null : Number(a);
+  const nb = b === null || b === undefined || b === "" ? null : Number(b);
+  return na === nb;
+}
+function isDirty(id){
+  const k = findKey(id);
+  const e = state.edits[id];
+  if (!k || !e) return false;
+  const next = effective(k);
+  if (Boolean(next.enabled) !== Boolean(k.enabled)) return true;
+  if (Number(next.rpm || 0) !== Number(k.rpm || 0)) return true;
+  if (!sameModels(next.models, k.models)) return true;
+  return WINDOWS.some(w => !sameLimit(limitsOf(next)[w.field], limitsOf(k)[w.field]));
+}
+function dirtyIds(){ return Object.keys(state.edits).filter(isDirty); }
 function hasAnyLimit(k){
   const limits = limitsOf(k);
-  return ["five_hour_usd","daily_usd","weekly_usd","monthly_usd"].some(f => limits[f] !== null && limits[f] !== undefined && limits[f] !== "");
+  return WINDOWS.some(w => limits[w.field] !== null && limits[w.field] !== undefined && limits[w.field] !== "");
 }
+function isWeeklyOnly(k){
+  const limits = limitsOf(k);
+  const set = (f) => limits[f] !== null && limits[f] !== undefined && limits[f] !== "";
+  return set("weekly_usd") && !set("five_hour_usd") && !set("daily_usd") && !set("monthly_usd");
+}
+function billingHoldOf(k){ return k.billing_hold || {}; }
 function policyWarnings(k){
   const warnings = [];
   if (Number(k.rpm || 0) <= 0) warnings.push("未配置 RPM");
-  if (!hasAnyLimit(k)) warnings.push("未配置费用限额");
+  const pool = k.pool || {};
+  if (!hasAnyLimit(k) && pool.role !== "member" && pool.role !== "owner") warnings.push("未配置费用限额");
+  const billingHold = billingHoldOf(k);
+  if (billingHold.active) warnings.push(`费用待核算：${billingHold.model || "未知模型"}（${billingHold.reason || "价格规则待核验"}）`);
   return warnings;
 }
-function limitHint(k){
-  const warnings = policyWarnings(k);
-  return warnings.length ? warnings.join(" · ") : "限额已配置";
+function quotaOf(k, w){
+  const used = Number(usageOf(k)[w.name] ?? 0);
+  const limit = limitsOf(k)[w.field];
+  const has = limit !== null && limit !== undefined && limit !== "";
+  const max = has ? Number(limit) : null;
+  return {
+    used,
+    limit: has ? max : null,
+    remaining: has ? Math.max(max - used, 0) : null,
+    percent: has ? (max > 0 ? used / max : (used >= max ? 1 : 0)) : null
+  };
 }
-function configuredQuotaCount(k){
-  const limits = limitsOf(k);
-  return ["five_hour_usd","daily_usd","weekly_usd","monthly_usd"].filter(f => limits[f] !== null && limits[f] !== undefined && limits[f] !== "").length;
-}
-function quotaStateText(k){
-  const count = configuredQuotaCount(k);
-  return count ? `${count}/4 额度` : "未配置配额";
-}
-function rpmStateText(k){
-  const rpm = Number(k.rpm || 0);
-  return rpm > 0 ? `RPM ${rpm}` : "RPM 未配置";
-}
-function missingPriceModels(k){
-  const models = selectedModels(k);
-  return models.filter(m => !hasGlobalModelPrice(m));
-}
+function missingPriceModels(k){ return selectedModels(k).filter(m => !hasGlobalModelPrice(m)); }
 function modelCountText(k){
   const models = selectedModels(k);
   return models.length ? `${models.length} 个模型` : "允许全部模型";
 }
-function modelPreview(k){
-  const models = selectedModels(k);
-  if (!models.length) return "空列表：允许全部模型";
-  const shown = models.slice(0, 3).join(", ");
-  return models.length > 3 ? `${shown} +${models.length - 3}` : shown;
-}
 function displayPreview(v){ return String(v || "").replace(/\.\.\./g, "…"); }
-function visibleKeys(){
-  return state.keys.filter(k => !k.hidden && k.source_present !== false);
-}
-function findKey(id){ return state.keys.find(k => k.id === id); }
-function ensureSelection(){
-  const list = visibleKeys();
-  if (state.selectedId && list.some(k => k.id === state.selectedId)) return;
-  state.selectedId = list[0]?.id || "";
-}
-function markDirty(){
-  state.dirty = true;
-  setSync("有未保存策略", "warn");
-}
-function limitValue(k, field){ return limitsOf(k)[field]; }
-function setLimitValue(k, field, value){
-  k.limits = k.limits || {};
-  k.limits[field] = nullableNumber(value);
+function keyName(k){ return k.name || k.alias || displayPreview(k.preview) || k.id; }
+function matchesSearch(k){
+  const q = state.search.trim().toLowerCase();
+  if (!q) return true;
+  return [k.name, k.alias, k.preview, displayPreview(k.preview), k.id].some(v => String(v || "").toLowerCase().includes(q));
 }
 function nullableNumber(raw){
   raw = String(raw ?? "").trim();
@@ -619,180 +714,919 @@ function keyPayload(k){
   };
 }
 
+/* Summary and inbox */
 function renderMetrics(){
-  const total = state.keys.length;
-  const enabled = state.keys.filter(k => k.enabled && k.source_present !== false).length;
-  const unlimited = state.keys.filter(k => policyWarnings(k).length).length;
-  const cost = state.keys.reduce((s,k) => s + Number(usageOf(k)["24h"] || 0), 0);
-  const priceSource = state.pricing && state.pricing.source === "cpamp_cached_price_book" ? "CPAMP 缓存价格" : state.pricing && state.pricing.source === "cpamp_price_book" ? "CPAMP 当前价格" : "价格源待同步";
+  const keys = visibleKeys().map(effective);
+  const enabled = keys.filter(k => k.enabled).length;
+  const needs = keys.filter(k => policyWarnings(k).length).length;
+  const cost = keys.reduce((s, k) => s + Number(usageOf(k)["24h"] || 0), 0);
+  const pricing = state.pricing || {};
+  const priceSource = pricing.source === "cpamp_cached_price_book" ? "CPAMP 缓存价格" : pricing.source === "cpamp_price_book" ? "CPAMP 当前价格" : "价格源待同步";
+  const priced = pricing.model_count ? ` · ${pricing.model_count} 个模型已定价` : "";
+  const synced = pricing.synced_at_ms ? ` · ${relTime(pricing.synced_at_ms)}同步` : "";
+  const alias = state.cpampAlias || {};
+  const aliasFact = !alias.configured ? `<div class="fact fact-price" title="插件状态目录下放入 cpamp-admin-key 后，自动把 Key 名同步到 CPAMP 请求监控"><b>CPAMP 别名</b> · 未接入</div>`
+    : alias.error ? `<div class="fact fact-price is-warn"><b>CPAMP 别名</b> · ${escapeHTML(alias.error)}</div>`
+    : `<div class="fact fact-price" title="CPAMP 请求监控里，这些 Key 显示为「Key 名·KP+」"><b>CPAMP 别名</b> · ${alias.synced ? `${alias.synced} 个已同步` : "同步中"}${alias.at_ms ? ` · ${escapeHTML(relTime(alias.at_ms))}` : ""}</div>`;
   $("metrics").innerHTML = `
-    <article class="metric"><div class="label">当前 Key</div><div class="value">${total}</div><div class="hint">跟随 CPA/CPAMP 当前配置</div></article>
-    <article class="metric"><div class="label">启用</div><div class="value">${enabled}</div><div class="hint">可通过右侧切换</div></article>
-    <article class="metric"><div class="label">24H 费用</div><div class="value">$${cost.toFixed(3)}</div><div class="hint">${escapeHTML(priceSource)}</div></article>
-    <article class="metric"><div class="label">需补策略</div><div class="value">${unlimited}</div><div class="hint">${unlimited ? "请补 RPM 或费用窗口" : "全部已配置"}</div></article>`;
+    <div class="fact"><b>${keys.length}</b>当前 Key</div>
+    <div class="fact"><b>${enabled}</b>启用</div>
+    <div class="fact"><b>$${cost.toFixed(2)}</b>24H 费用</div>
+    <div class="fact${needs ? " is-warn" : ""}"><b>${needs}</b>需补策略</div>
+    <div class="fact fact-price"><b>${escapeHTML(priceSource)}</b>${escapeHTML(priced + synced)}</div>${aliasFact}`;
 }
-function renderKeyList(){
-  const body = $("keys-body");
-  const list = visibleKeys();
-  if (!list.length) {
-    body.innerHTML = `<tr><td colspan="4" class="empty">暂无可显示策略。请先在 CPA/CPAMP 添加 Key，然后刷新同步。</td></tr>`;
+function inboxItems(){
+  const items = [];
+  for (const raw of visibleKeys()) {
+    const k = effective(raw);
+    const name = keyName(k);
+    const hold = billingHoldOf(raw);
+    if (hold.active) {
+      items.push({sev:"pending", id:k.id, name, text:`费用待核算 · ${hold.model || "未知模型"} ${reasonText(hold.reason)}，新请求已暂停`, action:"resolve", label:"重新结算"});
+    }
+    const missing = [];
+    if (Number(k.rpm || 0) <= 0) missing.push("RPM");
+    const pool = raw.pool || {};
+    if (!hasAnyLimit(k) && pool.role !== "member" && pool.role !== "owner") missing.push("费用额度");
+    if (missing.length) items.push({sev:"warn", id:k.id, name, text:`未配置 ${missing.join(" 和 ")}`, action:"edit", label:"去设置"});
+    for (const w of pool.usd_windows_off ? [] : WINDOWS) {
+      const q = quotaOf(raw, w);
+      if (q.limit === null) continue;
+      const row = (raw.quota || {})[w.name] || {};
+      if (q.percent >= 1) {
+        const when = w.name === "month" ? row.resets_at : row.recovers_at;
+        items.push({sev:"over", id:k.id, name, text:`${w.label}额度已用完 · ${money(q.used)} / ${money(q.limit)}${when ? ` · ${w.name === "month" ? "下月 1 日重置" : "预计 " + whenLabel(when) + " 恢复"}` : ""}`, action:"view", label:"查看"});
+      } else if (q.percent >= .8) {
+        items.push({sev:"warn", id:k.id, name, text:`${w.label}额度已用 ${Math.round(q.percent * 100)}% · 剩 ${money(q.remaining)}`, action:"view", label:"查看"});
+      }
+    }
+    const missingPrices = missingPriceModels(k);
+    if (missingPrices.length) items.push({sev:"warn", id:k.id, name, text:`${missingPrices.length} 个白名单模型未在 CPAMP 配置价格：${missingPrices.join("、")}`, action:"view", label:"查看"});
+    if (raw.inherit_conflict) items.push({sev:"warn", id:k.id, name, text:"同名历史策略存在多条候选，请人工确认模板", action:"view", label:"查看"});
+  }
+  items.push(...poolInboxItems());
+  const order = {over:0, pending:1, warn:2};
+  return items.sort((a, b) => order[a.sev] - order[b.sev]);
+}
+function renderInbox(){
+  const items = inboxItems();
+  $("inboxCount").textContent = items.length ? String(items.length) : "";
+  if (!state.keys.length) {
+    $("inbox").innerHTML = "";
     return;
   }
-  body.innerHTML = list.map(k => `
-    <tr class="key-row ${k.id === state.selectedId ? "selected" : ""}" data-select="${escapeHTML(k.id)}">
-      <td><div class="key-title"><strong>${escapeHTML(k.name || k.alias || "-")}</strong><small class="mono">${escapeHTML(displayPreview(k.preview || k.id || ""))}</small></div></td>
-      <td><span class="tag ${k.enabled ? "ok" : "bad"}">${k.enabled ? "启用" : "停用"}</span></td>
-      <td><div class="status-summary"><div class="tag-row"><span class="tag ${hasAnyLimit(k) ? "ok" : "warn"}">${escapeHTML(quotaStateText(k))}</span><span class="tag ${Number(k.rpm || 0) > 0 ? "soft" : "warn"}">${escapeHTML(rpmStateText(k))}</span></div><small>${escapeHTML(limitHint(k))}</small></div></td>
-      <td><div class="stack"><span class="tag ${selectedModels(k).length ? "soft" : "warn"}">${escapeHTML(modelCountText(k))}</span><small>${escapeHTML(modelPreview(k))}</small></div></td>
-    </tr>`).join("");
-  body.querySelectorAll("[data-select]").forEach(row => row.onclick = () => {
-    state.selectedId = row.getAttribute("data-select");
-    render();
+  if (!items.length) {
+    $("inbox").innerHTML = `<li class="todo todo-clear"><div class="todo-main">没有需要处理的事项。</div></li>`;
+    return;
+  }
+  $("inbox").innerHTML = items.map((item, index) => `<li class="todo sev-${item.sev}">
+    <div class="todo-mark" aria-hidden="true"></div>
+    <div class="todo-main"><b class="todo-name">${escapeHTML(item.name)}</b><div class="todo-text">${escapeHTML(item.text)}</div></div>
+    <button class="btn${item.action === "resolve" ? " primary" : ""}" type="button" data-todo="${index}">${escapeHTML(item.label)}</button>
+  </li>`).join("");
+  $("inbox").querySelectorAll("[data-todo]").forEach(btn => btn.onclick = (e) => {
+    e.stopPropagation();
+    const item = items[Number(btn.dataset.todo)];
+    if (!item) return;
+    if (item.action === "resolve") resolveBilling(item.id, btn);
+    else if (item.action === "pool") scrollToPool(item.pool);
+    else openEditor(item.id, item.action === "edit" ? (Number(effective(findKey(item.id)).rpm || 0) <= 0 ? "rpm" : "five_hour_usd") : "");
   });
 }
-function renderQuotaCard(key, name, label, field, disabled){
-  const q = quotaOf(key, name);
-  const percent = Number(q.percent || 0);
-  const barClass = percent >= 1 ? "bad" : percent >= .8 ? "warn" : "";
-  return `<div class="quota-card">
-    <div class="quota-card-head"><strong>${escapeHTML(label)}</strong><span class="tag ${barClass ? barClass : "soft"}">${pct(q.percent)}</span></div>
-    <dl class="quota-values">
-      <div><dt>已用</dt><dd>${money(q.used)}</dd></div>
-      <div><dt>限额</dt><dd>${money(q.limit)}</dd></div>
-      <div><dt>剩余</dt><dd>${money(q.remaining)}</dd></div>
-    </dl>
-    <div class="bar ${barClass}"><span style="width:${Math.min(percent * 100, 100)}%"></span></div>
-    <label class="quota-limit-field">编辑限额<input data-limit="${field}" type="number" min="0" step="0.001" value="${inputMoney(limitValue(key, field))}" placeholder="不限" ${disabled}></label>
+
+/* Carpool pools */
+const POOL_VIS = [["anonymous", "匿名"], ["named", "实名"], ["self", "只看自己"]];
+const usdFormat = new Intl.NumberFormat("en-US", {maximumFractionDigits: 0});
+const bjFormat = new Intl.DateTimeFormat("zh-CN", {timeZone:"Asia/Shanghai", month:"numeric", day:"numeric", hour:"2-digit", minute:"2-digit", hour12:false});
+const bjPartsFormat = new Intl.DateTimeFormat("en-US", {timeZone:"Asia/Shanghai", month:"numeric", day:"numeric", hour:"numeric", hourCycle:"h23", weekday:"short"});
+const BJ_WEEKDAY = {Sun:"周日", Mon:"周一", Tue:"周二", Wed:"周三", Thu:"周四", Fri:"周五", Sat:"周六"};
+const BJ_OFFSET_MS = 8 * 3600000;
+function bjParts(ms){
+  const p = Object.fromEntries(bjPartsFormat.formatToParts(new Date(ms)).map(x => [x.type, x.value]));
+  return {month: Number(p.month), day: Number(p.day), hour: Number(p.hour) % 24, weekday: BJ_WEEKDAY[p.weekday] || ""};
+}
+function usd(v){ const n = Number(v); return Number.isFinite(n) ? "$" + usdFormat.format(n) : "—"; }
+function pp(v, digits=2){ const n = Number(v); return Number.isFinite(n) ? n.toFixed(digits) + "%" : "—"; }
+function signedPP(v){ const n = Number(v || 0); return (n > 0 ? "+" : n < 0 ? "−" : "") + Math.abs(n).toFixed(2); }
+function bjLabel(unix){
+  if (!unix) return "—";
+  const p = Object.fromEntries(bjFormat.formatToParts(new Date(Number(unix) * 1000)).map(x => [x.type, x.value]));
+  return `${p.month}月${p.day}日 ${p.hour}:${p.minute}`;
+}
+function untilLabel(unix){
+  const minutes = Math.round((Number(unix) * 1000 - Date.now()) / 60000);
+  if (!Number.isFinite(minutes)) return "";
+  if (minutes <= 0) return "已到时间";
+  if (minutes < 60) return `约 ${minutes} 分钟后`;
+  if (minutes < 48 * 60) return `约 ${Math.round(minutes / 60)} 小时后`;
+  return `约 ${Math.round(minutes / 1440)} 天后`;
+}
+function planLabel(plan){
+  const p = String(plan || "").toLowerCase();
+  return ({pro:"Pro", plus:"Plus", team:"Team", business:"Business", enterprise:"Enterprise", free:"Free"})[p] || (p ? p : "未知套餐");
+}
+function poolKeysMap(){
+  const map = new Map();
+  for (const k of ((state.poolData || {}).keys || [])) map.set(k.id, k);
+  return map;
+}
+function poolAccount(authIndex){
+  return ((state.poolData || {}).accounts || []).find(a => a.auth_index === authIndex) || null;
+}
+function accountText(a){
+  if (!a) return "未选择账号";
+  const parts = [a.label || a.auth_index, planLabel(a.plan_type)];
+  if (a.weekly && a.weekly.used_percent != null) parts.push(`本周 ${Math.round(a.weekly.used_percent)}%`);
+  if (a.disabled) parts.push("已停用");
+  else if (a.unavailable) parts.push("暂不可用");
+  return parts.join(" · ");
+}
+// A member's burst runs until it is stopped or the account cycle resets.
+function burstRunning(b){ return Boolean(b && !b.stopped_at && b.cycle_reset_at * 1000 > Date.now()); }
+function burstingRows(p){ return (p.rows || []).filter(row => burstRunning(row.burst)); }
+function poolBusy(){ return Boolean(state.poolEdit) || Object.keys(state.burstPick).length > 0; }
+
+function poolLiveHTML(c){
+  const status = c.status || "no_data";
+  const seen = c.last_seen_ms ? relTime(c.last_seen_ms) : "";
+  const text = ({
+    live: `实时 · ${seen}观测`,
+    stale: `上次观测 ${seen}`,
+    reset_pending: "已到重置时间，等新周期的第一次观测",
+    no_data: "等待第一次观测",
+    unassigned: "未选择账号"
+  })[status] || status;
+  return `<div class="pool-live" data-state="${escapeHTML(status)}"><i class="pool-dot" aria-hidden="true"></i><b>${escapeHTML(text)}</b></div>`;
+}
+function capacityBasisText(cap){
+  return ({cycle:"本周期实测", previous:"沿用上周期", prior:"按套餐先验估算", day:"今日实测"})[cap.basis] || "";
+}
+function poolFigsHTML(p){
+  const c = p.cycle || {};
+  const cap = c.capacity || {};
+  const inCycle = c.used_percent != null;
+  const used = Number(c.used_percent || 0);
+  const usedCls = used >= 100 ? "is-over" : used >= 80 ? "is-warn" : "";
+  const range = cap.basis !== "prior" && cap.low > 0 ? `${usdFormat.format(cap.low)}–${cap.high > 0 ? usdFormat.format(cap.high) : "?"} · ` : "";
+  const figs = [];
+  figs.push(`<div class="pf pf-used ${usedCls}"><dt>本周已用</dt><dd><b class="pf-big">${inCycle ? pp(used, 0) : "—"}</b>${inCycle ? `<div class="meter${used >= 100 ? " is-over" : used >= 80 ? " is-warn" : ""}"><span style="--p:${Math.min(used, 100).toFixed(1)}%"></span></div>` : `<div class="pf-sub">${c.status === "reset_pending" ? "新周期从 0 开始" : "还没有周限数据"}</div>`}</dd></div>`);
+  const s2p = c.sub2pool;
+  const s2pLine = s2p ? `<div class="pf-sub">${s2p.error ? escapeHTML("Sub2Pool：" + s2p.error) : `Sub2Pool ${escapeHTML(usd(s2p.usd))}`}</div>` : "";
+  figs.push(`<div class="pf"><dt>100% ≈</dt><dd><b>${cap.usd ? usd(cap.usd) : "—"}</b><div class="pf-sub">${escapeHTML(range + capacityBasisText(cap))}</div>${s2pLine}</dd></div>`);
+  figs.push(`<div class="pf"><dt>1% ≈</dt><dd><b>${cap.usd ? "$" + (cap.usd / 100).toFixed(2) : "—"}</b><div class="pf-sub"></div></dd></div>`);
+  const today = c.today;
+  figs.push(`<div class="pf"><dt>今日折算</dt><dd><b>${today ? usd(today.usd) : "—"}</b><div class="pf-sub">${today ? `今日 ${Math.round(today.delta_pp)} 次跳动` : "今日跳动还不够"}</div></dd></div>`);
+  figs.push(`<div class="pf"><dt>周限重置</dt><dd><b>${c.reset_at ? escapeHTML(bjLabel(c.reset_at)) : "—"}</b><div class="pf-sub">${c.reset_at ? escapeHTML(untilLabel(c.reset_at) + " · 北京时间") : ""}</div></dd></div>`);
+  if (c.short) {
+    const s = c.short;
+    const cls = Number(s.used_percent) >= 100 ? "is-over" : Number(s.used_percent) >= 80 ? "is-warn" : "";
+    const passed = s.reset_at && s.reset_at * 1000 <= Date.now();
+    figs.push(`<div class="pf ${passed ? "" : cls}"><dt>5 小时窗口</dt><dd><b>${passed ? "已重置" : pp(s.used_percent, 0)}</b><div class="pf-sub">${passed ? "等下次请求更新" : s.reset_at ? escapeHTML(bjLabel(s.reset_at) + " 重置") : ""}</div></dd></div>`);
+  }
+  return `<dl class="pool-figs${c.short ? " has-short" : ""}">${figs.join("")}</dl>`;
+}
+
+function poolChartHTML(p){
+  const kind = state.poolChart[p.id] || "week";
+  const week = kind === "week";
+  const hasWeek = (p.week_line || []).length > 0;
+  const hasMonth = (p.month_line || []).some(d => d.close_usd > 0 || d.day_usd > 0);
+  const c = p.cycle || {};
+  // Before two rises the week view draws the estimate in use as a dashed line.
+  const prior = week && !hasWeek && Number((c.capacity || {}).usd) > 0 && c.used_percent != null;
+  const has = week ? hasWeek || prior : hasMonth;
+  const empty = week
+    ? (c.status === "reset_pending" ? "新周期，等待首次观测。" : `需要两次跳动才能折算（已 ${Number(c.ticks || 0)} 次）。`)
+    : "近 30 天暂无数据。";
+  return `<div class="pool-chart">
+    <div class="chart-head">
+      <div><div class="chart-title">${week ? "本周期折算走势" : "近 30 天每日收盘"}</div>${prior ? `<div class="chart-note">虚线为估算，两次跳动后换成实测。</div>` : ""}</div>
+      <div class="pool-seg" role="group" aria-label="折算走势范围">
+        <button type="button" data-chart-kind="week" data-chart-pool="${escapeHTML(p.id)}" aria-pressed="${week}">本周期</button>
+        <button type="button" data-chart-kind="month" data-chart-pool="${escapeHTML(p.id)}" aria-pressed="${!week}">近 30 天</button>
+      </div>
+    </div>
+    ${has ? `<div class="chart-plot" tabindex="0" role="group" data-plot="${escapeHTML(p.id)}" aria-describedby="tip-${domId(p.id)}"></div>` : `<div class="chart-empty">${escapeHTML(empty)}</div>`}
+    <output class="chart-tip" id="tip-${domId(p.id)}" aria-live="polite"></output>
   </div>`;
 }
-function renderDetail(){
-  const key = findKey(state.selectedId);
-  const body = $("detail-body");
-  if (!key) {
-    $("detail-subtitle").textContent = "选择左侧 Key 后编辑。";
-    body.innerHTML = `<div class="empty">尚未选择 Key。</div>`;
+
+function memberStateOf(row){
+  if (row.role === "owner") return {cls:"quiet", text:"车主"};
+  if (row.role === "outside") return {cls:"quiet", text:"池外"};
+  if (row.role === "pinned") return {cls:"quiet", text:"固定路由"};
+  if (row.role === "borrowed") return {cls:"quiet", text:"借用"};
+  if (burstRunning(row.burst)) return {cls:"burst", text:"爽蹬中"};
+  return ({ok:{cls:"ok", text:"正常"}, near:{cls:"near", text:"快用完"}, over:{cls:"over", text:"已拦截"}})[row.state] || {cls:"quiet", text:"—"};
+}
+function heatThresholds(p){
+  const values = [];
+  for (const row of p.rows || []) for (const v of ((row.heat || {}).hours || [])) if (v > 0) values.push(v);
+  values.sort((a, b) => a - b);
+  const q = f => values.length ? values[Math.min(values.length - 1, Math.floor(values.length * f))] : 0;
+  return [q(.25), q(.5), q(.75)];
+}
+function heatLevel(v, t){
+  if (!(v > 0)) return 0;
+  if (v <= t[0]) return 1;
+  if (v <= t[1]) return 2;
+  if (v <= t[2]) return 3;
+  return 4;
+}
+function heatGridHTML(p, row, t){
+  const hours = (row.heat || {}).hours || [];
+  const start = Number((p.heat || {}).hours_start_ms || 0);
+  const now = Date.now();
+  let total = 0, best = -1;
+  const cells = hours.map((v, i) => {
+    const at = start + i * 3600000;
+    total += v;
+    if (best < 0 || v > hours[best]) best = i;
+    if (at > now) return `<i class="is-future"></i>`;
+    const lvl = heatLevel(v, t);
+    const b = bjParts(at);
+    const label = `${b.month}月${b.day}日 ${String(b.hour).padStart(2, "0")}:00 · ${money(v)}`;
+    return `<i class="${lvl ? "l" + lvl : ""}" title="${escapeHTML(label)}"></i>`;
+  }).join("");
+  const bestAt = best >= 0 && hours[best] > 0 ? bjParts(start + best * 3600000) : null;
+  const summary = total > 0 ? `近 7 天共 ${money(total)}${bestAt ? `，最高在 ${bestAt.month}月${bestAt.day}日 ${bestAt.hour} 点（北京时间）` : ""}` : "近 7 天没有花费";
+  return `<div class="heat" role="img" aria-label="${escapeHTML(summary)}" title="${escapeHTML(summary + "。点这一行看近 30 天")}">${cells}</div>`;
+}
+function heatDaysHTML(p, row){
+  const days = (row.heat || {}).days || [];
+  const start = Number((p.heat || {}).days_start_ms || 0);
+  const nonzero = days.filter(v => v > 0).sort((a, b) => a - b);
+  const q = f => nonzero.length ? nonzero[Math.min(nonzero.length - 1, Math.floor(nonzero.length * f))] : 0;
+  const t = [q(.25), q(.5), q(.75)];
+  let total = 0, best = -1;
+  const cells = days.map((v, i) => {
+    total += v;
+    if (best < 0 || v > days[best]) best = i;
+    const at = bjParts(start + i * 86400000);
+    return `<i class="${heatLevel(v, t) ? "l" + heatLevel(v, t) : ""}" title="${escapeHTML(`${at.month}月${at.day}日 ${at.weekday} · ${money(v)}`)}"></i>`;
+  }).join("");
+  const axis = days.map((_, i) => {
+    const at = bjParts(start + i * 86400000);
+    const last = i === days.length - 1;
+    return `<div>${last || (i % 7 === 0 && days.length - 1 - i > 3) ? `${at.month}/${at.day}` : ""}</div>`;
+  }).join("");
+  const bestAt = best >= 0 && days[best] > 0 ? bjParts(start + best * 86400000) : null;
+  const active = days.filter(v => v > 0).length;
+  return `<div class="days-wrap">
+    <div class="days-head"><div>近 30 天 <b>${money(total)}</b> · ${active} 天有花费${bestAt ? ` · 最高 ${bestAt.month}月${bestAt.day}日 ${money(days[best])}` : ""}</div>
+      <div class="heat-legend" aria-hidden="true">少 <i></i><i class="l1"></i><i class="l2"></i><i class="l3"></i><i class="l4"></i> 多</div></div>
+    <div class="heat-days" role="img" aria-label="${escapeHTML(`近 30 天共 ${money(total)}`)}">${cells}</div>
+    <div class="heat-axis num" aria-hidden="true">${axis}</div>
+  </div>`;
+}
+function poolMembersHTML(p){
+  const rows = p.rows || [];
+  if (!rows.length) return `<div class="chart-empty">还没有成员。</div>`;
+  const t = heatThresholds(p);
+  const open = state.poolOpenMember[p.id] || "";
+  const body = rows.map(row => {
+    const st = memberStateOf(row);
+    const isOpen = open === row.key_id;
+    const share = row.role === "owner" ? "车主" : row.role === "pinned" ? "不占份额" : row.share_percent == null ? "—" : pp(row.share_percent, row.share_percent % 1 ? 2 : 0);
+    const carry = row.carry_pp ? `<div class="pm-sub">结转 ${signedPP(row.carry_pp)}</div>` : "";
+    const pending = row.pending_pp >= 0.005 ? ` · 待定 ${pp(row.pending_pp)}` : "";
+    let remain = `<b>—</b>`;
+    let remainSub = "";
+    if (row.remaining_pp != null) {
+      if (row.remaining_pp <= 0) {
+        remain = `<b>0%</b>`;
+        remainSub = row.remaining_pp < -0.005 ? `超出 ${pp(-row.remaining_pp)}` : "刚好用完";
+      } else {
+        remain = `<b>${pp(row.remaining_pp)}</b>`;
+        remainSub = row.remaining_usd != null ? `≈ ${usd(row.remaining_usd)}` : "";
+      }
+    }
+    const main = `<tr class="pm-row${isOpen ? " is-open" : ""}" data-member="${escapeHTML(row.key_id)}" data-member-pool="${escapeHTML(p.id)}" aria-expanded="${isOpen}">
+      <td><div class="pm-who"><b class="pm-name">${escapeHTML(row.label)}</b><div class="pm-sub">${escapeHTML([row.role === "borrowed" ? `来自「${row.from_pool}」` : "", displayPreview(row.preview || "")].filter(Boolean).join(" · "))}</div></div></td>
+      <td class="pm-num" data-label="份额"><b>${escapeHTML(share)}</b>${carry}</td>
+      <td class="pm-num r${row.state === "over" ? " pm-over" : ""}" data-label="本周期已用"><b>${pp(row.used_pp)}</b><div class="pm-sub">${escapeHTML(money(row.cost_usd) + pending)}</div></td>
+      <td class="pm-num r" data-label="剩余">${remain}<div class="pm-sub">${escapeHTML(remainSub)}</div></td>
+      <td data-label="状态"><div class="pm-state is-${st.cls}"><i class="pm-mark" aria-hidden="true"></i>${escapeHTML(st.text)}</div></td>
+      <td class="c-heat" data-label="近 7 天 · 每小时">${heatGridHTML(p, row, t)}</td>
+    </tr>`;
+    return main + (isOpen ? `<tr class="pm-days"><td colspan="6">${row.role === "member" ? memberBurstHTML(p, row) : ""}${heatDaysHTML(p, row)}</td></tr>` : "");
+  }).join("");
+  return `<div class="table-scroll"><table class="pool-table">
+    <thead><tr><th scope="col">成员</th><th scope="col">份额</th><th scope="col" class="r">本周期已用</th><th scope="col" class="r">剩余</th><th scope="col">状态</th><th scope="col">近 7 天 · 每小时</th></tr></thead>
+    <tbody>${body}</tbody></table></div>`;
+}
+function poolFootHTML(p){
+  const c = p.cycle || {};
+  if (c.used_percent == null) return "";
+  const parts = [
+    `<abbr title="开始记录之前，这个周期已经用掉的百分比，不算到任何人头上。">追踪前</abbr> ${pp(c.pre_tracking_pp)}`,
+    `<abbr title="记录到的花费解释不了的上涨，通常是有人在 CPA 之外直接用了这个号。零星的少量外部使用分辨不出来，会混进当时在用的人。">未归属</abbr> ${pp(c.unattributed_pp)}`,
+    `<abbr title="不在这个池里的 Key 用了这个号。">池外</abbr> ${pp(c.outside_pp)}`
+  ];
+  if (Number(c.lent_pp || 0) >= 0.005) parts.push(`<abbr title="其他拼车池里爽蹬的成员借用这个号用掉的量，不算在本池任何人头上，也不参与结转。">借出</abbr> ${pp(c.lent_pp)}`);
+  if (c.tracking_since_ms) parts.push(`${escapeHTML(bjLabel(Math.floor(c.tracking_since_ms / 1000)))} 起记录`);
+  parts.push("时间均为北京时间");
+  return `<div class="pool-foot">${parts.map(x => `<div>${x}</div>`).join("")}</div>`;
+}
+function settlementLine(p){
+  const last = (p.settlements || [])[0];
+  if (!last) return "";
+  const detail = last.detail || {};
+  const keys = poolKeysMap();
+  const nameOf = id => (keys.get(id) || {}).name || id;
+  if (last.status === "cancelled") return `<div class="settle-line">${escapeHTML(`上一轮爽蹬（${bjLabel(last.cycle_reset_at)} 重置的周期）已提前终止，没有结转。`)}</div>`;
+  const who = (detail.bursts || []).map(b => `${nameOf(b.key_id)}（${b.mode === "carry" ? "结转" : "不结转"}）`);
+  const head = who.length ? `上一周期爽蹬（${bjLabel(last.cycle_reset_at)} 重置）：${who.join("、")}。` : `上一轮爽蹬（${bjLabel(last.cycle_reset_at)} 重置的周期，${last.mode === "carry" ? "结转" : "不结转"}）。`;
+  const moved = (detail.rows || []).filter(r => Math.abs(Number(r.adjustment_pp || 0)) >= 0.005).map(r => `${nameOf(r.key_id)} ${signedPP(r.adjustment_pp)}`);
+  const body = moved.length ? `借用 ${pp(detail.borrowed_pp)}：${moved.join(" · ")}，已计入下一周期。` : "没有需要结转的借用。";
+  const lent = Number(detail.lent_pp || 0) >= 0.005 ? `借给其他车 ${pp(detail.lent_pp)}，不参与结转。` : "";
+  return `<div class="settle-line">${escapeHTML(head + body + lent)}</div>`;
+}
+// The burst switch in a share member's detail row.
+function memberBurstHTML(p, row){
+  const pk = `${p.id}|${row.key_id}`;
+  const b = row.burst;
+  const pick = state.burstPick[pk];
+  const armed = state.poolArmed[`${pk}:stop`];
+  const who = escapeHTML(row.label);
+  const lend = p.lender ? `号满时借用「${escapeHTML(p.lender)}」。` : "";
+  if (burstRunning(b)) {
+    return `<div class="burst is-on"><div class="burst-text"><b>爽蹬中 · ${b.mode === "carry" ? "结转" : "不结转"}</b> · ${escapeHTML(bjLabel(b.cycle_reset_at))} 自动结束。${lend}</div>
+      <button class="btn${armed ? " is-armed" : ""}" type="button" data-burst-stop="${escapeHTML(pk)}">${armed ? "确认停止？" : "停止爽蹬"}</button></div>`;
+  }
+  if (pick) {
+    const opt = (value, title, text) => `<label class="burst-opt${pick.mode === value ? " is-picked" : ""}"><span class="burst-opt-title"><input type="radio" name="burst-${domId(pk)}" value="${value}" data-burst-mode="${escapeHTML(pk)}"${pick.mode === value ? " checked" : ""}>${title}</span><span class="burst-opt-text">${text}</span></label>`;
+    const ready = pick.mode === "carry" || (pick.mode === "no_carry" && pick.notified);
+    return `<div class="burst"><div class="burst-pick">
+      <div class="burst-text"><b>给 ${who} 开爽蹬</b> · 本周期内不限 TA 的份额。${lend}</div>
+      <div class="burst-opts">
+        ${opt("carry", "结转", "超出部分下周期还给没用完的人。")}
+        ${opt("no_carry", "不结转", "多用不追，需先告知车友。")}
+      </div>
+      <div class="burst-actions">
+        ${pick.mode === "no_carry" ? `<label class="burst-notify"><input type="checkbox" data-burst-notified="${escapeHTML(pk)}"${pick.notified ? " checked" : ""}>我已告知其他车友</label>` : ""}
+        <button class="btn primary" type="button" data-burst-start="${escapeHTML(pk)}"${ready ? "" : " disabled"}>开启${pick.mode === "no_carry" ? "不结转" : pick.mode === "carry" ? "结转" : ""}爽蹬</button>
+        <button class="btn" type="button" data-burst-cancel="${escapeHTML(pk)}">取消</button>
+      </div>
+    </div></div>`;
+  }
+  const c = p.cycle || {};
+  const canStart = c.used_percent != null;
+  const stopped = b && b.stopped_at ? ` · 已于 ${escapeHTML(bjLabel(b.stopped_at))} 停止` : "";
+  return `<div class="burst"><div class="burst-text"><b>临时爽蹬</b>${stopped}</div>
+    <button class="btn" type="button" data-burst-open="${escapeHTML(pk)}"${canStart ? "" : ` disabled title="需要先观测到这个账号的当前周期"`}>${stopped ? "重新开启…" : "开爽蹬…"}</button></div>`;
+}
+function poolWarningsHTML(p){
+  const warnings = p.warnings || [];
+  const notes = p.notes || [];
+  if (!warnings.length && !notes.length) return "";
+  return `<div class="pool-warn" role="note">${warnings.map(w => `<div>${escapeHTML(w)}</div>`).join("")}${notes.map(n => `<div class="is-note">${escapeHTML(n)}</div>`).join("")}</div>`;
+}
+
+/* Pool editor */
+function poolDraftFrom(p){
+  return {
+    id: p.id,
+    name: p.name,
+    auth_index: p.auth_index || "",
+    model_prefix: p.model_prefix || "",
+    visibility: p.visibility || "anonymous",
+    sub2pool_account_id: p.sub2pool_account_id || 0,
+    lend_during_burst: Boolean(p.lend_during_burst),
+    hide_account: Boolean(p.hide_account),
+    members: (p.members || []).map(m => ({key_id: m.key_id, share_percent: m.role === "pinned" ? null : m.share_percent, role: m.role || ""}))
+  };
+}
+function poolInputFrom(p){
+  const d = poolDraftFrom(p);
+  return {...d, sub2pool_account_id: Number(d.sub2pool_account_id) || 0};
+}
+function newPoolDraft(){
+  const pools = (state.poolData || {}).pools || [];
+  const used = new Set(pools.map(p => p.auth_index));
+  const free = ((state.poolData || {}).accounts || []).find(a => !used.has(a.auth_index));
+  return {id: "", name: free ? `${planLabel(free.plan_type)} 拼车` : "", auth_index: free ? free.auth_index : "", model_prefix: "", visibility: "anonymous", sub2pool_account_id: 0, lend_during_burst: false, hide_account: false, members: []};
+}
+function poolSlug(d){
+  const pools = (state.poolData || {}).pools || [];
+  const taken = new Set(pools.map(p => p.id));
+  const account = poolAccount(d.auth_index);
+  let base = String(d.model_prefix || (account && account.plan_type) || "pool").toLowerCase().replace(/[^a-z0-9_-]/g, "") || "pool";
+  if (!/^[a-z0-9]/.test(base)) base = "p" + base;
+  base = base.slice(0, 28);
+  let id = base, n = 2;
+  while (taken.has(id)) id = `${base}-${n++}`;
+  return id;
+}
+function keysInOtherPools(poolId){
+  const out = new Map();
+  for (const p of ((state.poolData || {}).pools || [])) {
+    if (p.id === poolId) continue;
+    for (const m of p.members || []) out.set(m.key_id, p.name);
+  }
+  return out;
+}
+function shareTotal(d){
+  return (d.members || []).reduce((s, m) => s + (m.share_percent == null || m.role === "pinned" ? 0 : Number(m.share_percent) || 0), 0);
+}
+function poolTotalHTML(d){
+  const total = shareTotal(d);
+  const owner = (d.members || []).some(m => m.share_percent == null && m.role !== "pinned");
+  const over = total > 100 + 1e-9;
+  return `<b class="pe-total${over ? " st-over" : ""}" data-pe-total>${over ? `份额合计 ${pp(total)}，超过 100%` : `份额合计 ${pp(total)}${owner ? ` · 车主不限，剩下的 ${pp(100 - total)} 默认归车主` : ` · 还有 ${pp(100 - total)} 没分出去`}`}</b>`;
+}
+function poolEditorHTML(){
+  const edit = state.poolEdit;
+  const d = edit.draft;
+  const accounts = (state.poolData || {}).accounts || [];
+  const taken = new Map(((state.poolData || {}).pools || []).filter(p => p.id !== d.id).map(p => [p.auth_index, p.name]));
+  const accountOptions = [`<option value="">不选（暂不记账）</option>`].concat(accounts.map(a => {
+    const other = taken.get(a.auth_index);
+    return `<option value="${escapeHTML(a.auth_index)}"${a.auth_index === d.auth_index ? " selected" : ""}${other ? " disabled" : ""}>${escapeHTML(accountText(a) + (other ? `（已属于 ${other}）` : ""))}</option>`;
+  })).join("");
+  const keys = (state.poolData || {}).keys || [];
+  const elsewhere = keysInOtherPools(d.id);
+  const chosen = new Set(d.members.map(m => m.key_id));
+  const memberRows = d.members.map((m, i) => {
+    const options = keys.map(k => {
+      const other = elsewhere.get(k.id);
+      const dup = k.id !== m.key_id && chosen.has(k.id);
+      return `<option value="${escapeHTML(k.id)}"${k.id === m.key_id ? " selected" : ""}${other || dup ? " disabled" : ""}>${escapeHTML(k.name + (k.preview ? " · " + displayPreview(k.preview) : "") + (other ? `（在 ${other}）` : ""))}</option>`;
+    }).join("");
+    const role = m.role === "pinned" ? "pinned" : m.share_percent == null ? "owner" : "share";
+    const noShare = role !== "share";
+    return `<div class="pe-member">
+      <select class="select" data-pe-key="${i}" aria-label="成员 Key">${m.key_id ? "" : `<option value="" selected>选择 Key</option>`}${options}</select>
+      <div class="pe-share"><input class="input" data-pe-share="${i}" inputmode="decimal" aria-label="份额（%）" value="${noShare ? "" : escapeHTML(String(m.share_percent ?? ""))}"${noShare ? ` disabled placeholder="${role === "owner" ? "不限" : "不占"}"` : ""}><b aria-hidden="true">%</b></div>
+      <select class="select pe-role" data-pe-role="${i}" aria-label="成员身份"><option value="share"${role === "share" ? " selected" : ""}>按份额</option><option value="owner"${role === "owner" ? " selected" : ""}>车主</option><option value="pinned"${role === "pinned" ? " selected" : ""}>只固定路由</option></select>
+      <button class="chip-x" type="button" data-pe-remove="${i}" aria-label="移除这位成员"><svg viewBox="0 0 10 10" aria-hidden="true"><path d="M2 2l6 6M8 2l-6 6"/></svg></button>
+    </div>`;
+  }).join("");
+  const vis = POOL_VIS.map(([value, label]) => `<button type="button" data-pe-vis="${value}" aria-pressed="${d.visibility === value}">${label}</button>`).join("");
+  const armed = state.poolArmed[`${d.id}:delete`];
+  return `<div class="editor pool-editor" data-pool-editor>
+    <div class="pe-grid">
+      <label class="pe-field"><span class="ed-label">名称</span><input class="input" data-pe="name" maxlength="40" placeholder="例如 Pro 20x" value="${escapeHTML(d.name)}"></label>
+      <label class="pe-field"><span class="ed-label">上游账号</span><select class="select" data-pe="auth_index">${accountOptions}</select></label>
+      <label class="pe-field"><span class="ed-label">模型前缀</span><input class="input" data-pe="model_prefix" maxlength="32" placeholder="例如 pro，留空则不固定" value="${escapeHTML(d.model_prefix)}">
+        <span class="ed-hint">需在 CPA 给该凭证设置同名前缀。</span></label>
+      <div class="pe-field"><span class="ed-label">车友能看到</span><div class="pool-seg" role="group" aria-label="车友能看到">${vis}</div>
+        <label class="pe-lend"><input type="checkbox" data-pe-hide${d.hide_account ? " checked" : ""}>不给车友看整号用量</label></div>
+    </div>
+    <div class="ed-block"><h3>成员与份额</h3>
+      <div class="pe-members">${memberRows || `<div class="chips-empty">还没有成员。</div>`}</div>
+      <div class="pe-actions" style="margin-top:10px"><button class="btn small" type="button" data-pe-add>添加成员</button>${poolTotalHTML(d)}</div>
+      <div class="ed-hint">份额为账号周额度的百分比。车主不限；只固定路由不占份额，按自己的金额窗口。</div>
+    </div>
+    <div class="pe-field"><label class="pe-lend"><input type="checkbox" data-pe-lend${d.lend_during_burst ? " checked" : ""}>借给其他车爽蹬的人</label>
+      <span class="ed-hint">其他池爽蹬中的成员号满时会借用这个号。</span></div>
+    <label class="pe-field"><span class="ed-label">Sub2Pool 账号 ID（可选）</span><input class="input" data-pe="sub2pool_account_id" inputmode="numeric" style="max-width:160px" value="${d.sub2pool_account_id ? escapeHTML(String(d.sub2pool_account_id)) : ""}" placeholder="不填">
+      <span class="ed-hint">仅作对照，不影响记账。</span></label>
+    <div class="pe-error" role="alert">${escapeHTML(edit.error || "")}</div>
+    <div class="pe-actions">
+      <button class="btn primary" type="button" data-pe-save>${edit.isNew ? "创建拼车池" : "保存拼车池"}</button>
+      <button class="btn" type="button" data-pe-cancel>取消</button>
+      ${edit.isNew ? "" : `<button class="btn pe-delete${armed ? " is-armed" : ""}" type="button" data-pe-delete>${armed ? "确认删除？成员会回到轮换" : "删除这个池"}</button>`}
+    </div>
+  </div>`;
+}
+
+function poolHTML(p){
+  const editing = state.poolEdit && !state.poolEdit.isNew && state.poolEdit.draft.id === p.id;
+  const account = poolAccount(p.auth_index);
+  const route = p.model_prefix ? `固定路由 ${p.model_prefix}/` : "未固定路由";
+  const bursting = burstingRows(p).length;
+  const acct = p.auth_index ? `${account ? (account.label || p.auth_index) : p.auth_index} · ${planLabel(((p.cycle || {}).plan_type) || (account || {}).plan_type)} · ${route}${bursting ? ` · ${bursting} 人爽蹬中` : ""}${p.lend_during_burst ? " · 借给其他车爽蹬的人" : ""}${p.hide_account ? " · 车友看不到整号用量" : ""}` : "还没有选择上游账号";
+  return `<article class="pool" id="pool-${domId(p.id)}" data-pool="${escapeHTML(p.id)}">
+    <header class="pool-head">
+      <div class="pool-name"><h3>${escapeHTML(p.name)}</h3><div class="pool-acct">${escapeHTML(acct)}</div></div>
+      ${poolLiveHTML(p.cycle || {})}
+      <button class="btn small" type="button" data-pool-edit="${escapeHTML(p.id)}" aria-expanded="${editing}">${editing ? "收起" : "编辑"}</button>
+    </header>
+    <div class="pool-body">
+      ${editing ? poolEditorHTML() : ""}
+      ${poolFigsHTML(p)}
+      ${poolChartHTML(p)}
+      ${poolMembersHTML(p)}
+      ${poolFootHTML(p)}
+      ${settlementLine(p)}
+      ${poolWarningsHTML(p)}
+    </div>
+  </article>`;
+}
+function renderPools(){
+  const section = $("pools");
+  if (state.poolsUnavailable || !state.poolData) { section.classList.add("hidden"); return; }
+  section.classList.remove("hidden");
+  const pools = state.poolData.pools || [];
+  $("poolsCount").textContent = pools.length ? String(pools.length) : "";
+  $("newPool").disabled = Boolean(state.poolEdit && state.poolEdit.isNew);
+  let html = "";
+  if (state.poolEdit && state.poolEdit.isNew) {
+    html += `<article class="pool" data-pool=""><header class="pool-head"><div class="pool-name"><h3>新建拼车池</h3></div></header><div class="pool-body">${poolEditorHTML()}</div></article>`;
+  }
+  if (!pools.length && !(state.poolEdit && state.poolEdit.isNew)) {
+    const accounts = state.poolData.accounts || [];
+    html += `<div class="chart-empty">还没有拼车池${accounts.length ? `，已发现 ${accounts.length} 个 Codex 账号` : ""}。</div>`;
+  }
+  html += pools.map(poolHTML).join("");
+  $("poolList").innerHTML = html;
+  drawPoolCharts();
+}
+function renderPoolTotal(){
+  const box = document.querySelector("[data-pe-total]");
+  if (box && state.poolEdit) box.outerHTML = poolTotalHTML(state.poolEdit.draft);
+}
+
+/* Charts */
+function niceAxis(lo, hi){
+  const span = Math.max(hi - lo, 1);
+  const step = Math.pow(10, Math.floor(Math.log10(span / 3)));
+  const mult = [1, 2, 2.5, 5, 10].find(m => span / (step * m) <= 4) || 10;
+  const s = step * mult;
+  const ticks = [];
+  for (let v = Math.ceil(lo / s) * s; v <= hi + 1e-9; v += s) ticks.push(v);
+  return ticks;
+}
+function chartSeries(p, kind){
+  if (kind === "month") {
+    return (p.month_line || []).map((d, i) => ({i, t: d.t, usd: d.close_usd > 0 ? d.close_usd : null, low: d.close_low, high: d.close_high, day: d.day_usd > 0 ? d.day_usd : null, used: d.has_used ? d.used : null, label: d.day}));
+  }
+  return (p.week_line || []).map((d, i) => ({i, t: d.t, usd: d.usd, low: d.low, high: d.high, used: d.used}));
+}
+function chartTip(p, kind, point){
+  if (!point) return "";
+  if (kind === "month") {
+    const date = bjParts(point.t);
+    const parts = [`${date.month}月${date.day}日 ${date.weekday}`];
+    parts.push(point.usd ? `收盘 100% ≈ ${usd(point.usd)}` : "没有收盘");
+    if (point.day) parts.push(`当日单日 ${usd(point.day)}`);
+    if (point.used != null) parts.push(`周限已用 ${Math.round(point.used)}%`);
+    return parts.join(" · ");
+  }
+  const range = point.low > 0 ? `（${usdFormat.format(point.low)}–${point.high > 0 ? usdFormat.format(point.high) : "?"}）` : "";
+  return `${bjLabel(Math.floor(point.t / 1000))} · 100% ≈ ${usd(point.usd)}${range} · 周限已用 ${Math.round(point.used)}%`;
+}
+function drawChart(el, p){
+  const kind = state.poolChart[p.id] || "week";
+  const series = chartSeries(p, kind);
+  const W = Math.max(el.clientWidth, 240), H = el.clientHeight || 150;
+  const padL = 50, padR = 12, padT = 10, padB = 20;
+  const c = p.cycle || {};
+  let x0, x1;
+  if (kind === "week") {
+    x1 = c.reset_at ? c.reset_at * 1000 : Date.now();
+    x0 = c.reset_at && c.window_minutes ? x1 - c.window_minutes * 60000 : (series[0] ? series[0].t : x1 - 7 * 86400000);
+  } else {
+    x0 = 0; x1 = Math.max(series.length - 1, 1);
+  }
+  const xOf = v => padL + (W - padL - padR) * ((kind === "week" ? v.t : v.i) - x0) / Math.max(x1 - x0, 1);
+  const prior = kind === "week" && !series.length ? Number((c.capacity || {}).usd) || 0 : 0;
+  const vals = prior ? [prior] : series.flatMap(s => [s.usd, s.day]).filter(v => v > 0);
+  if (!vals.length) { el.innerHTML = ""; return; }
+  const sorted = [...vals].sort((a, b) => a - b);
+  const mid = sorted[Math.floor(sorted.length / 2)];
+  let lo = Math.max(Math.min(...vals), mid * .6), hi = Math.min(Math.max(...vals), mid * 1.6);
+  for (const s of series) {
+    if (s.low > 0) lo = Math.min(lo, Math.max(s.low, mid * .6));
+    if (s.high > 0) hi = Math.max(hi, Math.min(s.high, mid * 1.6));
+  }
+  const pad = Math.max((hi - lo) * .08, mid * .02);
+  lo = Math.max(0, lo - pad); hi = hi + pad;
+  const yOf = v => padT + (H - padT - padB) * (1 - (Math.min(Math.max(v, lo), hi) - lo) / Math.max(hi - lo, 1));
+  const parts = [];
+  for (const tick of niceAxis(lo, hi)) {
+    const y = yOf(tick).toFixed(1);
+    parts.push(`<line class="ch-grid" x1="${padL}" x2="${W - padR}" y1="${y}" y2="${y}"></line><text class="ch-axis" x="${padL - 6}" y="${Number(y) + 4}" text-anchor="end">$${usdFormat.format(tick)}</text>`);
+  }
+  if (kind === "week") {
+    const dayMs = 86400000;
+    const first = Math.ceil((x0 + BJ_OFFSET_MS) / dayMs) * dayMs - BJ_OFFSET_MS;
+    for (let t = first; t < x1; t += dayMs) {
+      const x = xOf({t});
+      if (x > W - padR - 16) break;
+      parts.push(`<line class="ch-grid" x1="${x.toFixed(1)}" x2="${x.toFixed(1)}" y1="${H - padB}" y2="${H - padB + 4}"></line><text class="ch-axis" x="${(x + (xOf({t: t + dayMs}) - x) / 2).toFixed(1)}" y="${H - 4}" text-anchor="middle">${escapeHTML(bjParts(t + 12 * 3600000).weekday)}</text>`);
+    }
+    const now = Date.now();
+    if (now > x0 && now < x1) {
+      const x = xOf({t: now}).toFixed(1);
+      parts.push(`<line class="ch-now" x1="${x}" x2="${x}" y1="${padT}" y2="${H - padB}"></line>`);
+    }
+    const banded = series.filter(s => s.low > 0);
+    if (banded.length > 1) {
+      const top = banded.map(s => `${xOf(s).toFixed(1)},${yOf(s.high > 0 ? s.high : hi).toFixed(1)}`);
+      const bottom = banded.slice().reverse().map(s => `${xOf(s).toFixed(1)},${yOf(s.low).toFixed(1)}`);
+      parts.push(`<polygon class="ch-band" points="${top.concat(bottom).join(" ")}"></polygon>`);
+    }
+  } else {
+    series.forEach((s, i) => {
+      if (i === series.length - 1 || (i % 7 === 0 && series.length - 1 - i > 3)) {
+        const d = bjParts(s.t);
+        parts.push(`<text class="ch-axis" x="${xOf(s).toFixed(1)}" y="${H - 4}" text-anchor="${i === series.length - 1 ? "end" : i === 0 ? "start" : "middle"}">${d.month}/${d.day}</text>`);
+      }
+    });
+    for (const s of series) if (s.day) parts.push(`<circle class="ch-day" cx="${xOf(s).toFixed(1)}" cy="${yOf(s.day).toFixed(1)}" r="2.6"></circle>`);
+  }
+  if (prior) {
+    const y = yOf(prior).toFixed(1);
+    parts.push(`<line class="ch-prior" x1="${padL}" x2="${W - padR}" y1="${y}" y2="${y}"></line><text class="ch-prior-label" x="${padL + 6}" y="${Number(y) - 6}">估算 100% ≈ ${escapeHTML(usd(prior))}</text>`);
+    el.innerHTML = `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" aria-hidden="true">${parts.join("")}</svg>`;
+    el.setAttribute("aria-label", `本周期还没有实测，按估算 100% ≈ ${usd(prior)}。`);
+    el._series = [];
+    el._xOf = xOf;
+    const tip = document.getElementById(`tip-${domId(p.id)}`);
+    if (tip) tip.textContent = `估算 100% ≈ ${usd(prior)} · ${capacityBasisText(c.capacity) || "估算"} · 周限已用 ${Math.round(Number(c.used_percent || 0))}%`;
     return;
   }
-  $("detail-subtitle").textContent = `${key.name || key.alias || "-"} · ${displayPreview(key.preview || key.id)}`;
-  const disabled = key.source_present === false ? "disabled" : "";
-  const warnings = policyWarnings(key);
-  const missingPrices = missingPriceModels(key);
-  const alertParts = [];
-  if (key.source_present === false) alertParts.push("这个 Key 已不在 CPA 当前配置中，策略只读。");
-  if (key.inherit_conflict) alertParts.push("同名历史策略存在多条候选，请人工确认模板。");
-  if (warnings.length) alertParts.push(`当前缺少：${warnings.join("、")}。`);
-  if (missingPrices.length) alertParts.push(`${missingPrices.length} 个模型在 CPAMP 中未配置价格，费用额度统计可能不完整。`);
-  body.innerHTML = `
-    <div class="detail-summary">
-      <div class="summary-card"><small>启用状态</small><strong class="${key.enabled ? "success" : "bad-text"}">${key.enabled ? "启用" : "停用"}</strong></div>
-      <div class="summary-card"><small>配额</small><strong>${escapeHTML(quotaStateText(key))}</strong><div class="detail-note">${escapeHTML(rpmStateText(key))}</div></div>
-      <div class="summary-card"><small>模型</small><strong>${escapeHTML(modelCountText(key))}</strong><div class="detail-note">${escapeHTML(modelPreview(key))}</div></div>
-    </div>
-    ${alertParts.length ? `<div class="notice">${escapeHTML(alertParts.join(" "))}</div>` : ""}
-    <div class="section-title"><h3>基础策略</h3></div>
-    <div class="field-grid">
-      <label class="span-2">Key 别名<input value="${escapeHTML(key.name || key.alias || "")}" disabled></label>
-      <label>启用状态<select data-detail="enabled" ${disabled}><option value="true" ${key.enabled ? "selected" : ""}>启用</option><option value="false" ${!key.enabled ? "selected" : ""}>禁用</option></select></label>
-      <label>RPM<input data-detail="rpm" type="number" min="0" value="${Number(key.rpm || 0)}" ${disabled}></label>
-    </div>
-    <div class="section-title"><h3>额度窗口</h3><small>已用 / 限额 / 剩余</small></div>
-    <div class="quota-editor">${windows.map(([name,label,field]) => renderQuotaCard(key, name, label, field, disabled)).join("")}</div>
-    <div class="section-title"><h3>模型白名单</h3><button class="btn mini" id="edit-models" type="button" ${disabled}>编辑模型白名单</button></div>
-    <div class="model-summary">
-      <div><strong>${escapeHTML(modelCountText(key))}</strong><div class="detail-note">${escapeHTML(modelPreview(key))}</div></div>
-      <small>${missingPrices.length ? `${missingPrices.length} 个模型未在 CPAMP 定价` : "费用按 CPAMP 模型价格统计。"}</small>
-    </div>
-    <div class="section-title"><h3>Soft Reset</h3></div>
-    <div class="actions">
-      <button class="btn mini" data-reset="5h" type="button">清5H</button>
-      <button class="btn mini" data-reset="24h" type="button">清24H</button>
-      <button class="btn mini" data-reset="7d" type="button">清7D</button>
-      <button class="btn mini" data-reset="month" type="button">清月</button>
-      <button class="btn mini" data-reset="all" type="button">清全部</button>
-    </div>`;
-  body.querySelectorAll("[data-detail]").forEach(input => input.oninput = () => updateDetail(input));
-  body.querySelectorAll("[data-detail]").forEach(input => input.onchange = () => updateDetail(input));
-  body.querySelectorAll("[data-limit]").forEach(input => input.oninput = () => {
-    setLimitValue(key, input.dataset.limit, input.value);
-    markDirty();
-    renderKeyList();
+  let path = "", open = false;
+  for (const s of series) {
+    if (!(s.usd > 0)) { open = false; continue; }
+    path += `${open ? "L" : "M"}${xOf(s).toFixed(1)},${yOf(s.usd).toFixed(1)}`;
+    open = true;
+  }
+  parts.push(`<path class="ch-line" d="${path}"></path>`);
+  const withValue = series.filter(s => s.usd > 0);
+  const last = withValue[withValue.length - 1];
+  if (last) parts.push(`<circle class="ch-dot" cx="${xOf(last).toFixed(1)}" cy="${yOf(last.usd).toFixed(1)}" r="3.5"></circle>`);
+  const index = Math.min(state.poolIndex[p.id] ?? -1, series.length - 1);
+  const focus = index >= 0 ? series[index] : null;
+  if (focus) {
+    const x = xOf(focus).toFixed(1);
+    parts.push(`<line class="ch-guide" x1="${x}" x2="${x}" y1="${padT}" y2="${H - padB}"></line>`);
+    if (focus.usd > 0) parts.push(`<circle class="ch-focus" cx="${x}" cy="${yOf(focus.usd).toFixed(1)}" r="4.5"></circle>`);
+  }
+  el.innerHTML = `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" aria-hidden="true">${parts.join("")}</svg>`;
+  el.setAttribute("aria-label", kind === "week"
+    ? `本周期折算走势，最新 100% ≈ ${last ? usd(last.usd) : "—"}。用左右方向键逐点查看。`
+    : `近 30 天每日收盘，最新 ${last ? usd(last.usd) : "—"}。用左右方向键逐日查看。`);
+  el._series = series;
+  el._xOf = xOf;
+  const tip = document.getElementById(`tip-${domId(p.id)}`);
+  if (tip) tip.textContent = chartTip(p, kind, focus || last);
+}
+function drawPoolCharts(){
+  document.querySelectorAll("[data-plot]").forEach(el => {
+    const p = ((state.poolData || {}).pools || []).find(x => x.id === el.dataset.plot);
+    if (p) drawChart(el, p);
   });
-  body.querySelectorAll("[data-reset]").forEach(btn => btn.onclick = () => resetSelected(btn.dataset.reset, btn));
-  const edit = $("edit-models");
-  if (edit) edit.onclick = () => openEditor(key.id);
 }
-function updateDetail(input){
-  const key = findKey(state.selectedId);
-  if (!key || key.source_present === false) return;
-  const field = input.dataset.detail;
-  if (field === "enabled") key.enabled = input.value === "true";
-  else if (field === "rpm") key[field] = Number(input.value || 0);
-  markDirty();
-  renderKeyList();
-}
-function render(){
-  ensureSelection();
-  renderMetrics();
-  renderKeyList();
-  renderDetail();
+function scrubChart(el, clientX){
+  const series = el._series || [];
+  if (!series.length) return;
+  const rect = el.getBoundingClientRect();
+  const x = clientX - rect.left;
+  let best = 0;
+  series.forEach((s, i) => { if (Math.abs(el._xOf(s) - x) < Math.abs(el._xOf(series[best]) - x)) best = i; });
+  state.poolIndex[el.dataset.plot] = best;
+  const p = ((state.poolData || {}).pools || []).find(q => q.id === el.dataset.plot);
+  if (p) drawChart(el, p);
 }
 
-async function load(opts={}){
+/* Pool actions */
+async function savePools(pools, btn, doneText){
   const run = async () => {
-    setSync(opts.syncText || "同步中", "info");
-    const [keys, models] = await Promise.all([api("/keys"), api("/models").catch(e => ({ok:false, models:[], warnings:[e.message]}))]);
-    state.keys = keys.keys || [];
-    state.modelOptions = models.models || [];
-    state.pricing = keys.pricing || models.pricing || null;
-    state.modelWarnings = [...(models.warnings || []), ...((state.pricing && state.pricing.warnings) || [])];
-    state.dirty = false;
-    setSync(opts.doneSyncText || "已同步", "ok");
+    const resp = await api("/pools/save", {method:"PUT", headers:{"Content-Type":"application/json"}, body: JSON.stringify({pools})});
+    state.poolData = resp;
+    state.poolEdit = null;
+    state.poolArmed = {};
+    setSync(doneText || "拼车池已保存", "ok");
     render();
   };
   try {
-    if (opts.button) await withButtonFeedback(opts.button, opts.busyText || "同步中", opts.doneText || "已更新", run);
-    else await run();
-  } catch(e) {
-    setSync("同步失败：" + e.message, "bad");
+    await withButtonFeedback(btn, "保存中", "已保存", run);
+  } catch (e) {
+    if (state.poolEdit) state.poolEdit.error = "保存失败：" + ((e.data || {}).message || e.message);
+    setSync("拼车池保存失败", "bad");
+    renderPools();
   }
 }
-async function saveAll(){
-  const run = async () => {
-    setSync("保存中", "info");
-    const editable = state.keys.filter(k => k.source_present !== false);
-    const resp = await api("/keys/save", {
-      method:"PUT",
-      headers:{"Content-Type":"application/json"},
-      body: JSON.stringify({keys: editable.map(keyPayload)})
+function saveDraft(btn){
+  const edit = state.poolEdit;
+  const d = edit.draft;
+  const name = String(d.name || "").trim();
+  if (!name) { edit.error = "请填写名称。"; renderPools(); return; }
+  if (d.members.some(m => !m.key_id)) { edit.error = "有成员还没选 Key。"; renderPools(); return; }
+  for (const m of d.members) {
+    if (m.share_percent == null) continue;
+    const n = Number(m.share_percent);
+    if (String(m.share_percent).trim() === "" || !Number.isFinite(n) || n < 0 || n > 100) { edit.error = "份额要填 0 到 100 之间的数字。"; renderPools(); return; }
+    m.share_percent = n;
+  }
+  if (shareTotal(d) > 100 + 1e-9) { edit.error = "份额合计不能超过 100%。"; renderPools(); return; }
+  const prefix = String(d.model_prefix || "").trim();
+  if (prefix && !/^[A-Za-z0-9][A-Za-z0-9._-]{0,31}$/.test(prefix)) { edit.error = "模型前缀只能用字母、数字、.、- 和 _，不能带 /。"; renderPools(); return; }
+  const input = {...d, name, model_prefix: prefix, id: d.id || poolSlug({...d, model_prefix: prefix}), sub2pool_account_id: Number(d.sub2pool_account_id) || 0};
+  const others = ((state.poolData || {}).pools || []).filter(p => p.id !== d.id).map(poolInputFrom);
+  savePools(edit.isNew ? others.concat([input]) : ((state.poolData || {}).pools || []).map(p => p.id === d.id ? input : poolInputFrom(p)), btn, edit.isNew ? "拼车池已创建" : "拼车池已保存");
+}
+function deletePool(btn){
+  const d = state.poolEdit.draft;
+  const key = `${d.id}:delete`;
+  if (!state.poolArmed[key]) {
+    state.poolArmed[key] = setTimeout(() => { delete state.poolArmed[key]; renderPools(); }, 4000);
+    renderPools();
+    return;
+  }
+  clearTimeout(state.poolArmed[key]);
+  savePools(((state.poolData || {}).pools || []).filter(p => p.id !== d.id).map(poolInputFrom), btn, "拼车池已删除");
+}
+async function burstAction(pk, body, btn){
+  const [poolId, keyId] = pk.split("|");
+  try {
+    await withButtonFeedback(btn, body.action === "stop" ? "停止中" : "开启中", body.action === "stop" ? "已停止" : "已开启", async () => {
+      const resp = await api("/pools/burst", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({pool_id: poolId, key_id: keyId, confirm: true, ...body})});
+      state.poolData = resp;
     });
-    state.keys = resp.keys || state.keys;
-    state.dirty = false;
-    setSync("已保存", "ok");
-    render();
-  };
-  try {
-    await withButtonFeedback($("save"), "保存中", "已保存", run);
-  } catch(e) {
-    setSync("保存失败：" + e.message, "bad");
+    delete state.burstPick[pk];
+    state.poolArmed = {};
+    setSync(body.action === "stop" ? "爽蹬已停止" : "爽蹬已开启", "ok");
+  } catch (e) {
+    setSync("爽蹬操作失败：" + ((e.data || {}).message || e.message), "bad");
   }
+  render();
 }
-async function resetSelected(windowName, btn){
-  const key = findKey(state.selectedId);
-  if (!key) return;
-  if (!confirm(`确认清零 ${key.name || key.id} 的 ${windowName} 用量统计？这只写入 soft reset，不删除历史明细。`)) return;
-  try {
-    await withButtonFeedback(btn, "清零中", "已清零", () => api("/keys/reset", {
-      method:"POST",
-      headers:{"Content-Type":"application/json"},
-      body: JSON.stringify({id:key.id, window:windowName})
-    }));
-    setSync("已清零", "ok");
-    await load();
-  } catch(e) {
-    setSync("清零失败：" + e.message, "bad");
+function scrollToPool(id){
+  const el = document.getElementById(`pool-${domId(id)}`);
+  if (el) el.scrollIntoView({behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "start"});
+}
+function poolInboxItems(){
+  const items = [];
+  for (const p of ((state.poolData || {}).pools || [])) {
+    const c = p.cycle || {};
+    for (const row of p.rows || []) {
+      if (row.role !== "member" || burstRunning(row.burst)) continue;
+      if (row.state === "over") items.push({sev:"over", pool:p.id, name:row.label, text:`在「${p.name}」的份额已用完 · 已用 ${pp(row.used_pp)} / 可用 ${pp(row.available_pp)} · ${bjLabel(c.reset_at)} 重置`, action:"pool", label:"查看"});
+      else if (row.state === "near") items.push({sev:"warn", pool:p.id, name:row.label, text:`在「${p.name}」的份额只剩 ${pp(row.remaining_pp)}${row.remaining_usd != null ? `（≈ ${usd(row.remaining_usd)}）` : ""}`, action:"pool", label:"查看"});
+    }
+    if (c.used_percent >= 95) items.push({sev:"over", pool:p.id, name:p.name, text:`账号本周已用 ${Math.round(c.used_percent)}%，${bjLabel(c.reset_at)} 重置`, action:"pool", label:"查看"});
+    for (const w of p.warnings || []) items.push({sev:"warn", pool:p.id, name:p.name, text:w, action:"pool", label:"查看"});
   }
+  return items;
 }
 
+$("newPool").onclick = () => {
+  state.poolEdit = {isNew: true, draft: newPoolDraft(), error: ""};
+  renderPools();
+  const input = document.querySelector('[data-pool-editor] [data-pe="name"]');
+  if (input) input.focus();
+};
+$("poolList").addEventListener("click", (e) => {
+  const t = e.target;
+  const hit = sel => t.closest(sel);
+  let el;
+  if ((el = hit("[data-chart-kind]"))) {
+    state.poolChart[el.dataset.chartPool] = el.dataset.chartKind;
+    delete state.poolIndex[el.dataset.chartPool];
+    renderPools();
+    return;
+  }
+  if ((el = hit("[data-pool-edit]"))) {
+    const p = ((state.poolData || {}).pools || []).find(x => x.id === el.dataset.poolEdit);
+    state.poolEdit = state.poolEdit && !state.poolEdit.isNew && state.poolEdit.draft.id === el.dataset.poolEdit ? null : {isNew: false, draft: poolDraftFrom(p), error: ""};
+    renderPools();
+    return;
+  }
+  if ((el = hit("[data-pe-vis]"))) { state.poolEdit.draft.visibility = el.dataset.peVis; renderPools(); return; }
+  if (hit("[data-pe-add]")) { state.poolEdit.draft.members.push({key_id: "", share_percent: 0}); renderPools(); return; }
+  if ((el = hit("[data-pe-remove]"))) { state.poolEdit.draft.members.splice(Number(el.dataset.peRemove), 1); renderPools(); return; }
+  if ((el = hit("[data-pe-save]"))) { saveDraft(el); return; }
+  if (hit("[data-pe-cancel]")) { state.poolEdit = null; state.poolArmed = {}; renderPools(); return; }
+  if ((el = hit("[data-pe-delete]"))) { deletePool(el); return; }
+  if ((el = hit("[data-burst-open]"))) { state.burstPick[el.dataset.burstOpen] = {mode: "", notified: false}; renderPools(); return; }
+  if ((el = hit("[data-burst-cancel]"))) { delete state.burstPick[el.dataset.burstCancel]; renderPools(); return; }
+  if ((el = hit("[data-burst-start]"))) {
+    const pick = state.burstPick[el.dataset.burstStart] || {};
+    burstAction(el.dataset.burstStart, {action: "start", mode: pick.mode, notified: Boolean(pick.notified)}, el);
+    return;
+  }
+  if ((el = hit("[data-burst-stop]"))) {
+    const key = `${el.dataset.burstStop}:stop`;
+    if (!state.poolArmed[key]) {
+      state.poolArmed[key] = setTimeout(() => { delete state.poolArmed[key]; renderPools(); }, 4000);
+      renderPools();
+      const again = document.querySelector(`[data-burst-stop="${CSS.escape(el.dataset.burstStop)}"]`);
+      if (again) again.focus();
+      return;
+    }
+    clearTimeout(state.poolArmed[key]);
+    burstAction(el.dataset.burstStop, {action: "stop"}, el);
+    return;
+  }
+  if ((el = hit("tr.pm-row"))) {
+    const pool = el.dataset.memberPool;
+    state.poolOpenMember[pool] = state.poolOpenMember[pool] === el.dataset.member ? "" : el.dataset.member;
+    renderPools();
+  }
+});
+$("poolList").addEventListener("change", (e) => {
+  const t = e.target;
+  if (t.matches("[data-burst-mode]")) { state.burstPick[t.dataset.burstMode] = {...(state.burstPick[t.dataset.burstMode] || {}), mode: t.value}; renderPools(); return; }
+  if (t.matches("[data-burst-notified]")) { state.burstPick[t.dataset.burstNotified].notified = t.checked; renderPools(); return; }
+  if (!state.poolEdit) return;
+  const d = state.poolEdit.draft;
+  if (t.matches("[data-pe-key]")) { d.members[Number(t.dataset.peKey)].key_id = t.value; renderPools(); return; }
+  if (t.matches("[data-pe-role]")) {
+    const m = d.members[Number(t.dataset.peRole)];
+    m.role = t.value === "pinned" ? "pinned" : "";
+    m.share_percent = t.value === "share" ? (m.share_percent == null ? 0 : m.share_percent) : null;
+    renderPools();
+    return;
+  }
+  if (t.matches('[data-pe="auth_index"]')) { d.auth_index = t.value; return; }
+  if (t.matches("[data-pe-lend]")) { d.lend_during_burst = t.checked; return; }
+  if (t.matches("[data-pe-hide]")) { d.hide_account = t.checked; renderPools(); return; }
+});
+$("poolList").addEventListener("input", (e) => {
+  const t = e.target;
+  if (!state.poolEdit) return;
+  const d = state.poolEdit.draft;
+  if (t.matches("[data-pe-share]")) { d.members[Number(t.dataset.peShare)].share_percent = t.value; renderPoolTotal(); return; }
+  if (t.matches("[data-pe]")) d[t.dataset.pe] = t.value;
+});
+$("poolList").addEventListener("pointermove", (e) => {
+  const el = e.target.closest("[data-plot]");
+  if (el) scrubChart(el, e.clientX);
+});
+$("poolList").addEventListener("keydown", (e) => {
+  const el = e.target.closest("[data-plot]");
+  if (!el || !["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)) return;
+  e.preventDefault();
+  const series = el._series || [];
+  const cur = state.poolIndex[el.dataset.plot] ?? series.length - 1;
+  const next = e.key === "Home" ? 0 : e.key === "End" ? series.length - 1 : cur + (e.key === "ArrowLeft" ? -1 : 1);
+  state.poolIndex[el.dataset.plot] = Math.max(0, Math.min(series.length - 1, next));
+  const p = ((state.poolData || {}).pools || []).find(q => q.id === el.dataset.plot);
+  if (p) drawChart(el, p);
+});
+if ("ResizeObserver" in window) {
+  let raf = 0;
+  new ResizeObserver(() => { cancelAnimationFrame(raf); raf = requestAnimationFrame(drawPoolCharts); }).observe($("poolList"));
+}
+
+/* Table */
+function quotaCellHTML(raw, k, w){
+  const q = quotaOf({...raw, limits: limitsOf(k)}, w);
+  if ((raw.pool || {}).usd_windows_off) {
+    return `<td class="c-q" data-label="${w.label}"><div class="q-top"><b class="q-pct st-muted" title="在拼车池「${escapeHTML(raw.pool.pool)}」里按份额计，金额窗口暂不生效">按份额</b><div class="q-amt">已用 ${money(q.used)}</div></div>${q.limit !== null ? `<div class="q-note">上限 ${money(q.limit, q.limit % 1 ? 2 : 0)} 暂停</div>` : ""}</td>`;
+  }
+  if (q.limit === null) {
+    return `<td class="c-q" data-label="${w.label}"><div class="q-top"><b class="q-pct st-muted">不限</b><div class="q-amt">已用 ${money(q.used)}</div></div></td>`;
+  }
+  const cls = q.percent >= 1 ? "over" : q.percent >= .8 ? "warn" : "";
+  const shown = Math.min(Math.max(q.percent, 0), 1) * 100;
+  return `<td class="c-q" data-label="${w.label}">
+    <div class="q-top"><b class="q-pct st ${cls ? "st-" + cls : ""}">${Math.round(q.percent * 100)}%</b><div class="q-amt">${money(q.used)} / ${money(q.limit, q.limit % 1 ? 2 : 0)}</div></div>
+    <div class="meter${cls ? " is-" + cls : ""}"><span style="--p:${shown.toFixed(1)}%"></span></div>
+  </td>`;
+}
+function rowHTML(raw){
+  const k = effective(raw);
+  const open = state.expanded === k.id;
+  const badges = [];
+  const pool = raw.pool;
+  if (pool) badges.push(`<b class="badge">${escapeHTML(pool.role === "member" ? `拼车 ${pool.pool} · ${pp(pool.share_percent, pool.share_percent % 1 ? 2 : 0)}` : pool.role === "owner" ? `车主 · ${pool.pool}` : `固定路由 · ${pool.pool}`)}</b>`);
+  if (isWeeklyOnly(k) && !(pool && pool.usd_windows_off)) badges.push(`<b class="badge">仅周额度</b>`);
+  if (billingHoldOf(raw).active) badges.push(`<b class="badge badge-hold">待核算</b>`);
+  if (isDirty(k.id)) badges.push(`<b class="badge badge-dirty">未保存</b>`);
+  const rpm = Number(k.rpm || 0);
+  const models = selectedModels(k);
+  return `<tr class="key-row${open ? " is-open" : ""}" data-key-id="${escapeHTML(k.id)}">
+    <td class="c-key">
+      <button class="key-toggle" type="button" data-toggle="${escapeHTML(k.id)}" aria-expanded="${open}" aria-controls="ed-${domId(k.id)}">
+        <svg class="key-chev" viewBox="0 0 16 16" aria-hidden="true"><path d="M6 4l4 4-4 4"/></svg>
+        <span class="key-id"><span class="key-name">${escapeHTML(keyName(k))}</span><span class="key-prev">${escapeHTML(displayPreview(k.preview || k.id || ""))}</span></span>
+      </button>
+      <div class="key-badges">${badges.join("")}</div>
+    </td>
+    <td data-label="状态"><b class="st ${k.enabled ? "st-ok" : "st-muted"}">${k.enabled ? "启用" : "停用"}</b></td>
+    <td class="c-num" data-label="RPM">${rpm > 0 ? rpm : `<b class="st st-warn">未配置</b>`}${rpmNoteHTML(raw, rpm)}</td>
+    ${WINDOWS.map(w => quotaCellHTML(raw, k, w)).join("")}
+    <td class="c-num" data-label="模型" title="${escapeHTML(models.join(", "))}">${models.length ? models.length : `<b class="st-muted">全部</b>`}</td>
+  </tr>`;
+}
+function rpmNoteHTML(raw, rpm){
+  const rate = raw.rpm_stats;
+  if (!rate || !rate.peak) return "";
+  const tight = rpm > 0 && rate.peak >= rpm;
+  return `<div class="q-note${tight ? " st-warn" : ""}" title="近 7 天任意 60 秒内最多 ${rate.peak} 次请求；最近 60 秒 ${rate.last_minute} 次">峰值 ${rate.peak}${rate.last_minute ? ` · 现 ${rate.last_minute}` : ""}</div>`;
+}
+function rpmSuggestion(raw){
+  const peak = Number((raw.rpm_stats || {}).peak || 0);
+  return Math.max(30, Math.ceil(peak * 2 / 10) * 10);
+}
+function projection(used, limit){
+  if (limit === null || limit === undefined || limit === "") return {text:`已用 ${money(used)}`, cls:""};
+  const max = Number(limit);
+  if (!Number.isFinite(max)) return {text:"请输入数字", cls:"st-over"};
+  if (max <= 0 || used >= max) return {text:`已用 ${money(used)} · 按当前用量会立即拦截`, cls:"st-over"};
+  const p = used / max;
+  return {text:`已用 ${money(used)} · 按当前用量 ${Math.round(p * 100)}%`, cls: p >= .8 ? "st-warn" : ""};
+}
+function chipsHTML(k, removable){
+  const models = selectedModels(k).sort();
+  if (!models.length) return `<div class="chips-empty">未选择模型：允许全部模型</div>`;
+  return models.map(m => `<span class="chip${hasGlobalModelPrice(m) ? "" : " is-unpriced"}">${escapeHTML(m)}${removable ? `<button class="chip-x" type="button" data-remove-model="${escapeHTML(m)}" aria-label="移除 ${escapeHTML(m)}"><svg viewBox="0 0 10 10" aria-hidden="true"><path d="M2 2l6 6M8 2l-6 6"/></svg></button>` : ""}</span>`).join("");
+}
 function allModelOptions(extra=[]){
   const byID = new Map();
   for (const opt of state.modelOptions || []) {
@@ -803,145 +1637,470 @@ function allModelOptions(extra=[]){
     const key = String(id).toLowerCase();
     if (!byID.has(key)) byID.set(key, {id, display_name:id, source:"plus_configured", known:false});
   }
-  return [...byID.values()].sort((a,b) => String(a.id).localeCompare(String(b.id)));
+  return [...byID.values()].sort((a, b) => String(a.id).localeCompare(String(b.id)));
 }
 function optionMatches(opt, search){
   search = String(search || "").trim().toLowerCase();
   if (!search) return true;
   return String(opt.id || "").toLowerCase().includes(search) || String(opt.display_name || "").toLowerCase().includes(search);
 }
-function selectedChips(set){
-  const items = [...set].sort();
-  if (!items.length) return `<span class="muted">未选择模型：允许全部模型</span>`;
-  return items.map(m => `<span class="tag">${escapeHTML(m)} <button class="chip-button" data-remove-model="${escapeHTML(m)}" type="button">×</button></span>`).join("");
-}
-function renderModelOptions(container, selectedSet, search, options){
-  const filtered = options.filter(o => optionMatches(o, search));
-  if (!filtered.length) {
-    container.innerHTML = `<div class="empty">没有匹配模型。</div>`;
-    return;
-  }
-  container.innerHTML = filtered.map(o => {
-    const selected = selectedSet.has(o.id);
-    const missingPrice = selected && !hasGlobalModelPrice(o.id);
-    return `<label class="model-option">
-      <input type="checkbox" data-model-option="${escapeHTML(o.id)}" ${selected ? "checked" : ""}>
-      <span>
-        <strong>${escapeHTML(o.display_name || o.id)}</strong>
-        <small>${escapeHTML(o.id)}</small>
-        <span class="model-meta"><span class="tag">${escapeHTML(optionMeta(o))}</span>${missingPrice ? `<span class="tag warn">未配置价格</span>` : ""}</span>
-      </span>
+function pickerListHTML(k){
+  const selected = new Set(selectedModels(k));
+  const options = allModelOptions([...selected]).filter(o => optionMatches(o, state.pickerSearch));
+  if (!options.length) return `<div class="chips-empty">没有匹配的模型，可以在上方手动添加。</div>`;
+  return options.map(o => {
+    const on = selected.has(o.id);
+    return `<label class="opt">
+      <input type="checkbox" data-model-option="${escapeHTML(o.id)}"${on ? " checked" : ""}>
+      <span><span class="opt-name">${escapeHTML(o.display_name || o.id)}</span><span class="opt-meta">${escapeHTML(o.id)} · ${escapeHTML(optionMeta(o))}</span>${on && !hasGlobalModelPrice(o.id) ? `<span class="opt-warn">未在 CPAMP 配置价格</span>` : ""}</span>
     </label>`;
   }).join("");
-  container.querySelectorAll("[data-model-option]").forEach(input => input.onchange = () => {
-    if (input.checked) selectedSet.add(input.dataset.modelOption);
-    else selectedSet.delete(input.dataset.modelOption);
-    renderEditor();
-  });
 }
-function openEditor(id){
-  const key = findKey(id);
-  if (!key || key.source_present === false) return;
-  state.editor = {
-    keyId: id,
-    models: new Set(selectedModels(key)),
-    search: ""
-  };
-  $("edit-model-search").value = "";
-  $("edit-add-model").value = "";
-  renderEditor();
-  openModal("editor-modal");
+function pickerWarnHTML(k){
+  const models = selectedModels(k);
+  const options = allModelOptions(models);
+  const unknown = models.filter(m => !options.some(o => o.id === m && o.known));
+  const missing = models.filter(m => !hasGlobalModelPrice(m));
+  const lines = [];
+  if (unknown.length) lines.push(`<div>以下模型来自现有策略或手动输入，CPA 目前没有发现：${escapeHTML(unknown.join(", "))}</div>`);
+  if (missing.length) lines.push(`<div class="st-warn">没有 CPAMP 价格：${escapeHTML(missing.join(", "))}</div>`);
+  return lines.join("");
 }
-function renderEditor(){
-  const editor = state.editor;
-  if (!editor) return;
-  const options = allModelOptions([...editor.models]);
-  $("model-source-hint").textContent = state.modelWarnings.join(" ");
-  $("edit-selected").innerHTML = selectedChips(editor.models);
-  $("edit-selected").querySelectorAll("[data-remove-model]").forEach(btn => btn.onclick = () => {
-    editor.models.delete(btn.dataset.removeModel);
-    renderEditor();
-  });
-  renderModelOptions($("edit-model-list"), editor.models, $("edit-model-search").value || "", options);
-  const unknown = [...editor.models].filter(m => !options.some(o => o.id === m && o.known));
-  $("unknown-notice").classList.toggle("hidden", unknown.length === 0);
-  $("unknown-notice").textContent = unknown.length ? `以下模型来自现有策略或手动输入：${unknown.join(", ")}` : "";
-  const missingPrices = [...editor.models].filter(m => !hasGlobalModelPrice(m));
-  $("price-warning").classList.toggle("hidden", missingPrices.length === 0);
-  $("price-warning").textContent = missingPrices.length ? `以下模型未在 CPAMP 配置价格，费用额度统计可能不完整：${missingPrices.join(", ")}` : "";
+function editorHTML(raw){
+  const k = effective(raw);
+  const id = escapeHTML(k.id);
+  const readonly = raw.source_present === false;
+  const dis = readonly ? " disabled" : "";
+  const hold = billingHoldOf(raw);
+  const note = state.notes[k.id];
+  const pickerOpen = state.picker === k.id;
+  const missing = missingPriceModels(k);
+  return `<tr class="ed-row" id="ed-${domId(k.id)}"><td colspan="8">
+    <div class="editor" data-editor="${id}">
+      ${readonly ? `<div class="ed-alert">这个 Key 已不在 CPA 当前配置中，策略只读。</div>` : ""}
+      ${hold.active ? `<div class="ed-alert sev-pending"><div><b>费用待核算</b> · ${escapeHTML(hold.model || "未知模型")} ${escapeHTML(reasonText(hold.reason))}。补齐价格后重新结算即可恢复。</div><button class="btn primary" type="button" data-resolve="${id}">重新结算</button></div>` : ""}
+      ${note ? `<div class="ed-alert sev-${note.sev}" role="status">${escapeHTML(note.text)}</div>` : ""}
+      ${raw.inherit_conflict ? `<div class="ed-alert">同名历史策略存在多条候选，请人工确认模板。</div>` : ""}
+      <div class="ed-grid">
+        <section class="ed-block">
+          <h3>基础策略</h3>
+          <label class="ed-check"><input type="checkbox" data-edit="enabled"${k.enabled ? " checked" : ""}${dis}>启用这把 Key</label>
+          <label class="ed-field"><div class="ed-label">RPM（每分钟请求数）</div><input class="input num" type="number" min="0" step="1" inputmode="numeric" data-edit="rpm" value="${Number(k.rpm || 0)}"${dis}></label>
+          <div class="ed-hint">${(raw.rpm_stats || {}).peak ? `7 天峰值 ${raw.rpm_stats.peak}，建议 ≥ ${rpmSuggestion(raw)}；` : ""}0 为不限。</div>
+          ${raw.cpamp_hash ? `<div class="ed-hint" title="sha256:${escapeHTML(raw.cpamp_hash)}">CPAMP 显示为${raw.cpamp_alias && (state.cpampAlias || {}).synced ? `「${escapeHTML(raw.cpamp_alias)}」` : ` sha256:${escapeHTML(raw.cpamp_hash)}`}</div>` : ""}
+        </section>
+        <section class="ed-block">
+          <h3>配额窗口（美元）</h3>
+          <div class="ed-windows">${WINDOWS.map(w => {
+            const used = Number(usageOf(raw)[w.name] || 0);
+            const limit = limitsOf(k)[w.field];
+            const p = (raw.pool || {}).usd_windows_off ? {text:`已用 ${money(used)} · 暂不生效`, cls:""} : projection(used, limit);
+            return `<label class="ed-win"><div class="ed-label">${w.label}</div>
+              <input class="input num" type="number" min="0" step="0.01" inputmode="decimal" placeholder="不限" data-limit="${w.field}" value="${limitInputValue(limit)}"${dis}>
+              <output class="ed-proj ${p.cls}" data-proj="${w.field}">${escapeHTML(p.text)}</output></label>`;
+          }).join("")}</div>
+          <div class="ed-hint${(raw.pool || {}).usd_windows_off ? " st-warn" : ""}">${(raw.pool || {}).usd_windows_off ? `按「${escapeHTML(raw.pool.pool)}」份额计，金额窗口暂停。` : "留空为不限。"}</div>
+        </section>
+      </div>
+      <section class="ed-block">
+        <div class="ed-models-head"><h3>模型白名单</h3><b data-model-count>${escapeHTML(modelCountText(k))}</b><button class="btn" type="button" data-models="${id}"${dis}>${pickerOpen ? "收起模型列表" : "编辑模型白名单"}</button></div>
+        <div class="chips" data-model-chips>${chipsHTML(k, pickerOpen && !readonly)}</div>
+        <div class="ed-hint${missing.length ? " st-warn" : ""}" data-model-hint>${missing.length ? `${missing.length} 个模型没有 CPAMP 价格。` : ""}</div>
+        ${pickerOpen ? `<div class="picker">
+          <div class="picker-tools">
+            <input class="input" type="search" data-picker-search placeholder="搜索模型" aria-label="搜索模型" value="${escapeHTML(state.pickerSearch)}">
+            <div class="picker-add"><input class="input" data-picker-add placeholder="手动添加模型名" aria-label="手动添加模型名"><button class="btn" type="button" data-picker-act="add">添加</button></div>
+          </div>
+          <div class="picker-actions">
+            <button class="btn" type="button" data-picker-act="visible">全选当前结果</button>
+            <button class="btn" type="button" data-picker-act="discovered">套用 CPA 发现模型</button>
+            <button class="btn" type="button" data-picker-act="clear">清空选择</button>
+            <div class="picker-source">${escapeHTML(state.modelWarnings.join(" "))}</div>
+          </div>
+          <div class="picker-warn" data-picker-warn>${pickerWarnHTML(k)}</div>
+          <div class="picker-list" data-picker-list>${pickerListHTML(k)}</div>
+        </div>` : ""}
+      </section>
+      <section class="ed-block">
+        <h3>软重置</h3>
+        <div class="ed-resets">${RESETS.map(([w, label]) => {
+          const armed = state.armed[`${k.id}:${w}`];
+          return `<button class="btn${armed ? " is-armed" : ""}" type="button" data-reset="${w}"${dis}>${armed ? `确认${label}？` : label}</button>`;
+        }).join("")}</div>
+        <div class="ed-hint">从现在起重新计算，不删除明细。</div>
+      </section>
+    </div>
+  </td></tr>`;
 }
-function addEditorModel(btn){
-  const id = $("edit-add-model").value.trim();
-  if (!id || !state.editor) return;
-  state.editor.models.add(id);
-  $("edit-add-model").value = "";
-  renderEditor();
-  flashButton(btn, "已添加");
-}
-function applyEditor(btn){
-  const editor = state.editor;
-  if (!editor) return;
-  const key = findKey(editor.keyId);
-  if (!key) return;
-  key.models = cleanStrings([...editor.models]);
-  markDirty();
-  if (btn) {
-    const restore = setButtonState(btn, "已应用", "is-done");
-    window.setTimeout(() => {
-      restore();
-      closeModal("editor-modal");
-      render();
-    }, 180);
-  } else {
-    closeModal("editor-modal");
-    render();
-  }
-}
-function openModal(id){
-  const el = $(id);
-  if (!el) return;
-  el.classList.add("open");
-  el.setAttribute("aria-hidden", "false");
-}
-function closeModal(id){
-  const el = $(id);
-  if (!el) return;
-  el.classList.remove("open");
-  el.setAttribute("aria-hidden", "true");
-}
-
-$("save").onclick = saveAll;
-$("refresh").onclick = () => load({button:$("refresh"), busyText:"刷新中", doneText:"已刷新"});
-$("reload-models").onclick = () => load({button:$("reload-models"), busyText:"获取中", doneText:"已更新", syncText:"获取模型中", doneSyncText:"模型已更新"});
-$("edit-model-search").oninput = renderEditor;
-$("edit-add-model-btn").onclick = () => addEditorModel($("edit-add-model-btn"));
-$("edit-select-visible").onclick = () => {
-  if (!state.editor) return;
-  const search = $("edit-model-search").value || "";
-  allModelOptions([...state.editor.models]).filter(o => optionMatches(o, search)).forEach(o => state.editor.models.add(o.id));
-  renderEditor();
-  flashButton($("edit-select-visible"), "已选择");
-};
-$("edit-use-discovered").onclick = () => {
-  if (!state.editor) return;
-  const discovered = allModelOptions([...state.editor.models]).filter(o => o.source === "cpa_registry" && o.known);
-  if (!discovered.length) {
-    flashButton($("edit-use-discovered"), "暂无发现");
+function renderTable(){
+  const all = visibleKeys();
+  const list = all.filter(matchesSearch);
+  $("keysCount").textContent = all.length ? (list.length === all.length ? String(all.length) : `${list.length}/${all.length}`) : "";
+  const body = $("keys-body");
+  const focusKey = document.activeElement && document.activeElement.dataset ? document.activeElement.dataset.toggle : "";
+  if (!all.length) {
+    body.innerHTML = `<tr><td colspan="8" class="empty">暂无可显示策略。请先在 CPA/CPAMP 添加 Key，然后刷新同步。</td></tr>`;
     return;
   }
-  state.editor.models = new Set(discovered.map(o => o.id));
-  renderEditor();
-  flashButton($("edit-use-discovered"), "已套用");
-};
-$("edit-clear-models").onclick = () => { if (state.editor) { state.editor.models.clear(); renderEditor(); flashButton($("edit-clear-models"), "已清空"); } };
-$("editor-apply").onclick = () => applyEditor($("editor-apply"));
-document.querySelectorAll("[data-close]").forEach(btn => btn.onclick = () => closeModal(btn.dataset.close));
+  if (!list.length) {
+    body.innerHTML = `<tr><td colspan="8" class="empty">没有名称或预览包含「${escapeHTML(state.search.trim())}」的 Key。</td></tr>`;
+    return;
+  }
+  body.innerHTML = list.map(k => rowHTML(k) + (state.expanded === k.id ? editorHTML(k) : "")).join("");
+  if (focusKey) {
+    const again = body.querySelector(`[data-toggle="${CSS.escape(focusKey)}"]`);
+    if (again) again.focus({preventScroll: true});
+  }
+  wireEditor();
+}
+function refreshRow(id){
+  const raw = findKey(id);
+  const row = $("keys-body").querySelector(`tr.key-row[data-key-id="${CSS.escape(id)}"]`);
+  if (!raw || !row) return;
+  const hadFocus = row.contains(document.activeElement);
+  const tpl = document.createElement("template");
+  tpl.innerHTML = rowHTML(raw).trim();
+  row.replaceWith(tpl.content.firstElementChild);
+  if (hadFocus) {
+    const again = $("keys-body").querySelector(`[data-toggle="${CSS.escape(id)}"]`);
+    if (again) again.focus({preventScroll: true});
+  }
+}
+function refreshModelParts(id){
+  const raw = findKey(id);
+  const editor = document.querySelector(`[data-editor="${CSS.escape(id)}"]`);
+  if (!raw || !editor) return;
+  const k = effective(raw);
+  const pickerOpen = state.picker === id;
+  editor.querySelector("[data-model-count]").textContent = modelCountText(k);
+  editor.querySelector("[data-model-chips]").innerHTML = chipsHTML(k, pickerOpen && raw.source_present !== false);
+  const missing = missingPriceModels(k);
+  const hint = editor.querySelector("[data-model-hint]");
+  hint.classList.toggle("st-warn", missing.length > 0);
+  hint.textContent = missing.length ? `${missing.length} 个模型没有 CPAMP 价格。` : "";
+  const list = editor.querySelector("[data-picker-list]");
+  if (list) list.innerHTML = pickerListHTML(k);
+  const warn = editor.querySelector("[data-picker-warn]");
+  if (warn) warn.innerHTML = pickerWarnHTML(k);
+  refreshRow(id);
+  afterEdit();
+}
+function setModels(id, models){
+  const raw = findKey(id);
+  if (!raw || raw.source_present === false) return;
+  editOf(id).models = cleanStrings(models);
+  refreshModelParts(id);
+}
+function wireEditor(){
+  const editor = document.querySelector("[data-editor]");
+  if (!editor) return;
+  const id = editor.dataset.editor;
+  editor.querySelectorAll("[data-edit]").forEach(input => {
+    input.addEventListener(input.type === "checkbox" ? "change" : "input", () => {
+      const raw = findKey(id);
+      if (!raw || raw.source_present === false) return;
+      if (input.dataset.edit === "enabled") editOf(id).enabled = input.checked;
+      else {
+        const n = Number(input.value || 0);
+        const bad = !Number.isFinite(n) || n < 0 || !Number.isInteger(n);
+        input.setAttribute("aria-invalid", bad ? "true" : "false");
+        if (bad) return;
+        editOf(id).rpm = n;
+      }
+      refreshRow(id);
+      afterEdit();
+    });
+  });
+  editor.querySelectorAll("[data-limit]").forEach(input => {
+    input.addEventListener("input", () => {
+      const raw = findKey(id);
+      if (!raw || raw.source_present === false) return;
+      let value;
+      try { value = nullableNumber(input.value); } catch (_) { value = NaN; }
+      const out = editor.querySelector(`[data-proj="${input.dataset.limit}"]`);
+      const w = WINDOWS.find(item => item.field === input.dataset.limit);
+      if (Number.isNaN(value)) {
+        input.setAttribute("aria-invalid", "true");
+        out.className = "ed-proj st-over";
+        out.textContent = "请输入不小于 0 的数字";
+        return;
+      }
+      input.setAttribute("aria-invalid", "false");
+      const edit = editOf(id);
+      edit.limits = {...(edit.limits || {}), [input.dataset.limit]: value};
+      const used = Number(usageOf(raw)[w.name] || 0);
+      const p = (raw.pool || {}).usd_windows_off ? {text:`已用 ${money(used)} · 暂不生效`, cls:""} : projection(used, value);
+      out.className = `ed-proj ${p.cls}`;
+      out.textContent = p.text;
+      refreshRow(id);
+      afterEdit();
+    });
+  });
+  editor.querySelectorAll("[data-reset]").forEach(btn => btn.onclick = () => armOrReset(id, btn.dataset.reset, btn));
+  const resolve = editor.querySelector("[data-resolve]");
+  if (resolve) resolve.onclick = () => resolveBilling(id, resolve);
+  const modelsBtn = editor.querySelector("[data-models]");
+  if (modelsBtn) modelsBtn.onclick = () => {
+    state.picker = state.picker === id ? "" : id;
+    state.pickerSearch = "";
+    renderTable();
+    const search = document.querySelector("[data-picker-search]");
+    if (search) search.focus();
+  };
+  editor.addEventListener("click", (e) => {
+    const remove = e.target.closest("[data-remove-model]");
+    if (remove) {
+      const k = effective(findKey(id));
+      setModels(id, selectedModels(k).filter(m => m !== remove.dataset.removeModel));
+      return;
+    }
+    const act = e.target.closest("[data-picker-act]");
+    if (act) pickerAction(id, act.dataset.pickerAct, act);
+  });
+  editor.addEventListener("change", (e) => {
+    const box = e.target.closest("[data-model-option]");
+    if (!box) return;
+    const k = effective(findKey(id));
+    const set = new Set(selectedModels(k));
+    if (box.checked) set.add(box.dataset.modelOption); else set.delete(box.dataset.modelOption);
+    setModels(id, [...set]);
+  });
+  const search = editor.querySelector("[data-picker-search]");
+  if (search) search.addEventListener("input", () => {
+    state.pickerSearch = search.value;
+    const list = editor.querySelector("[data-picker-list]");
+    if (list) list.innerHTML = pickerListHTML(effective(findKey(id)));
+  });
+  const add = editor.querySelector("[data-picker-add]");
+  if (add) add.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); pickerAction(id, "add", editor.querySelector('[data-picker-act="add"]')); }
+  });
+}
+function pickerAction(id, action, btn){
+  const k = effective(findKey(id));
+  const current = selectedModels(k);
+  if (action === "add") {
+    const input = document.querySelector("[data-picker-add]");
+    const value = input ? input.value.trim() : "";
+    if (!value) return;
+    input.value = "";
+    setModels(id, [...current, value]);
+    flashButton(btn, "已添加");
+  } else if (action === "visible") {
+    const visible = allModelOptions(current).filter(o => optionMatches(o, state.pickerSearch)).map(o => o.id);
+    setModels(id, [...current, ...visible]);
+    flashButton(btn, "已选择");
+  } else if (action === "discovered") {
+    const discovered = allModelOptions(current).filter(o => o.source === "cpa_registry" && o.known).map(o => o.id);
+    if (!discovered.length) { flashButton(btn, "暂无发现"); return; }
+    setModels(id, discovered);
+    flashButton(btn, "已套用");
+  } else if (action === "clear") {
+    setModels(id, []);
+    flashButton(btn, "已清空");
+  }
+}
+function openEditor(id, focusField){
+  const raw = findKey(id);
+  if (!raw) return;
+  if (state.search && !matchesSearch(raw)) { state.search = ""; $("keySearch").value = ""; }
+  state.expanded = id;
+  if (state.picker !== id) state.picker = "";
+  renderTable();
+  const row = $("keys-body").querySelector(`tr.key-row[data-key-id="${CSS.escape(id)}"]`);
+  if (row) row.scrollIntoView({block:"start", behavior:"smooth"});
+  const target = focusField ? document.querySelector(`[data-editor="${CSS.escape(id)}"] [data-edit="${focusField}"], [data-editor="${CSS.escape(id)}"] [data-limit="${focusField}"]`) : null;
+  if (target) target.focus({preventScroll: true});
+}
+function toggleRow(id){
+  state.expanded = state.expanded === id ? "" : id;
+  if (state.picker && state.picker !== state.expanded) state.picker = "";
+  renderTable();
+}
+
+/* Save, reset, resolve */
+function afterEdit(){
+  renderMetrics();
+  renderSavebar();
+  setSync(dirtyIds().length ? "有未保存策略" : "已同步", dirtyIds().length ? "warn" : "ok");
+}
+function renderSavebar(){
+  const ids = dirtyIds();
+  $("savebar").hidden = !ids.length;
+  if (!ids.length) return;
+  const names = ids.map(id => keyName(findKey(id)));
+  $("dirtyText").textContent = `${ids.length} 把 Key 有未保存改动：${names.join("、")}`;
+}
+function render(){
+  renderMetrics();
+  renderInbox();
+  renderPools();
+  renderTable();
+  renderSavebar();
+}
+async function load(opts={}){
+  const run = async () => {
+    if (!opts.silent) setSync(opts.syncText || "同步中", "info");
+    const [keys, models, pools] = await Promise.all([
+      api("/keys"),
+      api("/models").catch(e => ({ok:false, models:[], warnings:[e.message]})),
+      api("/pools?tz_offset=-480").catch(e => ({ok:false, error:e}))
+    ]);
+    if (pools.ok) {
+      state.poolData = pools;
+      state.poolsUnavailable = false;
+    } else if (pools.error && [404, 405].includes(pools.error.status)) {
+      state.poolsUnavailable = true;
+    }
+    state.keys = keys.keys || [];
+    state.modelOptions = models.models || [];
+    state.pricing = keys.pricing || models.pricing || null;
+    state.cpampAlias = keys.cpamp_alias || null;
+    state.modelWarnings = [...(models.warnings || []), ...((state.pricing && state.pricing.warnings) || [])];
+    Object.keys(state.edits).forEach(id => { if (!findKey(id)) delete state.edits[id]; });
+    if (state.expanded && !findKey(state.expanded)) state.expanded = "";
+    state.lastSync = Date.now();
+    const dirty = dirtyIds().length;
+    setSync(dirty ? "有未保存策略" : (opts.doneSyncText || "已同步"), dirty ? "warn" : "ok");
+    render();
+  };
+  try {
+    if (opts.button) await withButtonFeedback(opts.button, opts.busyText || "同步中", opts.doneText || "已更新", run);
+    else await run();
+  } catch(e) {
+    setSync("同步失败：" + e.message, "bad");
+    if (!state.keys.length) $("keys-body").innerHTML = `<tr><td colspan="8" class="empty">读取 Key 策略失败：${escapeHTML(e.message)}。确认 CPA 插件已加载后点「刷新」重试。</td></tr>`;
+  }
+}
+async function saveAll(){
+  const ids = dirtyIds();
+  if (!ids.length) return;
+  let payload;
+  try {
+    payload = ids.map(id => keyPayload(effective(findKey(id))));
+  } catch (e) {
+    setSync("保存失败：" + e.message, "bad");
+    return;
+  }
+  const run = async () => {
+    setSync("保存中", "info");
+    const resp = await api("/keys/save", {
+      method:"PUT",
+      headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({keys: payload})
+    });
+    state.keys = resp.keys || state.keys;
+    if (resp.pricing) state.pricing = resp.pricing;
+    if (resp.cpamp_alias) state.cpampAlias = resp.cpamp_alias;
+    state.edits = {};
+    state.notes = {};
+    setSync("已保存", "ok");
+    render();
+  };
+  try {
+    await withButtonFeedback($("save"), "保存中", "已保存", run);
+  } catch(e) {
+    setSync("保存失败：" + e.message, "bad");
+  }
+}
+function discardAll(){
+  state.edits = {};
+  state.notes = {};
+  render();
+  setSync("已放弃改动", "ok");
+}
+function armOrReset(id, windowName, btn){
+  const key = `${id}:${windowName}`;
+  if (!state.armed[key]) {
+    Object.values(state.armed).forEach(clearTimeout);
+    state.armed = {[key]: setTimeout(() => { delete state.armed[key]; if (state.expanded === id) renderTable(); }, 4000)};
+    renderTable();
+    const again = document.querySelector(`[data-editor="${CSS.escape(id)}"] [data-reset="${windowName}"]`);
+    if (again) again.focus();
+    return;
+  }
+  clearTimeout(state.armed[key]);
+  state.armed = {};
+  resetSelected(id, windowName, btn);
+}
+async function resetSelected(id, windowName, btn){
+  const key = findKey(id);
+  if (!key) return;
+  try {
+    await withButtonFeedback(btn, "清零中", "已清零", () => api("/keys/reset", {
+      method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({id, window:windowName})
+    }));
+    state.notes[id] = {sev:"ok", text:`${windowName === "all" ? "全部窗口" : windowName} 已清零。`};
+    await load({silent:true});
+  } catch(e) {
+    state.notes[id] = {sev:"over", text:"清零失败：" + e.message};
+    setSync("清零失败：" + e.message, "bad");
+    renderTable();
+  }
+}
+async function resolveBilling(id, btn){
+  try {
+    const resp = await withButtonFeedback(btn, "结算中", "已结算", () => api("/keys/billing/resolve", {
+      method:"PUT",
+      headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({id})
+    }));
+    state.notes[id] = {sev:"ok", text:`已重新结算 ${Number(resp.resolved_pending_events || 0)} 条待核算记录，这把 Key 恢复放行。`};
+    setSync("已重新结算", "ok");
+    await load({silent:true});
+  } catch(e) {
+    const code = e.data && e.data.error;
+    const text = code === "billing_price_unavailable"
+      ? "CPAMP 仍缺少这个模型的价格。请先在 CPAMP「用量分析 → 模型价格设置」补价或同步，再回来重新结算。"
+      : code === "billing_hold_not_active" ? "这把 Key 已经没有待核算费用。" : "重新结算失败：" + e.message;
+    state.notes[id] = {sev: code === "billing_hold_not_active" ? "ok" : "over", text};
+    state.expanded = id;
+    setSync(code === "billing_hold_not_active" ? "已同步" : "重新结算失败", code === "billing_hold_not_active" ? "ok" : "bad");
+    if (code === "billing_hold_not_active") await load({silent:true}); else render();
+  }
+}
+function schedulePoll(){
+  clearInterval(state.pollTimer);
+  state.pollTimer = setInterval(() => {
+    if (document.hidden || state.expanded || dirtyIds().length || poolBusy()) return;
+    load({silent:true});
+  }, 30000);
+}
+
+$("keys-body").addEventListener("click", (e) => {
+  const row = e.target.closest("tr.key-row");
+  if (!row) return;
+  toggleRow(row.dataset.keyId);
+});
+$("keys-body").addEventListener("keydown", (e) => {
+  if (e.key !== "Escape" || !state.expanded) return;
+  const id = state.expanded;
+  state.expanded = "";
+  state.picker = "";
+  renderTable();
+  const again = $("keys-body").querySelector(`[data-toggle="${CSS.escape(id)}"]`);
+  if (again) again.focus();
+});
+$("keySearch").addEventListener("input", (e) => {
+  state.search = e.target.value;
+  renderTable();
+});
+$("save").onclick = saveAll;
+$("discard").onclick = discardAll;
+$("refresh").onclick = () => load({button:$("refresh"), busyText:"刷新中", doneText:"已刷新"});
+$("reload-models").onclick = () => load({button:$("reload-models"), busyText:"获取中", doneText:"已更新", syncText:"获取模型中", doneSyncText:"模型已更新"});
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden && Date.now() - state.lastSync > 30000 && !state.expanded && !dirtyIds().length && !poolBusy()) load({silent:true});
+});
 window.addEventListener("beforeunload", e => {
-  if (!state.dirty) return;
+  if (!dirtyIds().length) return;
   e.preventDefault();
   e.returnValue = "";
 });
 load();
+schedulePoll();
 </script>
 </body>
 </html>

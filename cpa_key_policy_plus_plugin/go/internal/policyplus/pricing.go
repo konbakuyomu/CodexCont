@@ -16,6 +16,7 @@ const (
 	CostSourceCPAMPPriceBook         = "cpamp_price_book"
 	CostSourceCPAMPCachedPriceBook   = "cpamp_cached_price_book"
 	CostSourceCPAMPPriceUnavailable  = "cpamp_price_unavailable"
+	CostSourceCPAMPBillingPending    = "cpamp_billing_pending"
 )
 
 type TokenUsage struct {
@@ -29,14 +30,19 @@ type TokenUsage struct {
 }
 
 type CostBreakdown struct {
-	Source                string             `json:"source"`
-	Model                 string             `json:"model"`
-	ServiceTier           string             `json:"service_tier,omitempty"`
-	ServiceTierMultiplier float64            `json:"service_tier_multiplier,omitempty"`
-	PriceMissing          bool               `json:"price_missing,omitempty"`
-	Prices                ModelPrice         `json:"prices"`
-	Tokens                map[string]int64   `json:"tokens"`
-	Costs                 map[string]float64 `json:"costs"`
+	Source                 string             `json:"source"`
+	Model                  string             `json:"model"`
+	ServiceTier            string             `json:"service_tier,omitempty"`
+	ServiceTierMultiplier  float64            `json:"service_tier_multiplier,omitempty"`
+	ContextThresholdTokens int64              `json:"context_threshold_tokens,omitempty"`
+	ServiceTierRule        string             `json:"service_tier_rule,omitempty"`
+	PriceMissing           bool               `json:"price_missing,omitempty"`
+	BillingPending         bool               `json:"billing_pending,omitempty"`
+	BillingPendingReason   string             `json:"billing_pending_reason,omitempty"`
+	BillingPriceModel      string             `json:"billing_price_model,omitempty"`
+	Prices                 ModelPrice         `json:"prices"`
+	Tokens                 map[string]int64   `json:"tokens"`
+	Costs                  map[string]float64 `json:"costs"`
 }
 
 type PriceBook struct {
@@ -68,7 +74,7 @@ func (b PriceBook) PricedModelIDs() []string {
 		if model == "" {
 			model = strings.TrimSpace(name)
 		}
-		if model == "" || !HasBillablePrice(price) {
+		if model == "" || !PriceAllowsAdmission(price, "") {
 			continue
 		}
 		ids = append(ids, model)
@@ -127,7 +133,13 @@ func CostForUsage(price ModelPrice, usage TokenUsage, model string) CostBreakdow
 func CostForUsageFromPriceBook(book PriceBook, usage TokenUsage, model, serviceTier string) (CostBreakdown, bool) {
 	source := book.NormalizedSource()
 	price, ok := book.PriceFor(model)
-	if !ok || !HasBillablePrice(price) {
+	if !ok {
+		breakdown := costForUsage(ModelPrice{Model: model}, usage, model, serviceTier, source)
+		breakdown.PriceMissing = true
+		return breakdown, false
+	}
+	effective, _, _ := effectiveModelPrice(price, max64(usage.InputTokens, 0), serviceTier)
+	if !priceAllowsRecordedUsage(price, max64(usage.InputTokens, 0), serviceTier) || !hasReliableTokenPrice(effective) {
 		breakdown := costForUsage(ModelPrice{Model: model}, usage, model, serviceTier, source)
 		breakdown.PriceMissing = true
 		return breakdown, false
@@ -142,11 +154,15 @@ func costForUsage(price ModelPrice, usage TokenUsage, model, serviceTier, source
 	cacheRead := max64(usage.CacheReadTokens, 0)
 	cacheCreation := max64(usage.CacheCreationTokens, 0)
 	reasoning := max64(usage.ReasoningTokens, 0)
-	billableInput := max64(input-cached, 0)
+	price, contextThreshold, serviceTierRule := effectiveModelPrice(price, input, serviceTier)
+	billableInput := max64(input-cached-cacheRead-cacheCreation, 0)
 	cachePrice := price.CachePerMillion
-	cacheReadPrice := fallbackPrice(price.CacheReadPerMillion, cachePrice)
+	cacheReadPrice := price.CacheReadPerMillion
+	if !price.CacheReadConfigured && cacheReadPrice <= 0 {
+		cacheReadPrice = fallbackPrice(cachePrice, price.InputPerMillion*0.1)
+	}
 	cacheCreationPrice := price.CacheCreationPerMillion
-	if cacheCreationPrice <= 0 {
+	if !price.CacheCreationConfigured && cacheCreationPrice <= 0 {
 		cacheCreationPrice = price.InputPerMillion
 	}
 	inputCost := float64(billableInput) * price.InputPerMillion / perMillion
@@ -154,12 +170,6 @@ func costForUsage(price ModelPrice, usage TokenUsage, model, serviceTier, source
 	cacheReadCost := float64(cacheRead) * cacheReadPrice / perMillion
 	cacheCreationCost := float64(cacheCreation) * cacheCreationPrice / perMillion
 	outputCost := float64(output) * price.OutputPerMillion / perMillion
-	multiplier := ServiceTierMultiplier(model, serviceTier)
-	inputCost *= multiplier
-	cachedCost *= multiplier
-	cacheReadCost *= multiplier
-	cacheCreationCost *= multiplier
-	outputCost *= multiplier
 	total := inputCost + cachedCost + cacheReadCost + cacheCreationCost + outputCost
 	totalTokens := usage.TotalTokens
 	if totalTokens <= 0 {
@@ -169,11 +179,13 @@ func costForUsage(price ModelPrice, usage TokenUsage, model, serviceTier, source
 		model = price.Model
 	}
 	return CostBreakdown{
-		Source:                source,
-		Model:                 model,
-		ServiceTier:           strings.TrimSpace(serviceTier),
-		ServiceTierMultiplier: multiplier,
-		Prices:                price,
+		Source:                 source,
+		Model:                  model,
+		ServiceTier:            strings.TrimSpace(serviceTier),
+		ServiceTierMultiplier:  1,
+		ContextThresholdTokens: contextThreshold,
+		ServiceTierRule:        serviceTierRule,
+		Prices:                 price,
 		Tokens: map[string]int64{
 			"input":                   input,
 			"billable_uncached_input": billableInput,
@@ -197,32 +209,156 @@ func costForUsage(price ModelPrice, usage TokenUsage, model, serviceTier, source
 }
 
 func HasBillablePrice(price ModelPrice) bool {
+	if hasBaseBillablePrice(price) {
+		return true
+	}
+	for _, tier := range price.ContextTiers {
+		if hasBaseBillablePrice(ModelPrice{
+			InputPerMillion:         tier.InputPerMillion,
+			OutputPerMillion:        tier.OutputPerMillion,
+			CachePerMillion:         tier.CachePerMillion,
+			CacheReadPerMillion:     tier.CacheReadPerMillion,
+			CacheCreationPerMillion: tier.CacheCreationPerMillion,
+		}) {
+			return true
+		}
+	}
+	for _, tier := range price.ServiceTiers {
+		if hasBaseBillablePrice(ModelPrice{
+			InputPerMillion:         tier.InputPerMillion,
+			OutputPerMillion:        tier.OutputPerMillion,
+			CachePerMillion:         tier.CachePerMillion,
+			CacheReadPerMillion:     tier.CacheReadPerMillion,
+			CacheCreationPerMillion: tier.CacheCreationPerMillion,
+		}) {
+			return true
+		}
+	}
+	return false
+}
+
+// PriceAllowsAdmission answers the pre-request question rather than the
+// post-request accounting question. Context length is not final at admission
+// time, so every configured context override must still yield a billable
+// price. A service-tier-only price is safe only when the caller has named its
+// matching tier; otherwise the base price must be billable.
+func PriceAllowsAdmission(price ModelPrice, serviceTier string) bool {
+	for _, tier := range price.ContextTiers {
+		if !hasReliableTokenPrice(applyContextTier(price, tier)) {
+			return false
+		}
+	}
+	effective, _, serviceTierRule := effectiveModelPrice(price, 0, serviceTier)
+	if isNonDefaultServiceTier(serviceTier) {
+		return serviceTierRule != "" && hasReliableTokenPrice(effective)
+	}
+	return hasReliableTokenPrice(price)
+}
+
+func priceAllowsRecordedUsage(price ModelPrice, inputTokens int64, serviceTier string) bool {
+	effective, contextThreshold, serviceTierRule := effectiveModelPrice(price, inputTokens, serviceTier)
+	if contextThreshold > 0 {
+		return hasReliableTokenPrice(effective)
+	}
+	if isNonDefaultServiceTier(serviceTier) {
+		return serviceTierRule != "" && hasReliableTokenPrice(effective)
+	}
+	return hasReliableTokenPrice(effective)
+}
+
+func isNonDefaultServiceTier(serviceTier string) bool {
+	switch strings.ToLower(strings.TrimSpace(serviceTier)) {
+	case "", "auto", "default", "standard":
+		return false
+	default:
+		return true
+	}
+}
+
+func hasBaseBillablePrice(price ModelPrice) bool {
 	return price.InputPerMillion > 0 || price.OutputPerMillion > 0 || price.CachePerMillion > 0 ||
 		price.CacheReadPerMillion > 0 || price.CacheCreationPerMillion > 0
 }
 
-func ServiceTierMultiplier(modelName string, serviceTier string) float64 {
-	tier := strings.ToLower(strings.TrimSpace(serviceTier))
-	if tier != "priority" && tier != "fast" {
-		return 1
-	}
-	modelName = strings.ToLower(strings.TrimSpace(modelName))
-	switch {
-	case isModelFamily(modelName, "gpt-5.5"):
-		return 2.5
-	case isModelFamily(modelName, "gpt-5.4-mini"):
-		return 2
-	case isModelFamily(modelName, "gpt-5.4"):
-		return 2
-	case isModelFamily(modelName, "gpt-5.3-codex"):
-		return 2
-	default:
-		return 1
-	}
+func hasReliableTokenPrice(price ModelPrice) bool {
+	inputKnown := price.InputConfigured || price.InputPerMillion > 0
+	outputKnown := price.OutputConfigured || price.OutputPerMillion > 0
+	return inputKnown && outputKnown && hasBaseBillablePrice(price)
 }
 
-func isModelFamily(modelName string, family string) bool {
-	return modelName == family || strings.HasPrefix(modelName, family+"-")
+func effectiveModelPrice(price ModelPrice, inputTokens int64, serviceTier string) (ModelPrice, int64, string) {
+	var contextTier *ModelPriceContextTier
+	for index := range price.ContextTiers {
+		tier := &price.ContextTiers[index]
+		if tier.ThresholdTokens > 0 && inputTokens > tier.ThresholdTokens && (contextTier == nil || tier.ThresholdTokens > contextTier.ThresholdTokens) {
+			contextTier = tier
+		}
+	}
+	if contextTier != nil {
+		return applyContextTier(price, *contextTier), contextTier.ThresholdTokens, ""
+	}
+	serviceTier = strings.ToLower(strings.TrimSpace(serviceTier))
+	if serviceTier == "" {
+		return price, 0, ""
+	}
+	for _, tier := range price.ServiceTiers {
+		if serviceTier == strings.ToLower(strings.TrimSpace(tier.Mode)) || serviceTier == strings.ToLower(strings.TrimSpace(tier.ServiceTier)) {
+			return applyServiceTier(price, tier), 0, strings.TrimSpace(tier.Mode) + "/" + strings.TrimSpace(tier.ServiceTier)
+		}
+	}
+	return price, 0, ""
+}
+
+func applyContextTier(price ModelPrice, tier ModelPriceContextTier) ModelPrice {
+	effective := price
+	effective.ContextTiers = nil
+	effective.ServiceTiers = nil
+	if tier.InputConfigured {
+		effective.InputPerMillion = tier.InputPerMillion
+		effective.InputConfigured = true
+	}
+	if tier.OutputConfigured {
+		effective.OutputPerMillion = tier.OutputPerMillion
+		effective.OutputConfigured = true
+	}
+	if tier.CacheConfigured {
+		effective.CachePerMillion = tier.CachePerMillion
+	}
+	if tier.CacheReadConfigured {
+		effective.CacheReadPerMillion = tier.CacheReadPerMillion
+		effective.CacheReadConfigured = true
+	}
+	if tier.CacheCreationConfigured {
+		effective.CacheCreationPerMillion = tier.CacheCreationPerMillion
+		effective.CacheCreationConfigured = true
+	}
+	return effective
+}
+
+func applyServiceTier(price ModelPrice, tier ModelPriceServiceTier) ModelPrice {
+	effective := price
+	effective.ContextTiers = nil
+	effective.ServiceTiers = nil
+	if tier.InputConfigured {
+		effective.InputPerMillion = tier.InputPerMillion
+		effective.InputConfigured = true
+	}
+	if tier.OutputConfigured {
+		effective.OutputPerMillion = tier.OutputPerMillion
+		effective.OutputConfigured = true
+	}
+	if tier.CacheConfigured {
+		effective.CachePerMillion = tier.CachePerMillion
+	}
+	if tier.CacheReadConfigured {
+		effective.CacheReadPerMillion = tier.CacheReadPerMillion
+		effective.CacheReadConfigured = true
+	}
+	if tier.CacheCreationConfigured {
+		effective.CacheCreationPerMillion = tier.CacheCreationPerMillion
+		effective.CacheCreationConfigured = true
+	}
+	return effective
 }
 
 func fallbackPrice(value float64, fallback float64) float64 {

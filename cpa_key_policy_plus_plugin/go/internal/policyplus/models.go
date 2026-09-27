@@ -9,14 +9,55 @@ import (
 )
 
 type ModelPrice struct {
-	Model                   string  `json:"model"`
-	TargetModel             string  `json:"target_model,omitempty"`
-	Provider                string  `json:"provider,omitempty"`
+	Model                   string                  `json:"model"`
+	TargetModel             string                  `json:"target_model,omitempty"`
+	Provider                string                  `json:"provider,omitempty"`
+	InputPerMillion         float64                 `json:"input_per_million"`
+	OutputPerMillion        float64                 `json:"output_per_million"`
+	CachePerMillion         float64                 `json:"cache_per_million,omitempty"`
+	CacheReadPerMillion     float64                 `json:"cache_read_per_million"`
+	CacheCreationPerMillion float64                 `json:"cache_creation_per_million"`
+	InputConfigured         bool                    `json:"input_configured,omitempty"`
+	OutputConfigured        bool                    `json:"output_configured,omitempty"`
+	CacheReadConfigured     bool                    `json:"cache_read_configured,omitempty"`
+	CacheCreationConfigured bool                    `json:"cache_creation_configured,omitempty"`
+	ContextTiers            []ModelPriceContextTier `json:"context_tiers,omitempty"`
+	ServiceTiers            []ModelPriceServiceTier `json:"service_tiers,omitempty"`
+}
+
+// ModelPriceContextTier mirrors CPAMP's persisted model_price_context_tiers
+// rows. A tier replaces only the fields it explicitly configures after the
+// request input crosses ThresholdTokens.
+type ModelPriceContextTier struct {
+	ThresholdTokens         int64   `json:"threshold_tokens"`
 	InputPerMillion         float64 `json:"input_per_million"`
 	OutputPerMillion        float64 `json:"output_per_million"`
 	CachePerMillion         float64 `json:"cache_per_million,omitempty"`
 	CacheReadPerMillion     float64 `json:"cache_read_per_million"`
 	CacheCreationPerMillion float64 `json:"cache_creation_per_million"`
+	InputConfigured         bool    `json:"input_configured,omitempty"`
+	OutputConfigured        bool    `json:"output_configured,omitempty"`
+	CacheConfigured         bool    `json:"cache_configured,omitempty"`
+	CacheReadConfigured     bool    `json:"cache_read_configured,omitempty"`
+	CacheCreationConfigured bool    `json:"cache_creation_configured,omitempty"`
+}
+
+// ModelPriceServiceTier mirrors CPAMP's persisted
+// model_price_service_tiers rows. Mode and ServiceTier are both accepted by
+// CPAMP as identifiers for the same provider pricing rule.
+type ModelPriceServiceTier struct {
+	Mode                    string  `json:"mode"`
+	ServiceTier             string  `json:"service_tier"`
+	InputPerMillion         float64 `json:"input_per_million"`
+	OutputPerMillion        float64 `json:"output_per_million"`
+	CachePerMillion         float64 `json:"cache_per_million,omitempty"`
+	CacheReadPerMillion     float64 `json:"cache_read_per_million"`
+	CacheCreationPerMillion float64 `json:"cache_creation_per_million"`
+	InputConfigured         bool    `json:"input_configured,omitempty"`
+	OutputConfigured        bool    `json:"output_configured,omitempty"`
+	CacheConfigured         bool    `json:"cache_configured,omitempty"`
+	CacheReadConfigured     bool    `json:"cache_read_configured,omitempty"`
+	CacheCreationConfigured bool    `json:"cache_creation_configured,omitempty"`
 }
 
 type ModelOption struct {
@@ -46,6 +87,7 @@ type KeyRecord struct {
 	WeeklyLimitUSD    *float64              `json:"weekly_limit_usd,omitempty"`
 	FiveHourUSD       *float64              `json:"five_hour_usd,omitempty"`
 	MonthlyLimitUSD   *float64              `json:"monthly_limit_usd,omitempty"`
+	WeeklyOnly        bool                  `json:"weekly_only,omitempty"`
 	Archived          bool                  `json:"archived,omitempty"`
 	ArchivedAt        int64                 `json:"archived_at,omitempty"`
 	Source            string                `json:"source,omitempty"`
@@ -55,12 +97,20 @@ type KeyRecord struct {
 	InheritConflict   bool                  `json:"inherit_conflict,omitempty"`
 	Hidden            bool                  `json:"hidden,omitempty"`
 	LastEnabled       bool                  `json:"last_enabled,omitempty"`
+	BillingHoldReason string                `json:"billing_hold_reason,omitempty"`
+	BillingHoldModel  string                `json:"billing_hold_model,omitempty"`
+	BillingHoldTier   string                `json:"billing_hold_service_tier,omitempty"`
+	BillingHoldAt     int64                 `json:"billing_hold_at,omitempty"`
 }
 
 func (k KeyRecord) Safe() map[string]any {
 	sourcePresent := k.SourcePresent
 	if k.Source == "" {
 		sourcePresent = true
+	}
+	quotaMode := "all_windows"
+	if k.WeeklyOnly {
+		quotaMode = "weekly_only"
 	}
 	return map[string]any{
 		"id":                  k.ID,
@@ -80,6 +130,14 @@ func (k KeyRecord) Safe() map[string]any {
 		"inherit_conflict":    k.InheritConflict,
 		"hidden":              k.Hidden,
 		"last_enabled":        k.LastEnabled,
+		"quota_mode":          quotaMode,
+		"billing_hold": map[string]any{
+			"active":          k.BillingHoldReason != "",
+			"reason":          k.BillingHoldReason,
+			"model":           k.BillingHoldModel,
+			"service_tier":    k.BillingHoldTier,
+			"created_at_unix": k.BillingHoldAt,
+		},
 		"limits": map[string]any{
 			"five_hour_usd": k.FiveHourUSD,
 			"daily_usd":     k.DailyLimitUSD,
@@ -251,7 +309,16 @@ func CopyPolicyFields(dst, src KeyRecord) KeyRecord {
 	dst.DailyLimitUSD = cloneFloatPtr(src.DailyLimitUSD)
 	dst.WeeklyLimitUSD = cloneFloatPtr(src.WeeklyLimitUSD)
 	dst.MonthlyLimitUSD = cloneFloatPtr(src.MonthlyLimitUSD)
+	dst.WeeklyOnly = src.WeeklyOnly
 	return dst
+}
+
+// IsWeeklyOnlyQuota identifies the complete configuration produced by the
+// safe weekly-only migration: an explicit weekly budget and no legacy rolling
+// windows. The zero weekly value remains explicit and therefore counts as a
+// configured weekly limit, matching CheckLimit semantics.
+func IsWeeklyOnlyQuota(key KeyRecord) bool {
+	return key.WeeklyLimitUSD != nil && key.FiveHourUSD == nil && key.DailyLimitUSD == nil && key.MonthlyLimitUSD == nil
 }
 
 func clonePrices(in map[string]ModelPrice) map[string]ModelPrice {
@@ -312,6 +379,14 @@ func parseKey(raw map[string]any) (KeyRecord, bool) {
 	modelItems := asList(firstAny(raw, "models", "allowed_models", "allowedModels", "model_allowlist", "modelAllowlist", "aliases"))
 	models := parseModels(modelItems)
 	prices := parsePrices(raw, modelItems)
+	fiveHour := firstFloatPtr(raw, "five_hour_limit_usd", "fiveHourLimitUsd", "five_hour_usd", "fiveHourUsd", "5h_limit_usd")
+	daily := firstFloatPtr(raw, "daily_limit_usd", "dailyLimitUsd", "daily_limit", "dailyLimit", "daily_usd", "dailyUsd")
+	weekly := firstFloatPtr(raw, "weekly_limit_usd", "weeklyLimitUsd", "weekly_limit", "weeklyUsd", "weekly_usd")
+	monthly := firstFloatPtr(raw, "monthly_limit_usd", "monthlyLimitUsd", "monthly_usd", "monthlyUsd", "month_limit_usd")
+	weeklyOnly, hasWeeklyOnly := firstBool(raw, "weekly_only", "weeklyOnly")
+	if !hasWeeklyOnly {
+		weeklyOnly = weekly != nil && fiveHour == nil && daily == nil && monthly == nil
+	}
 	return KeyRecord{
 		ID:                strings.TrimSpace(id),
 		Name:              strings.TrimSpace(name),
@@ -323,10 +398,11 @@ func parseKey(raw map[string]any) (KeyRecord, bool) {
 		MaxActiveSessions: firstInt(raw, "max_active_sessions", "maxActiveSessions", "max_sessions", "maxSessions", "session_limit", "sessionLimit", "max_codex_windows", "maxCodexWindows"),
 		Models:            models,
 		Prices:            prices,
-		DailyLimitUSD:     firstFloatPtr(raw, "daily_limit_usd", "dailyLimitUsd", "daily_limit", "dailyLimit", "daily_usd", "dailyUsd"),
-		WeeklyLimitUSD:    firstFloatPtr(raw, "weekly_limit_usd", "weeklyLimitUsd", "weekly_limit", "weeklyLimit", "weekly_usd", "weeklyUsd"),
-		FiveHourUSD:       firstFloatPtr(raw, "five_hour_limit_usd", "fiveHourLimitUsd", "five_hour_usd", "fiveHourUsd", "5h_limit_usd"),
-		MonthlyLimitUSD:   firstFloatPtr(raw, "monthly_limit_usd", "monthlyLimitUsd", "monthly_usd", "monthlyUsd", "month_limit_usd"),
+		DailyLimitUSD:     daily,
+		WeeklyLimitUSD:    weekly,
+		FiveHourUSD:       fiveHour,
+		MonthlyLimitUSD:   monthly,
+		WeeklyOnly:        weeklyOnly,
 		Archived:          archived,
 	}, true
 }

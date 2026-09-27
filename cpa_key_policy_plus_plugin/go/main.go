@@ -29,10 +29,6 @@ const (
 	priceBookRefreshTTL          = 30 * time.Second
 )
 
-var executorUsageModelAliases = map[string]string{
-	"gpt-5.3-codex-spark": "gpt-5.4",
-}
-
 //go:embed assets/admin.html
 var adminHTMLTemplate string
 
@@ -75,6 +71,7 @@ type capabilities struct {
 	FrontendAuthProvider          bool     `json:"frontend_auth_provider"`
 	FrontendAuthProviderExclusive bool     `json:"frontend_auth_provider_exclusive"`
 	ModelRouter                   bool     `json:"model_router"`
+	RequestInterceptor            bool     `json:"request_interceptor"`
 	Executor                      bool     `json:"executor"`
 	ExecutorModelScope            string   `json:"executor_model_scope"`
 	ExecutorInputFormats          []string `json:"executor_input_formats"`
@@ -94,7 +91,6 @@ type runtimeState struct {
 	rpmBuckets        map[string][]time.Time
 	priceBook         policyplus.PriceBook
 	priceBookChecked  time.Time
-	priceBookRepriced string
 	lastConfigError   string
 	lastConfigErrorAt time.Time
 }
@@ -139,13 +135,15 @@ func runPreviewIfRequested() {
 	if err != nil {
 		panic(err)
 	}
-	previewRawKey := "cpa_preview_abcdefghijklmnopqrstuvwxyz0123456789AB"
+	previewRawKey := "sk-preview-abcdefghijklmnopqrstuvwxyz0123456789AB"
 	previewKey := policyplus.KeyRecord{
 		ID:              "preview-key",
 		Name:            "演示用户",
 		KeyHash:         "sha256:" + policyplus.SHA256Hex(previewRawKey),
 		Enabled:         true,
 		Preview:         policyplus.HashPreview(policyplus.SHA256Hex(previewRawKey)),
+		Source:          policyplus.NativeCPASource,
+		SourcePresent:   true,
 		RPM:             60,
 		Concurrency:     0,
 		Models:          []string{"gpt-5.5", "gpt-5.4"},
@@ -160,9 +158,11 @@ func runPreviewIfRequested() {
 	disabledKey := policyplus.KeyRecord{
 		ID:                "preview-disabled",
 		Name:              "禁用演示",
-		KeyHash:           "sha256:" + policyplus.SHA256Hex("cpa_preview_disabled_abcdefghijklmnopqrstuvwxyz0123"),
+		KeyHash:           "sha256:" + policyplus.SHA256Hex("sk-preview-disabled-abcdefghijklmnopqrstuvwxyz0123"),
 		Enabled:           false,
-		Preview:           policyplus.HashPreview(policyplus.SHA256Hex("cpa_preview_disabled_abcdefghijklmnopqrstuvwxyz0123")),
+		Preview:           policyplus.HashPreview(policyplus.SHA256Hex("sk-preview-disabled-abcdefghijklmnopqrstuvwxyz0123")),
+		Source:            policyplus.NativeCPASource,
+		SourcePresent:     true,
 		RPM:               30,
 		Concurrency:       0,
 		MaxActiveSessions: 0,
@@ -172,9 +172,11 @@ func runPreviewIfRequested() {
 	noLimitKey := policyplus.KeyRecord{
 		ID:                "preview-no-limit",
 		Name:              "无限额演示",
-		KeyHash:           "sha256:" + policyplus.SHA256Hex("cpa_preview_nolimit_abcdefghijklmnopqrstuvwxyz0123"),
+		KeyHash:           "sha256:" + policyplus.SHA256Hex("sk-preview-nolimit-abcdefghijklmnopqrstuvwxyz0123"),
 		Enabled:           true,
-		Preview:           policyplus.HashPreview(policyplus.SHA256Hex("cpa_preview_nolimit_abcdefghijklmnopqrstuvwxyz0123")),
+		Preview:           policyplus.HashPreview(policyplus.SHA256Hex("sk-preview-nolimit-abcdefghijklmnopqrstuvwxyz0123")),
+		Source:            policyplus.NativeCPASource,
+		SourcePresent:     true,
 		RPM:               0,
 		Concurrency:       0,
 		MaxActiveSessions: 0,
@@ -182,6 +184,16 @@ func runPreviewIfRequested() {
 	_ = store.UpsertKey(context.Background(), previewKey)
 	_ = store.UpsertKey(context.Background(), disabledKey)
 	_ = store.UpsertKey(context.Background(), noLimitKey)
+	// Illustrative preview prices so the pages render a synced price book.
+	_ = store.SaveCachedPriceBook(context.Background(), policyplus.PriceBook{
+		Source:   policyplus.CostSourceCPAMPPriceBook,
+		LoadedAt: time.Now(),
+		Prices: map[string]policyplus.ModelPrice{
+			"gpt-5.5":      {Model: "gpt-5.5", InputPerMillion: 5, OutputPerMillion: 30, CacheReadPerMillion: 0.5},
+			"gpt-5.4":      {Model: "gpt-5.4", InputPerMillion: 2.5, OutputPerMillion: 15, CacheReadPerMillion: 0.25},
+			"gpt-5.4-mini": {Model: "gpt-5.4-mini", InputPerMillion: 0.75, OutputPerMillion: 4.5, CacheReadPerMillion: 0.075},
+		},
+	})
 	_ = store.InsertUsage(context.Background(), policyplus.UsageEvent{
 		RequestID:       "req-preview-a",
 		KeyID:           previewKey.ID,
@@ -380,6 +392,7 @@ func runPreviewIfRequested() {
 		}
 		_, _ = w.Write(resp.Body)
 	})
+	fmt.Printf("CPA Key Policy+ preview: http://%s/v0/resource/plugins/cpa-key-policy-plus/user (key %s) and /admin\n", addr, previewRawKey)
 	if err := http.ListenAndServe(addr, mux); err != nil {
 		panic(err)
 	}
@@ -394,8 +407,20 @@ func shutdownPlugin() {
 		_ = state.store.Close()
 		state.store = nil
 	}
+	resetPoolCaches()
 	state.lastConfigError = ""
 	state.lastConfigErrorAt = time.Time{}
+}
+
+// handleMethodSafely turns a panic into an error for that one call: the plugin
+// runs inside CPA's process, where an unrecovered panic stops CPA itself.
+func handleMethodSafely(method string, request []byte) (raw []byte, err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			raw, err = nil, fmt.Errorf("internal error in %s: %v", method, recovered)
+		}
+	}()
+	return handleMethod(method, request)
 }
 
 func handleMethod(method string, request []byte) ([]byte, error) {
@@ -409,6 +434,10 @@ func handleMethod(method string, request []byte) ([]byte, error) {
 		return frontendAuth(request)
 	case methodModelRoute:
 		return routeModel(request)
+	case methodRequestInterceptBefore:
+		return requestInterceptBeforeAuth(request)
+	case methodRequestInterceptAfter:
+		return requestInterceptAfterAuth(request)
 	case methodExecutorIdentifier:
 		return okEnvelope(map[string]string{"identifier": pluginID})
 	case methodExecutorExecute:
@@ -471,16 +500,23 @@ func configure(raw []byte) error {
 	state.keyStateLastCheck = time.Time{}
 	state.priceBook = policyplus.PriceBook{}
 	state.priceBookChecked = time.Time{}
-	state.priceBookRepriced = ""
 	state.lastConfigError = ""
 	state.lastConfigErrorAt = time.Time{}
 	state.mu.Unlock()
 	if old != nil {
 		_ = old.Close()
 	}
+	resetPoolCaches()
 	_ = refreshKeyPolicyState(true)
 	_ = syncNativeKeysFromLoadedConfig()
 	_ = currentPriceBook(context.Background(), true)
+	if keys, err := store.ListKeys(context.Background()); err == nil {
+		maybeSyncCPAMPAliases(keys)
+	}
+	// A pool that lends its account has an open lend window from startup on.
+	if pools, err := store.ListPools(context.Background()); err == nil {
+		_ = store.SyncLendWindows(context.Background(), pools, time.Now())
+	}
 	return nil
 }
 
@@ -569,7 +605,6 @@ func currentPriceBook(ctx context.Context, force bool) policyplus.PriceBook {
 	if err == nil && len(book.Prices) > 0 {
 		if store != nil {
 			_ = store.SaveCachedPriceBook(ctx, book)
-			repriceCurrentMonthIfNeeded(ctx, store, book)
 		}
 		state.mu.Lock()
 		state.priceBook = book
@@ -591,7 +626,7 @@ func currentPriceBook(ctx context.Context, force bool) policyplus.PriceBook {
 		}
 	}
 	if err != nil {
-		warnings = append(warnings, "CPAMP 价格源不可用，费用暂按 $0 记录。")
+		warnings = append(warnings, "CPAMP 价格源不可用且没有最近有效缓存；受限 Key 的未定价模型会被拒绝，不按 $0 放行。")
 	}
 	book = policyplus.PriceBook{
 		Source:   policyplus.CostSourceCPAMPPriceUnavailable,
@@ -604,27 +639,6 @@ func currentPriceBook(ctx context.Context, force bool) policyplus.PriceBook {
 	state.priceBookChecked = time.Now()
 	state.mu.Unlock()
 	return book
-}
-
-func repriceCurrentMonthIfNeeded(ctx context.Context, store *policyplus.Store, book policyplus.PriceBook) {
-	fingerprint := book.Fingerprint()
-	if fingerprint == "" {
-		return
-	}
-	state.mu.RLock()
-	already := state.priceBookRepriced == fingerprint
-	state.mu.RUnlock()
-	if already {
-		return
-	}
-	window := policyplus.WindowFor(policyplus.RangeMonth, time.Now())
-	if _, err := store.RecalculateUsageCosts(ctx, window.From, book); err != nil {
-		_ = store.Audit(ctx, "system", "cpamp_price_reprice_failed", "usage_events", map[string]any{"error": policyplus.Brief(err.Error(), 240)})
-		return
-	}
-	state.mu.Lock()
-	state.priceBookRepriced = fingerprint
-	state.mu.Unlock()
 }
 
 func pricingStatus(book policyplus.PriceBook) map[string]any {
@@ -685,29 +699,39 @@ func pluginRegistration() registration {
 				{Name: "key_policy_state_path", Type: configString, Description: "Optional old CPA Key Policy state JSON path to import once or mirror during cutover."},
 				{Name: "legacy_quota_db_path", Type: configString, Description: "Optional old usage-admin SQLite path for one-way 5H/month limit and reset import."},
 				{Name: "governor_state_db_path", Type: configString, Description: "Optional old Governor SQLite path for one-way limit and reset import."},
-				{Name: "codex_summary_db_path", Type: configString, Description: "Optional read-only CodexCont executor SQLite path for safe protection summaries."},
+				{Name: "codex_summary_db_path", Type: configString, Description: "Optional legacy executor SQLite history path; read only when codexcont_enabled is true."},
 				{Name: "native_keys_config_path", Type: configString, Description: "Optional CPA config YAML path whose top-level api-keys are synced as native policy keys."},
 				{Name: "cpamp_alias_db_path", Type: configString, Description: "Optional CPAMP manager SQLite path for read-only api_key_aliases lookup."},
 				{Name: "cpamp_alias_db_paths", Type: configString, Description: "Optional comma/semicolon-separated fallback CPAMP SQLite paths for read-only api_key_aliases lookup."},
 				{Name: "cpamp_price_db_path", Type: configString, Description: "Optional CPAMP manager SQLite path for read-only model_prices billing lookup."},
 				{Name: "cpamp_price_db_paths", Type: configString, Description: "Optional comma/semicolon-separated fallback CPAMP SQLite paths for read-only model_prices lookup."},
 				{Name: "session_secret", Type: configString, Description: "Secret used to sign user portal sessions."},
-				{Name: "codexcont_enabled", Type: configBoolean, Description: "Enable CodexCont status lookup for user summaries."},
+				{Name: "codexcont_enabled", Type: configBoolean, Description: "Enable optional legacy executor-history lookup; keep false for native CPA cutover."},
 				{Name: "codexcont_route", Type: configBoolean, Description: "Deprecated in Key Policy Plus; keep false and let Governor own CodexCont routing."},
 				{Name: "codexcont_url", Type: configString, Description: "Internal CodexCont engine base URL."},
 				{Name: "fail_mode", Type: configEnum, EnumValues: []string{"fallback", "fail_closed"}, Description: "Behavior when engine is unavailable."},
+				{Name: "sub2pool_url", Type: configString, Description: "Optional Sub2Pool base URL (e.g. http://sub2pool:8000) whose read-only capacity estimate is shown next to each carpool pool."},
+				{Name: "sub2pool_api_key", Type: configString, Description: "Optional Sub2Pool read-only API key (sub2pool_...) used with sub2pool_url."},
+				{Name: "cpamp_url", Type: configString, Description: "CPAMP manager base URL used to name Key Policy+ keys in CPAMP's request monitor (default http://cpamp:18317)."},
+				{Name: "cpamp_admin_key_file", Type: configString, Description: "File holding the CPAMP admin key; defaults to cpamp-admin-key next to state_db_path. Without it no aliases are pushed."},
 			},
 		},
 		Capabilities: capabilities{
 			FrontendAuthProvider:          true,
 			FrontendAuthProviderExclusive: cfg.ExclusiveAuth,
-			ModelRouter:                   true,
-			Executor:                      true,
-			ExecutorModelScope:            executorModelScopeBoth,
-			ExecutorInputFormats:          []string{executorFormatOpenAIResponse},
-			ExecutorOutputFormats:         []string{executorFormatOpenAIResponse},
-			UsagePlugin:                   true,
-			ManagementAPI:                 true,
+			// Native request interception is the authoritative policy denial
+			// path on CPA schema v2+: ModelRouter cannot represent an HTTP
+			// status, so routing never carries denials. The router only pins
+			// carpool members to their pool account (pro/gpt-5.5), and only
+			// once a pool has a model prefix CPA actually serves.
+			ModelRouter:           true,
+			RequestInterceptor:    true,
+			Executor:              true,
+			ExecutorModelScope:    executorModelScopeBoth,
+			ExecutorInputFormats:  []string{executorFormatOpenAIResponse},
+			ExecutorOutputFormats: []string{executorFormatOpenAIResponse},
+			UsagePlugin:           true,
+			ManagementAPI:         true,
 		},
 	}
 }
@@ -746,41 +770,29 @@ func frontendAuth(raw []byte) ([]byte, error) {
 	if key == "" {
 		return okEnvelope(frontendAuthResponse{Authenticated: false})
 	}
-	model := requestedModelFromBody(req.Body)
-	record, decision, ok := policyDecisionForRawKey(key, model, true)
-	if !ok {
+	record, ok := findKeyByRaw(key)
+	if !ok || !evaluateIdentityPolicy(record).Allowed {
 		return okEnvelope(frontendAuthResponse{Authenticated: false})
-	}
-	metadata := authMetadata(record)
-	if !decision.Allowed {
-		if !shouldSurfacePolicyDeny(req) {
-			return okEnvelope(frontendAuthResponse{Authenticated: false})
-		}
-		metadata = decisionMetadata(metadata, decision)
 	}
 	return okEnvelope(frontendAuthResponse{
 		Authenticated: true,
 		Principal:     record.ID,
-		Metadata:      metadata,
+		Metadata:      authMetadata(record),
 	})
 }
 
-func shouldSurfacePolicyDeny(req frontendAuthRequest) bool {
-	path := strings.ToLower(strings.TrimSpace(req.Path))
-	if strings.Contains(path, "/v1/responses") || strings.Contains(path, "/responses") {
-		return true
-	}
-	return requestedModelFromBody(req.Body) != ""
+func policyDecisionForRawKey(rawKey, model string, consumeRPM bool) (policyplus.KeyRecord, policyDecision, bool) {
+	return policyDecisionForRawKeyWithServiceTier(rawKey, model, "", consumeRPM)
 }
 
-func policyDecisionForRawKey(rawKey, model string, consumeRPM bool) (policyplus.KeyRecord, policyDecision, bool) {
+func policyDecisionForRawKeyWithServiceTier(rawKey, model, serviceTier string, consumeRPM bool) (policyplus.KeyRecord, policyDecision, bool) {
 	submitted := policyplus.NormalizeSubmittedKey(rawKey)
 	if strings.HasPrefix(strings.ToLower(submitted), "cpa_") {
 		return policyplus.KeyRecord{}, policyDecision{}, false
 	}
 	record, ok := findKeyByRaw(rawKey)
 	if ok {
-		return record, evaluatePolicy(record, model, consumeRPM), true
+		return record, evaluatePolicyWithServiceTier(record, model, serviceTier, consumeRPM), true
 	}
 	if !isNativeSubmittedKey(submitted) {
 		return policyplus.KeyRecord{}, policyDecision{}, false
@@ -905,24 +917,65 @@ func refreshKeyPolicyState(force bool) error {
 	return nil
 }
 
+// routeModel only pins carpool members to their pool account. Policy denials
+// are left unhandled here: the request interceptor terminates them with a real
+// HTTP 429, which a routed fake executor could not.
 func routeModel(raw []byte) ([]byte, error) {
 	var req modelRouteRequest
 	if err := json.Unmarshal(raw, &req); err != nil {
 		return nil, err
 	}
-	cfg := loadedConfig()
-	if !cfg.Enabled {
-		return okEnvelope(modelRouteResponse{Handled: false})
+	unhandled := modelRouteResponse{Handled: false}
+	if !loadedConfig().Enabled || !poolRoutingConfigured(context.Background()) {
+		return okEnvelope(unhandled)
 	}
-	decision, ok := policyDecisionForHeaders(req.Headers, firstNonEmpty(req.RequestedModel, requestedModelFromBody(req.Body)), false)
+	rawKey := bearer(req.Headers.Get("Authorization"))
+	if rawKey == "" {
+		return okEnvelope(unhandled)
+	}
+	key, ok := findKeyByRaw(rawKey)
+	if !ok {
+		return okEnvelope(unhandled)
+	}
+	if route, pinned := poolRouteTarget(key.ID, firstNonEmpty(req.RequestedModel, requestedModelFromBody(req.Body))); pinned {
+		return okEnvelope(route)
+	}
+	return okEnvelope(unhandled)
+}
+
+// requestInterceptBeforeAuth is the only policy-denial path that can produce
+// a real downstream HTTP response in CPA schema v2+. Frontend auth supplies
+// identity; model routing and executor responses cannot encode an HTTP status.
+func requestInterceptBeforeAuth(raw []byte) ([]byte, error) {
+	var req requestInterceptRequest
+	if err := json.Unmarshal(raw, &req); err != nil {
+		return okEnvelope(requestInterceptResponse{})
+	}
+	if !loadedConfig().Enabled {
+		return okEnvelope(requestInterceptResponse{})
+	}
+	model := firstNonEmpty(requestedModelFromBody(req.Body), req.RequestedModel, req.Model)
+	decision, ok := policyDecisionForIntercept(req, model, requestedServiceTierFromBody(req.Body))
 	if !ok || decision.Allowed {
-		return okEnvelope(modelRouteResponse{Handled: false})
+		return okEnvelope(requestInterceptResponse{})
 	}
-	return okEnvelope(modelRouteResponse{
-		Handled:    true,
-		TargetKind: routeTargetSelf,
-		Reason:     "cpa_key_policy_plus_policy_denied",
-	})
+	return okEnvelope(policyTerminationResponse(decision))
+}
+
+// requestInterceptAfterAuth deliberately performs no second policy decision:
+// the before-auth interceptor already consumed the one RPM slot for this
+// inference attempt and either terminated it or let it proceed.
+func requestInterceptAfterAuth(_ []byte) ([]byte, error) {
+	return okEnvelope(requestInterceptResponse{})
+}
+
+func policyTerminationResponse(decision policyDecision) requestInterceptResponse {
+	return requestInterceptResponse{
+		Terminate:       true,
+		StatusCode:      decision.StatusCode,
+		ResponseHeaders: policyDenyHeaders(decision),
+		ResponseBody:    policyDenyBody(decision),
+	}
 }
 
 func isResponsesRequest(source string, body []byte) bool {
@@ -947,19 +1000,82 @@ func requestedModelFromBody(body []byte) string {
 	return ""
 }
 
+func requestedServiceTierFromBody(body []byte) string {
+	if len(body) == 0 {
+		return ""
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return ""
+	}
+	for _, field := range []string{"service_tier", "serviceTier"} {
+		if value, ok := raw[field].(string); ok {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
+}
+
 func policyDecisionForHeaders(headers http.Header, model string, consumeRPM bool) (policyDecision, bool) {
+	return policyDecisionForHeadersWithServiceTier(headers, model, "", consumeRPM)
+}
+
+func policyDecisionForHeadersWithServiceTier(headers http.Header, model, serviceTier string, consumeRPM bool) (policyDecision, bool) {
 	rawKey := bearer(headers.Get("Authorization"))
 	if rawKey == "" {
 		return policyDecision{}, false
 	}
-	_, decision, ok := policyDecisionForRawKey(rawKey, model, consumeRPM)
+	_, decision, ok := policyDecisionForRawKeyWithServiceTier(rawKey, model, serviceTier, consumeRPM)
 	if !ok {
 		return policyDecision{}, false
 	}
 	return decision, true
 }
 
+// policyDecisionForIntercept normally uses the original Authorization header.
+// Some CPA execution paths can replace that header after frontend auth; in
+// that case use only the host-injected identity metadata created by this exact
+// plugin, never arbitrary client metadata.
+func policyDecisionForIntercept(req requestInterceptRequest, model, serviceTier string) (policyDecision, bool) {
+	if decision, ok := policyDecisionForHeadersWithServiceTier(req.Headers, model, serviceTier, true); ok {
+		return decision, true
+	}
+	if metadataString(req.Metadata, "provider") != pluginID {
+		return policyDecision{}, false
+	}
+	keyID := metadataString(req.Metadata, "key_id")
+	if keyID == "" {
+		return policyDecision{}, false
+	}
+	store := loadedStore()
+	if store == nil {
+		return policyDecision{}, false
+	}
+	keys, err := store.ListKeys(context.Background())
+	if err != nil {
+		return policyDecision{}, false
+	}
+	for _, key := range keys {
+		if key.ID == keyID {
+			return evaluatePolicyWithServiceTier(key, model, serviceTier, true), true
+		}
+	}
+	return policyDecision{}, false
+}
+
+func metadataString(metadata map[string]any, key string) string {
+	if metadata == nil {
+		return ""
+	}
+	value, _ := metadata[key].(string)
+	return strings.TrimSpace(value)
+}
+
 func evaluatePolicy(key policyplus.KeyRecord, model string, consumeRPM bool) policyDecision {
+	return evaluatePolicyWithServiceTier(key, model, "", consumeRPM)
+}
+
+func evaluatePolicyWithServiceTier(key policyplus.KeyRecord, model, serviceTier string, consumeRPM bool) policyDecision {
 	base := policyDecision{
 		Allowed:    true,
 		StatusCode: http.StatusOK,
@@ -975,8 +1091,18 @@ func evaluatePolicy(key policyplus.KeyRecord, model string, consumeRPM bool) pol
 	if !key.Enabled || key.Archived {
 		return denyDecision(base, "invalid_request_error", "api_key_disabled", "disabled", "", fmt.Sprintf("CPA Key Policy+ 已拦截：%s 当前已禁用。", safeKeyDisplayName(key)))
 	}
+	if strings.TrimSpace(key.BillingHoldReason) != "" {
+		return denyDecision(base, "rate_limit_exceeded", "billing_pending", "billing", "billing", fmt.Sprintf("CPA Key Policy+ 已暂停：%s 有待核算费用（模型 %s，原因 %s）。在 CPAMP 价格核验并完成 pending billing resolve 前，不会继续放行请求。", safeKeyDisplayName(key), firstNonEmpty(key.BillingHoldModel, "未知"), key.BillingHoldReason))
+	}
 	if model != "" && !policyplus.ModelAllowed(key.Models, model) {
 		return denyDecision(base, "invalid_request_error", "model_not_allowed", "model", "", fmt.Sprintf("CPA Key Policy+ 已拦截：%s 不允许使用模型 %s。", safeKeyDisplayName(key), model))
+	}
+	if hasCostQuota(key) {
+		priceBook := currentPriceBook(context.Background(), false)
+		price, priced := priceBook.PriceFor(model)
+		if strings.TrimSpace(model) == "" || !priced || !policyplus.PriceAllowsAdmission(price, serviceTier) {
+			return denyDecision(base, "rate_limit_exceeded", "model_price_unavailable", "pricing", "model", fmt.Sprintf("CPA Key Policy+ 已拦截：%s 的模型 %s 没有已验证的 CPAMP 价格。受限 Key 已暂停该模型，避免按 $0 计入周限；请先同步价格或恢复最近有效缓存。", safeKeyDisplayName(key), firstNonEmpty(strings.TrimSpace(model), "(未提供模型)")))
+		}
 	}
 	if rpm := checkRPM(key, consumeRPM); !rpm.Allowed {
 		base.UsedCount = rpm.Used
@@ -984,12 +1110,20 @@ func evaluatePolicy(key policyplus.KeyRecord, model string, consumeRPM bool) pol
 		base.Window = "rpm"
 		return denyDecision(base, "rate_limit_exceeded", "rpm_rate_limit_exceeded", "rpm", "", fmt.Sprintf("CPA Key Policy+ 已拦截：%s 触发 RPM 限制，最近 1 分钟请求 %d / 上限 %d。", safeKeyDisplayName(key), rpm.Used, rpm.Limit))
 	}
-	if quota := checkQuota(key); !quota.Allowed {
-		base.Window = quota.Window
-		base.Param = quota.Window
-		base.UsedUSD = quota.Used
-		base.LimitUSD = quota.Limit
-		return denyDecision(base, "rate_limit_exceeded", quota.Code, quota.Window, quota.Window, fmt.Sprintf("CPA Key Policy+ 已拦截：%s 触发 %s费用限额，已用 $%.2f / 上限 $%.2f。", safeKeyDisplayName(key), windowDisplayName(quota.Window), quota.Used, quota.Limit))
+	// A pool share replaces the USD windows of its members; the windows stay
+	// stored and apply again once the key leaves the pool.
+	if _, _, pooled := poolShareOf(key.ID); !pooled {
+		if quota := checkQuota(key); !quota.Allowed {
+			base.Window = quota.Window
+			base.Param = quota.Window
+			base.UsedUSD = quota.Used
+			base.LimitUSD = quota.Limit
+			return denyDecision(base, "rate_limit_exceeded", quota.Code, quota.Window, quota.Window, fmt.Sprintf("CPA Key Policy+ 已拦截：%s 触发 %s费用限额，已用 $%.2f / 上限 $%.2f。", safeKeyDisplayName(key), windowDisplayName(quota.Window), quota.Used, quota.Limit))
+		}
+	}
+	if share := checkPoolShare(key, model); !share.Allowed {
+		base.Window = "pool"
+		return denyDecision(base, "rate_limit_exceeded", "pool_share_exceeded", "pool", "pool", fmt.Sprintf("CPA Key Policy+ 已拦截：%s 在拼车池「%s」本周期的份额已用完（已用 %.2f%% / 可用 %.2f%%），%s 重置。", safeKeyDisplayName(key), share.PoolName, share.UsedPP, share.AvailablePP, beijingTimeLabel(share.ResetAt)))
 	}
 	return base
 }
@@ -1106,6 +1240,10 @@ func checkQuota(key policyplus.KeyRecord) quotaDecision {
 		}
 	}
 	return quotaDecision{Allowed: true}
+}
+
+func hasCostQuota(key policyplus.KeyRecord) bool {
+	return key.FiveHourUSD != nil || key.DailyLimitUSD != nil || key.WeeklyLimitUSD != nil || key.MonthlyLimitUSD != nil
 }
 
 func windowDisplayName(window string) string {
@@ -1226,7 +1364,8 @@ func executorExecuteStream(raw []byte) ([]byte, error) {
 
 func policyDenyForExecutor(req executorRequest) (policyDecision, bool) {
 	model := firstNonEmpty(req.Model, requestedModelFromBody(req.OriginalRequest), requestedModelFromBody(req.Payload))
-	decision, ok := policyDecisionForHeaders(req.Headers, model, false)
+	serviceTier := firstNonEmpty(requestedServiceTierFromBody(req.OriginalRequest), requestedServiceTierFromBody(req.Payload))
+	decision, ok := policyDecisionForHeadersWithServiceTier(req.Headers, model, serviceTier, false)
 	if !ok || decision.Allowed {
 		return policyDecision{}, false
 	}
@@ -1315,6 +1454,8 @@ func usageHandle(raw []byte) ([]byte, error) {
 	if store == nil {
 		return okEnvelope(map[string]any{})
 	}
+	ingestQuotaSignal(context.Background(), store, rec)
+	noteUpstreamLimit(rec)
 	keys, _ := store.ListKeys(context.Background())
 	keyByID := map[string]policyplus.KeyRecord{}
 	for _, key := range keys {
@@ -1337,16 +1478,24 @@ func usageHandle(raw []byte) ([]byte, error) {
 		ReasoningTokens:     rec.Detail.ReasoningTokens,
 		TotalTokens:         rec.Detail.TotalTokens,
 	}
+	actualModel := strings.TrimSpace(rec.Model)
+	billingModel := firstNonEmpty(actualModel, visibleModel)
+	if hasCostQuota(key) && isZeroTokenInternalPolicyTrace(rec, usage) {
+		_ = store.Audit(context.Background(), "system", "usage_zero_token_policy_trace", key.ID, map[string]any{
+			"model":  billingModel,
+			"reason": "zero_token_internal_rejection",
+		})
+		return okEnvelope(map[string]any{})
+	}
 	priceBook := currentPriceBook(context.Background(), false)
-	breakdown, _ := policyplus.CostForUsageFromPriceBook(priceBook, usage, visibleModel, rec.ServiceTier)
-	cost := breakdown.Costs["total"]
+	breakdown, priced := policyplus.CostForUsageFromPriceBook(priceBook, usage, billingModel, rec.ServiceTier)
 	event := policyplus.UsageEvent{
 		RequestID:       firstNonEmpty(rec.ResponseHeaders.Get("x-request-id"), rec.ResponseHeaders.Get("x-openai-request-id")),
 		KeyID:           key.ID,
 		KeyPreview:      key.Preview,
 		Model:           visibleModel,
 		RequestedModel:  visibleModel,
-		ActualModel:     rec.Model,
+		ActualModel:     actualModel,
 		Provider:        rec.Provider,
 		ExecutorType:    rec.ExecutorType,
 		Endpoint:        rec.Source,
@@ -1359,18 +1508,49 @@ func usageHandle(raw []byte) ([]byte, error) {
 		Failed:          rec.Failed,
 		Failure:         policyplus.Brief(rec.Failure.Body, 600),
 		Usage:           usage,
-		Cost:            cost,
+		Cost:            breakdown.Costs["total"],
 		CostBreakdown:   breakdown,
+		AuthIndex:       strings.TrimSpace(rec.AuthIndex),
+		AuthID:          strings.TrimSpace(rec.AuthID),
+		ConsumedAtMS:    rec.RequestedAt.Add(rec.Latency).UnixMilli(),
 	}
-	_ = store.InsertUsage(context.Background(), event)
+	if !priced && hasCostQuota(key) {
+		reason := "model_or_service_tier_price_unavailable"
+		if actualModel != "" && !strings.EqualFold(actualModel, visibleModel) {
+			reason = "actual_model_price_unavailable"
+		}
+		breakdown.Source = policyplus.CostSourceCPAMPBillingPending
+		breakdown.Model = billingModel
+		breakdown.PriceMissing = true
+		breakdown.BillingPending = true
+		breakdown.BillingPendingReason = reason
+		breakdown.BillingPriceModel = billingModel
+		event.Cost = 0
+		event.CostBreakdown = breakdown
+		event.BillingPending = true
+		event.BillingReason = reason
+		event.BillingModel = billingModel
+		if err := store.InsertUsage(context.Background(), event); err != nil {
+			return nil, err
+		}
+		return okEnvelope(map[string]any{})
+	}
+	if err := store.InsertUsage(context.Background(), event); err != nil {
+		return nil, err
+	}
 	return okEnvelope(map[string]any{})
+}
+
+func isZeroTokenInternalPolicyTrace(rec usageRecord, usage policyplus.TokenUsage) bool {
+	if rec.Failed || rec.Failure.StatusCode != 0 {
+		return false
+	}
+	return usage.InputTokens == 0 && usage.OutputTokens == 0 && usage.CachedTokens == 0 &&
+		usage.CacheReadTokens == 0 && usage.CacheCreationTokens == 0 && usage.ReasoningTokens == 0 && usage.TotalTokens == 0
 }
 
 func visibleUsageModel(key policyplus.KeyRecord, rec usageRecord) string {
 	if model := strings.TrimSpace(rec.Alias); model != "" {
-		if alias := visibleExecutorAliasForReportedModel(model); alias != "" {
-			return alias
-		}
 		return model
 	}
 	reported := strings.TrimSpace(rec.Model)
@@ -1383,26 +1563,10 @@ func visibleUsageModel(key policyplus.KeyRecord, rec usageRecord) string {
 			return reported
 		}
 	}
-	if alias := visibleExecutorAliasForReportedModel(reported); alias != "" {
-		return alias
-	}
 	if len(allowed) == 1 {
 		return allowed[0]
 	}
 	return reported
-}
-
-func visibleExecutorAliasForReportedModel(reported string) string {
-	reported = strings.TrimSpace(reported)
-	if reported == "" {
-		return ""
-	}
-	for actual, visible := range executorUsageModelAliases {
-		if strings.EqualFold(strings.TrimSpace(actual), reported) {
-			return strings.TrimSpace(visible)
-		}
-	}
-	return ""
 }
 
 func managementRegister() ([]byte, error) {
@@ -1412,10 +1576,15 @@ func managementRegister() ([]byte, error) {
 			{Method: http.MethodGet, Path: "/plugins/cpa-key-policy-plus/models"},
 			{Method: http.MethodPut, Path: "/plugins/cpa-key-policy-plus/keys/save"},
 			{Method: http.MethodPut, Path: "/plugins/cpa-key-policy-plus/keys/limits"},
+			{Method: http.MethodPut, Path: "/plugins/cpa-key-policy-plus/keys/weekly-only"},
+			{Method: http.MethodPut, Path: "/plugins/cpa-key-policy-plus/keys/billing/resolve"},
 			{Method: http.MethodPost, Path: "/plugins/cpa-key-policy-plus/keys/reset"},
 			{Method: http.MethodGet, Path: "/plugins/cpa-key-policy-plus/events"},
 			{Method: http.MethodGet, Path: "/plugins/cpa-key-policy-plus/codexcont"},
 			{Method: http.MethodPut, Path: "/plugins/cpa-key-policy-plus/codexcont"},
+			{Method: http.MethodGet, Path: "/plugins/cpa-key-policy-plus/pools"},
+			{Method: http.MethodPut, Path: "/plugins/cpa-key-policy-plus/pools/save"},
+			{Method: http.MethodPost, Path: "/plugins/cpa-key-policy-plus/pools/burst"},
 		},
 		Resources: []resourceRoute{
 			{Path: "/admin", Menu: "CPA Key Policy+", Description: "Unified user key policy dashboard"},
@@ -1424,14 +1593,20 @@ func managementRegister() ([]byte, error) {
 			{Path: "/admin/api/models"},
 			{Path: "/admin/api/keys/save"},
 			{Path: "/admin/api/keys/limits"},
+			{Path: "/admin/api/keys/weekly-only"},
+			{Path: "/admin/api/keys/billing/resolve"},
 			{Path: "/admin/api/keys/reset"},
 			{Path: "/admin/api/events"},
 			{Path: "/admin/api/codexcont"},
+			{Path: "/admin/api/pools"},
 			{Path: "/user", Description: "Self-service usage dashboard"},
 			{Path: "/user/api/session"},
+			{Path: "/user/api/logout"},
 			{Path: "/user/api/me"},
 			{Path: "/user/api/usage"},
 			{Path: "/user/api/events"},
+			{Path: "/user/api/trend"},
+			{Path: "/user/api/pool"},
 			{Path: "/user/api/codexcont"},
 		},
 	}
@@ -1461,6 +1636,10 @@ func managementHandle(raw []byte) ([]byte, error) {
 		return adminSaveKeys(req)
 	case strings.HasSuffix(path, "/admin/api/keys/limits"):
 		return adminSetLimits(req)
+	case strings.HasSuffix(path, "/admin/api/keys/weekly-only"):
+		return adminEnableWeeklyOnly(req)
+	case strings.HasSuffix(path, "/admin/api/keys/billing/resolve"):
+		return adminResolvePendingBilling(req)
 	case strings.HasSuffix(path, "/admin/api/keys/reset"):
 		return adminReset(req)
 	case strings.HasSuffix(path, "/admin/api/keys/archive"):
@@ -1471,8 +1650,20 @@ func managementHandle(raw []byte) ([]byte, error) {
 		return adminEvents(req)
 	case strings.HasSuffix(path, "/admin/api/codexcont"):
 		return adminCodexCont(req)
+	case strings.HasSuffix(path, "/admin/api/pools"):
+		return adminPools(req)
+	case strings.HasSuffix(path, "/admin/api/pools/save"):
+		return adminSavePools(req)
+	case strings.HasSuffix(path, "/admin/api/pools/burst"):
+		return adminPoolBurst(req)
 	case strings.Contains(path, "/user/api/session"):
 		return userSession(req)
+	case strings.Contains(path, "/user/api/logout"):
+		return userLogout(req)
+	case strings.Contains(path, "/user/api/trend"):
+		return userTrend(req)
+	case strings.Contains(path, "/user/api/pool"):
+		return userPool(req)
 	case strings.Contains(path, "/user/api/me"):
 		return userMe(req)
 	case strings.Contains(path, "/user/api/usage"):
@@ -1491,6 +1682,10 @@ func managementHandle(raw []byte) ([]byte, error) {
 		return adminSaveKeys(req)
 	case strings.HasSuffix(path, "/plugins/cpa-key-policy-plus/keys/limits"):
 		return adminSetLimits(req)
+	case strings.HasSuffix(path, "/plugins/cpa-key-policy-plus/keys/weekly-only"):
+		return adminEnableWeeklyOnly(req)
+	case strings.HasSuffix(path, "/plugins/cpa-key-policy-plus/keys/billing/resolve"):
+		return adminResolvePendingBilling(req)
 	case strings.HasSuffix(path, "/plugins/cpa-key-policy-plus/keys/reset"):
 		return adminReset(req)
 	case strings.HasSuffix(path, "/plugins/cpa-key-policy-plus/keys/archive"):
@@ -1501,6 +1696,12 @@ func managementHandle(raw []byte) ([]byte, error) {
 		return adminEvents(req)
 	case strings.HasSuffix(path, "/plugins/cpa-key-policy-plus/codexcont"):
 		return adminCodexCont(req)
+	case strings.HasSuffix(path, "/plugins/cpa-key-policy-plus/pools"):
+		return adminPools(req)
+	case strings.HasSuffix(path, "/plugins/cpa-key-policy-plus/pools/save"):
+		return adminSavePools(req)
+	case strings.HasSuffix(path, "/plugins/cpa-key-policy-plus/pools/burst"):
+		return adminPoolBurst(req)
 	case strings.HasSuffix(path, "/key-policy-plus/api/keys"):
 		return adminKeys(req)
 	case strings.HasSuffix(path, "/key-policy-plus/api/models"):
@@ -1511,6 +1712,10 @@ func managementHandle(raw []byte) ([]byte, error) {
 		return adminSaveKeys(req)
 	case strings.HasSuffix(path, "/key-policy-plus/api/keys/limits"):
 		return adminSetLimits(req)
+	case strings.HasSuffix(path, "/key-policy-plus/api/keys/weekly-only"):
+		return adminEnableWeeklyOnly(req)
+	case strings.HasSuffix(path, "/key-policy-plus/api/keys/billing/resolve"):
+		return adminResolvePendingBilling(req)
 	case strings.HasSuffix(path, "/key-policy-plus/api/keys/reset"):
 		return adminReset(req)
 	case strings.HasSuffix(path, "/key-policy-plus/api/keys/archive"):
@@ -1521,6 +1726,12 @@ func managementHandle(raw []byte) ([]byte, error) {
 		return adminEvents(req)
 	case strings.HasSuffix(path, "/key-policy-plus/api/codexcont"):
 		return adminCodexCont(req)
+	case strings.HasSuffix(path, "/key-policy-plus/api/pools"):
+		return adminPools(req)
+	case strings.HasSuffix(path, "/key-policy-plus/api/pools/save"):
+		return adminSavePools(req)
+	case strings.HasSuffix(path, "/key-policy-plus/api/pools/burst"):
+		return adminPoolBurst(req)
 	default:
 		return jsonResponse(http.StatusNotFound, map[string]any{"ok": false, "error": "not_found"})
 	}
@@ -1563,17 +1774,31 @@ func adminKeys(req managementRequest) ([]byte, error) {
 	}
 	priceBook := currentPriceBook(context.Background(), false)
 	includeRemoved := truthyQuery(req.Query.Get("include_removed")) || truthyQuery(req.Query.Get("show_removed"))
+	aliases := cpampAliasTargets(keys)
 	keys = currentAdminKeyRows(keys, includeRemoved)
 	safe := make([]map[string]any, 0, len(keys))
 	now := time.Now()
 	for _, key := range keys {
 		row := key.Safe()
 		usage := usageWindows(context.Background(), store, key.ID, now)
+		quota := quotaWindows(key, usage)
+		annotateQuotaRecovery(context.Background(), store, key, quota, now)
 		row["usage"] = usage
-		row["quota"] = quotaWindows(key, usage)
+		row["quota"] = quota
+		if pool := poolKeyView(key.ID); pool != nil {
+			row["pool"] = pool
+		}
+		if rate, err := store.RequestRate(context.Background(), key.ID, now.Add(-7*24*time.Hour), now); err == nil {
+			row["rpm_stats"] = rate
+		}
+		if alias, ok := aliases[cpampPrincipalHash(key.ID)]; ok {
+			row["cpamp_alias"] = alias
+			row["cpamp_hash"] = cpampPrincipalHash(key.ID)[:12]
+		}
 		safe = append(safe, row)
 	}
-	return jsonResponse(http.StatusOK, map[string]any{"ok": true, "keys": safe, "codexcont": codexcontStatus(), "pricing": pricingStatus(priceBook)})
+	maybeSyncCPAMPAliases(keys)
+	return jsonResponse(http.StatusOK, map[string]any{"ok": true, "keys": safe, "codexcont": codexcontStatus(), "pricing": pricingStatus(priceBook), "cpamp_alias": cpampAliasStatus()})
 }
 
 func truthyQuery(value string) bool {
@@ -1628,6 +1853,9 @@ func adminModelCatalog() ([]policyplus.ModelOption, []string) {
 func hostRegistryModelCatalog() ([]policyplus.ModelOption, []string) {
 	result, err := callHost(methodHostModelsList, map[string]any{})
 	if err != nil {
+		if models, fallbackErr := localCPAAPIModelCatalog(); fallbackErr == nil {
+			return models, nil
+		}
 		return nil, []string{"CPA 模型注册表不可用，已使用宿主 auth 提示和 Plus 当前配置兜底。"}
 	}
 	var body hostModelsListResponse
@@ -1663,6 +1891,82 @@ func hostRegistryModelCatalog() ([]policyplus.ModelOption, []string) {
 		})
 	}
 	return out, nil
+}
+
+func localCPAAPIModelCatalog() ([]policyplus.ModelOption, error) {
+	cfg := loadedConfig()
+	configPath := strings.TrimSpace(cfg.NativeKeysConfigPath)
+	if configPath == "" {
+		return nil, fmt.Errorf("native CPA config path is empty")
+	}
+	raw, err := os.ReadFile(configPath)
+	if err != nil {
+		return nil, fmt.Errorf("read native CPA config: %w", err)
+	}
+	var cpaConfig struct {
+		Port    int      `yaml:"port"`
+		APIKeys []string `yaml:"api-keys"`
+	}
+	if err := yaml.Unmarshal(raw, &cpaConfig); err != nil {
+		return nil, fmt.Errorf("decode native CPA config: %w", err)
+	}
+	if cpaConfig.Port <= 0 {
+		cpaConfig.Port = 8317
+	}
+	client := &http.Client{
+		Transport: &http.Transport{Proxy: nil},
+		Timeout:   5 * time.Second,
+	}
+	endpoint := fmt.Sprintf("http://127.0.0.1:%d/v1/models", cpaConfig.Port)
+	for _, rawKey := range cpaConfig.APIKeys {
+		apiKey := policyplus.NormalizeSubmittedKey(rawKey)
+		if apiKey == "" {
+			continue
+		}
+		req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, endpoint, nil)
+		if err != nil {
+			return nil, fmt.Errorf("build local CPA models request: %w", err)
+		}
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+		resp, err := client.Do(req)
+		if err != nil {
+			continue
+		}
+		var body struct {
+			Data []hostModelListEntry `json:"data"`
+		}
+		decodeErr := json.NewDecoder(io.LimitReader(resp.Body, 4<<20)).Decode(&body)
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusOK || decodeErr != nil || len(body.Data) == 0 {
+			continue
+		}
+		out := make([]policyplus.ModelOption, 0, len(body.Data))
+		seen := map[string]bool{}
+		for _, item := range body.Data {
+			id := strings.TrimSpace(item.ID)
+			key := strings.ToLower(id)
+			if id == "" || seen[key] {
+				continue
+			}
+			seen[key] = true
+			display := strings.TrimSpace(item.DisplayName)
+			if display == "" {
+				display = id
+			}
+			out = append(out, policyplus.ModelOption{
+				ID:          id,
+				DisplayName: display,
+				Type:        strings.TrimSpace(item.Type),
+				OwnedBy:     strings.TrimSpace(item.OwnedBy),
+				Source:      "cpa_registry",
+				Known:       true,
+			})
+		}
+		if len(out) > 0 {
+			return out, nil
+		}
+	}
+	return nil, fmt.Errorf("local CPA models endpoint is unavailable")
 }
 
 func configuredModelOptions() []policyplus.ModelOption {
@@ -1847,6 +2151,107 @@ func adminSetLimits(req managementRequest) ([]byte, error) {
 	return adminKeys(req)
 }
 
+// adminEnableWeeklyOnly is intentionally a single-key, non-destructive
+// migration endpoint. Unlike keys/save, omitted fields cannot clear RPM,
+// model allowlists, or identity metadata while the deployment converts an
+// existing key to its retained weekly budget.
+func adminEnableWeeklyOnly(req managementRequest) ([]byte, error) {
+	var body struct {
+		ID         string   `json:"id"`
+		WeeklyOnly bool     `json:"weekly_only"`
+		WeeklyUSD  *float64 `json:"weekly_usd"`
+	}
+	if err := json.Unmarshal(req.Body, &body); err != nil {
+		return jsonResponse(http.StatusBadRequest, map[string]any{"ok": false, "error": "invalid_json"})
+	}
+	if strings.TrimSpace(body.ID) == "" {
+		return jsonResponse(http.StatusBadRequest, map[string]any{"ok": false, "error": "missing_key_id"})
+	}
+	if !body.WeeklyOnly {
+		return jsonResponse(http.StatusBadRequest, map[string]any{"ok": false, "error": "weekly_only_must_be_true"})
+	}
+	if body.WeeklyUSD != nil && *body.WeeklyUSD < 0 {
+		return jsonResponse(http.StatusBadRequest, map[string]any{"ok": false, "error": "usd_limits_must_not_be_negative"})
+	}
+	store := loadedStore()
+	if store == nil {
+		return jsonResponse(http.StatusServiceUnavailable, map[string]any{"ok": false, "error": "store_unavailable"})
+	}
+	if err := syncNativeKeysFromLoadedConfig(); err != nil {
+		return jsonResponse(http.StatusInternalServerError, map[string]any{"ok": false, "error": "native_key_sync_failed", "message": policyplus.Brief(err.Error(), 240)})
+	}
+	keys, err := store.ListKeys(context.Background())
+	if err != nil {
+		return jsonResponse(http.StatusInternalServerError, map[string]any{"ok": false, "error": err.Error()})
+	}
+	var key policyplus.KeyRecord
+	for _, candidate := range keys {
+		if candidate.ID == strings.TrimSpace(body.ID) {
+			key = candidate
+			break
+		}
+	}
+	if key.ID == "" {
+		return jsonResponse(http.StatusBadRequest, map[string]any{"ok": false, "error": "unknown_key"})
+	}
+	if key.Source == policyplus.NativeCPASource && !key.SourcePresent {
+		return jsonResponse(http.StatusBadRequest, map[string]any{"ok": false, "error": "source_removed_key_read_only"})
+	}
+	if key.WeeklyLimitUSD == nil && body.WeeklyUSD == nil {
+		return jsonResponse(http.StatusBadRequest, map[string]any{"ok": false, "error": "weekly_limit_required"})
+	}
+	if err := store.EnableWeeklyOnly(context.Background(), key.ID, body.WeeklyUSD); err != nil {
+		return jsonResponse(http.StatusBadRequest, map[string]any{"ok": false, "error": err.Error()})
+	}
+	return adminKeys(req)
+}
+
+// adminResolvePendingBilling is deliberately narrow: it recomputes only rows
+// marked billing_pending and releases the durable hold only when every one of
+// them has a verified current or cached CPAMP rule.
+func adminResolvePendingBilling(req managementRequest) ([]byte, error) {
+	var body struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(req.Body, &body); err != nil {
+		return jsonResponse(http.StatusBadRequest, map[string]any{"ok": false, "error": "invalid_json"})
+	}
+	body.ID = strings.TrimSpace(body.ID)
+	if body.ID == "" {
+		return jsonResponse(http.StatusBadRequest, map[string]any{"ok": false, "error": "missing_key_id"})
+	}
+	store := loadedStore()
+	if store == nil {
+		return jsonResponse(http.StatusServiceUnavailable, map[string]any{"ok": false, "error": "store_unavailable"})
+	}
+	if err := syncNativeKeysFromLoadedConfig(); err != nil {
+		return jsonResponse(http.StatusInternalServerError, map[string]any{"ok": false, "error": "native_key_sync_failed", "message": policyplus.Brief(err.Error(), 240)})
+	}
+	keys, err := store.ListKeys(context.Background())
+	if err != nil {
+		return jsonResponse(http.StatusInternalServerError, map[string]any{"ok": false, "error": err.Error()})
+	}
+	var key policyplus.KeyRecord
+	for _, candidate := range keys {
+		if candidate.ID == body.ID {
+			key = candidate
+			break
+		}
+	}
+	if key.ID == "" {
+		return jsonResponse(http.StatusBadRequest, map[string]any{"ok": false, "error": "unknown_key"})
+	}
+	if strings.TrimSpace(key.BillingHoldReason) == "" {
+		return jsonResponse(http.StatusConflict, map[string]any{"ok": false, "error": "billing_hold_not_active"})
+	}
+	book := currentPriceBook(context.Background(), true)
+	resolved, err := store.ResolvePendingBilling(context.Background(), key.ID, book)
+	if err != nil {
+		return jsonResponse(http.StatusConflict, map[string]any{"ok": false, "error": "billing_price_unavailable", "message": policyplus.Brief(err.Error(), 240)})
+	}
+	return jsonResponse(http.StatusOK, map[string]any{"ok": true, "resolved_pending_events": resolved, "pricing": pricingStatus(book)})
+}
+
 func adminReset(req managementRequest) ([]byte, error) {
 	var body struct {
 		ID     string `json:"id"`
@@ -1964,6 +2369,11 @@ func userSession(req managementRequest) ([]byte, error) {
 	if record.ID != "" && decision.Code != "policy_missing" {
 		decision = evaluateIdentityPolicy(record)
 	}
+	if !record.SourcePresent && decision.Code == "policy_missing" {
+		// A mistyped or removed key: "no matching policy" would send the holder
+		// to the admin page for a key that does not exist.
+		return jsonResponse(http.StatusUnauthorized, map[string]any{"ok": false, "error": "key_not_found", "category": "auth", "message": "没有找到这个 Key：它不在 CPA 当前的 Key 列表里。请确认粘贴的是 CPAMP 里完整的原生 sk- Key，或联系管理员。"})
+	}
 	if !decision.Allowed {
 		return jsonResponse(http.StatusForbidden, map[string]any{"ok": false, "error": decision.Code, "category": "auth", "message": decision.Message})
 	}
@@ -1992,14 +2402,15 @@ func userSession(req managementRequest) ([]byte, error) {
 	return okEnvelope(resp)
 }
 
+var userSessionCookiePaths = []string{
+	"/",
+	"/v0/resource/plugins/cpa-key-policy-plus/user",
+	"/key-policy-plus-user",
+}
+
 func userSessionSetCookies(token string) []string {
-	paths := []string{
-		"/",
-		"/v0/resource/plugins/cpa-key-policy-plus/user",
-		"/key-policy-plus-user",
-	}
-	out := make([]string, 0, len(paths))
-	for _, path := range paths {
+	out := make([]string, 0, len(userSessionCookiePaths))
+	for _, path := range userSessionCookiePaths {
 		out = append(out, (&http.Cookie{
 			Name:     plusSessionCookieName,
 			Value:    token,
@@ -2010,6 +2421,41 @@ func userSessionSetCookies(token string) []string {
 		}).String())
 	}
 	return out
+}
+
+// userSessionClearCookies expires every cookie keyFromSession accepts,
+// including the legacy Governor session, on every path the login set.
+func userSessionClearCookies() []string {
+	out := make([]string, 0, 2*len(userSessionCookiePaths))
+	for _, name := range []string{plusSessionCookieName, "cpa_governor_session"} {
+		for _, path := range userSessionCookiePaths {
+			out = append(out, (&http.Cookie{
+				Name:     name,
+				Value:    "",
+				Path:     path,
+				HttpOnly: true,
+				SameSite: http.SameSiteLaxMode,
+				MaxAge:   -1,
+			}).String())
+		}
+	}
+	return out
+}
+
+func userLogout(_ managementRequest) ([]byte, error) {
+	body, err := json.Marshal(map[string]any{"ok": true})
+	if err != nil {
+		return nil, err
+	}
+	return okEnvelope(managementResponse{
+		StatusCode: http.StatusOK,
+		Headers: http.Header{
+			"Content-Type":  []string{"application/json; charset=utf-8"},
+			"Cache-Control": []string{"no-store"},
+			"Set-Cookie":    userSessionClearCookies(),
+		},
+		Body: body,
+	})
 }
 
 func userSubmittedKey(req managementRequest) string {
@@ -2032,9 +2478,15 @@ func userMe(req managementRequest) ([]byte, error) {
 	row := key.Safe()
 	priceBook := currentPriceBook(context.Background(), false)
 	if store := loadedStore(); store != nil {
-		usage := usageWindows(context.Background(), store, key.ID, time.Now())
+		now := time.Now()
+		usage := usageWindows(context.Background(), store, key.ID, now)
+		quota := quotaWindows(key, usage)
+		annotateQuotaRecovery(context.Background(), store, key, quota, now)
 		row["usage"] = usage
-		row["quota"] = quotaWindows(key, usage)
+		row["quota"] = quota
+	}
+	if pool := poolKeyView(key.ID); pool != nil {
+		row["pool"] = pool
 	}
 	return jsonResponse(http.StatusOK, map[string]any{"ok": true, "me": row, "pricing": pricingStatus(priceBook)})
 }
@@ -2057,10 +2509,11 @@ func userUsage(req managementRequest) ([]byte, error) {
 	if err != nil {
 		return jsonResponse(http.StatusInternalServerError, map[string]any{"ok": false, "error": err.Error()})
 	}
-	success := summary.Calls - summary.Failed
+	settledCalls := summary.Calls - summary.BillingPending
+	success := settledCalls - summary.Failed
 	successRate := 0.0
-	if summary.Calls > 0 {
-		successRate = float64(success) / float64(summary.Calls)
+	if settledCalls > 0 {
+		successRate = float64(success) / float64(settledCalls)
 	}
 	return jsonResponse(http.StatusOK, map[string]any{
 		"ok":      true,
@@ -2068,12 +2521,13 @@ func userUsage(req managementRequest) ([]byte, error) {
 		"limits":  key.Safe()["limits"],
 		"pricing": pricingStatus(priceBook),
 		"summary": map[string]any{
-			"calls":        summary.Calls,
-			"success":      success,
-			"failed":       summary.Failed,
-			"success_rate": successRate,
-			"total_cost":   summary.TotalCost,
-			"usage":        summary.Usage,
+			"calls":           summary.Calls,
+			"success":         success,
+			"failed":          summary.Failed,
+			"billing_pending": summary.BillingPending,
+			"success_rate":    successRate,
+			"total_cost":      summary.TotalCost,
+			"usage":           summary.Usage,
 		},
 	})
 }
@@ -2084,6 +2538,70 @@ func userEvents(req managementRequest) ([]byte, error) {
 		return jsonResponse(http.StatusUnauthorized, map[string]any{"ok": false, "error": "not_authenticated", "category": "auth", "message": "会话已过期，请重新登录。"})
 	}
 	return eventsResponseFromRequest(req, key.ID)
+}
+
+// userTrend returns the signed-in key's spend per hour (5h/24h) or per day
+// (7d/month), bucketed on the viewer's clock and summing to the quota window.
+func userTrend(req managementRequest) ([]byte, error) {
+	key, ok := keyFromSession(req)
+	if !ok {
+		return jsonResponse(http.StatusUnauthorized, map[string]any{"ok": false, "error": "not_authenticated", "category": "auth", "message": "会话已过期，请重新登录。"})
+	}
+	store := loadedStore()
+	if store == nil {
+		return jsonResponse(http.StatusServiceUnavailable, map[string]any{"ok": false, "error": "store_unavailable"})
+	}
+	rangeName := strings.ToLower(strings.TrimSpace(req.Query.Get("range")))
+	switch rangeName {
+	case "":
+		rangeName = policyplus.Range24H
+	case policyplus.Range5H, policyplus.Range24H, policyplus.Range7D, policyplus.RangeMonth:
+	default:
+		return jsonResponse(http.StatusBadRequest, map[string]any{"ok": false, "error": "invalid_range"})
+	}
+	bucket := time.Hour
+	if rangeName == policyplus.Range7D || rangeName == policyplus.RangeMonth {
+		bucket = 24 * time.Hour
+	}
+	series, err := store.UsageSeries(context.Background(), key.ID, policyplus.WindowFor(rangeName, time.Now()), bucket, viewerOffsetSeconds(req.Query.Get("tz_offset")))
+	if err != nil {
+		return jsonResponse(http.StatusInternalServerError, map[string]any{"ok": false, "error": err.Error()})
+	}
+	return jsonResponse(http.StatusOK, map[string]any{"ok": true, "trend": series})
+}
+
+// viewerOffsetSeconds converts a browser Date.getTimezoneOffset() value
+// (minutes behind UTC, so UTC+8 is -480) into seconds east of UTC. Missing or
+// implausible values fall back to Beijing time, which the month window uses.
+func viewerOffsetSeconds(raw string) int64 {
+	minutes, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil || minutes < -14*60 || minutes > 14*60 {
+		return 8 * 60 * 60
+	}
+	return int64(-minutes) * 60
+}
+
+// annotateQuotaRecovery tells the pages when each window frees up:
+// recovers_at for an exhausted rolling window if no new usage arrives, and
+// resets_at for the Beijing-time month.
+func annotateQuotaRecovery(ctx context.Context, store *policyplus.Store, key policyplus.KeyRecord, quota map[string]map[string]any, now time.Time) {
+	if store == nil {
+		return
+	}
+	for name, row := range quota {
+		if name == policyplus.RangeMonth {
+			row["resets_at"] = policyplus.MonthResetAt(now).Unix()
+			continue
+		}
+		limit, ok := row["limit_usd"].(float64)
+		used, _ := row["used_usd"].(float64)
+		if !ok || used < limit {
+			continue
+		}
+		if at, ok, err := store.WindowRecoveryAt(ctx, key.ID, policyplus.WindowFor(name, now), limit); err == nil && ok {
+			row["recovers_at"] = at.Unix()
+		}
+	}
 }
 
 func userCodexCont(req managementRequest) ([]byte, error) {
@@ -2121,10 +2639,23 @@ func eventsResponseFromRequest(req managementRequest, keyID string) ([]byte, err
 			limit = parsed
 		}
 	}
-	return eventsResponseWithRange(keyID, req.Query.Get("range"), limit)
+	var before int64
+	if rawBefore := strings.TrimSpace(req.Query.Get("before")); rawBefore != "" {
+		if parsed, err := strconv.ParseInt(rawBefore, 10, 64); err == nil && parsed > 0 {
+			before = parsed
+		}
+	}
+	return eventsResponseWithWindow(keyID, req.Query.Get("range"), limit, before)
 }
 
 func eventsResponseWithRange(keyID string, rangeName string, limit int) ([]byte, error) {
+	return eventsResponseWithWindow(keyID, rangeName, limit, 0)
+}
+
+// eventsResponseWithWindow pages a ranged event list backwards with before
+// (unix seconds). Rows sharing the cursor second come back again; the page
+// dedupes them by request id. Unranged lists ignore the cursor.
+func eventsResponseWithWindow(keyID string, rangeName string, limit int, before int64) ([]byte, error) {
 	store := loadedStore()
 	if store == nil {
 		return jsonResponse(http.StatusServiceUnavailable, map[string]any{"ok": false, "error": "store_unavailable"})
@@ -2135,7 +2666,11 @@ func eventsResponseWithRange(keyID string, rangeName string, limit int) ([]byte,
 	if strings.TrimSpace(rangeName) == "" {
 		events, err = store.RecentEvents(context.Background(), keyID, limit)
 	} else {
-		events, err = store.RecentEventsWindow(context.Background(), keyID, policyplus.WindowFor(rangeName, time.Now()), limit)
+		window := policyplus.WindowFor(rangeName, time.Now())
+		if before > 0 && before < window.To.Unix() {
+			window.To = time.Unix(before, 0)
+		}
+		events, err = store.RecentEventsWindow(context.Background(), keyID, window, limit)
 	}
 	if err != nil {
 		return jsonResponse(http.StatusInternalServerError, map[string]any{"ok": false, "error": err.Error()})
@@ -2160,7 +2695,11 @@ func quotaWindows(key policyplus.KeyRecord, usage map[string]float64) map[string
 		policyplus.RangeMonth: key.MonthlyLimitUSD,
 	}
 	out := map[string]map[string]any{}
-	for _, name := range []string{policyplus.Range5H, policyplus.Range24H, policyplus.Range7D, policyplus.RangeMonth} {
+	names := []string{policyplus.Range5H, policyplus.Range24H, policyplus.Range7D, policyplus.RangeMonth}
+	if key.WeeklyOnly {
+		names = []string{policyplus.Range7D}
+	}
+	for _, name := range names {
 		used := usage[name]
 		row := map[string]any{
 			"used_usd":      used,
@@ -2187,11 +2726,12 @@ func quotaWindows(key policyplus.KeyRecord, usage map[string]float64) map[string
 }
 
 func codexRequestsForKey(key policyplus.KeyRecord, limit int) ([]map[string]any, string) {
+	cfg := loadedConfig()
+	if !cfg.CodexContEnabled || strings.TrimSpace(cfg.CodexSummaryDBPath) == "" {
+		return []map[string]any{}, "disabled"
+	}
 	if requests, source, ok := fetchExecutorCodexSummaries(key, limit); ok {
 		return requests, source
-	}
-	if requests, ok := fetchCodexContRequests(key, limit); ok {
-		return requests, "codexcont_admin"
 	}
 	store := loadedStore()
 	if store == nil {
@@ -2215,6 +2755,9 @@ func codexRequestsForKey(key policyplus.KeyRecord, limit int) ([]map[string]any,
 
 func fetchExecutorCodexSummaries(key policyplus.KeyRecord, limit int) ([]map[string]any, string, bool) {
 	cfg := loadedConfig()
+	if !cfg.CodexContEnabled {
+		return nil, "", false
+	}
 	path := strings.TrimSpace(cfg.CodexSummaryDBPath)
 	if path == "" {
 		return nil, "", false
@@ -2274,49 +2817,6 @@ func cloneAnyMap(in map[string]any) map[string]any {
 		out[key] = value
 	}
 	return out
-}
-
-func fetchCodexContRequests(key policyplus.KeyRecord, limit int) ([]map[string]any, bool) {
-	cfg := loadedConfig()
-	if !cfg.CodexContEnabled {
-		return nil, false
-	}
-	base := strings.TrimRight(strings.TrimSpace(cfg.CodexContURL), "/")
-	if base == "" {
-		return nil, false
-	}
-	parsed, err := url.Parse(base + "/admin/requests?limit=" + strconv.Itoa(limit))
-	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
-		return nil, false
-	}
-	client := http.Client{Timeout: 1200 * time.Millisecond}
-	resp, err := client.Get(parsed.String())
-	if err != nil {
-		return nil, false
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, false
-	}
-	var body struct {
-		Requests []map[string]any `json:"requests"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		return nil, false
-	}
-	out := make([]map[string]any, 0, len(body.Requests))
-	for _, req := range body.Requests {
-		safe := safeCodexSummary(req, key)
-		if safe == nil {
-			continue
-		}
-		if staleCodexProcessingSummary(safe, time.Time{}, time.Now()) {
-			continue
-		}
-		out = append(out, safe)
-	}
-	sortCodexSummariesNewestFirst(out)
-	return out, true
 }
 
 func sortCodexSummariesNewestFirst(items []map[string]any) {
@@ -2438,8 +2938,68 @@ func safeCodexSummary(req map[string]any, key policyplus.KeyRecord) map[string]a
 			out["diagnostics_brief"] = brief
 		}
 	}
+	if decision, ok := req["route_decision"].(map[string]any); ok {
+		if safe := safeRouteDecision(decision); len(safe) > 0 {
+			out["route_decision"] = safe
+		}
+	}
 	out["key_identity"] = key.Safe()
 	return out
+}
+
+func safeRouteDecision(decision map[string]any) map[string]any {
+	if decision == nil {
+		return nil
+	}
+	out := map[string]any{}
+	if protected, ok := decision["protected"].(bool); ok {
+		out["protected"] = protected
+	}
+	for _, field := range []string{"body_bytes", "max_continue", "max_total_output_tokens"} {
+		if value, ok := safeRouteDecisionNumber(decision[field]); ok {
+			out[field] = value
+		}
+	}
+	for _, field := range []string{"mode", "reason", "model", "key_scope", "fail_mode"} {
+		value := safeRouteDecisionString(decision[field])
+		if value != "" {
+			out[field] = value
+		}
+	}
+	return out
+}
+
+func safeRouteDecisionNumber(value any) (any, bool) {
+	switch v := value.(type) {
+	case int:
+		return v, true
+	case int64:
+		return v, true
+	case int32:
+		return v, true
+	case float64:
+		return v, true
+	case float32:
+		return v, true
+	case json.Number:
+		return v, true
+	default:
+		return nil, false
+	}
+}
+
+func safeRouteDecisionString(value any) string {
+	text := policyplus.Brief(strings.TrimSpace(fmt.Sprint(value)), 120)
+	if text == "" || text == "<nil>" {
+		return ""
+	}
+	lower := strings.ToLower(text)
+	for _, marker := range []string{"authorization", "bearer ", "sk-", "sk_", "cookie", "token", "secret"} {
+		if strings.Contains(lower, marker) {
+			return ""
+		}
+	}
+	return text
 }
 
 func safeDiagnosticsBrief(diagnostics map[string]any) []map[string]any {
@@ -2582,17 +3142,20 @@ func keyFromSessionToken(token string, secret string) (policyplus.KeyRecord, boo
 func codexcontStatus() map[string]any {
 	cfg := loadedConfig()
 	status := map[string]any{
-		"enabled":   cfg.CodexContEnabled,
-		"route":     cfg.CodexContRoute,
-		"url":       cfg.CodexContURL,
-		"fail_mode": cfg.FailMode,
-		"mode":      "passive_until_executor_cutover",
+		"enabled": cfg.CodexContEnabled,
+		"route":   cfg.CodexContRoute,
+		"mode":    "disabled",
 	}
-	if cfg.CodexContEnabled {
-		health := probeCodexContHealth(cfg.CodexContURL)
-		for key, value := range health {
-			status[key] = value
-		}
+	if !cfg.CodexContEnabled {
+		status["history_source"] = "disabled"
+		return status
+	}
+	status["url"] = cfg.CodexContURL
+	status["fail_mode"] = cfg.FailMode
+	status["mode"] = "legacy_executor_history"
+	health := probeCodexContHealth(cfg.CodexContURL)
+	for key, value := range health {
+		status[key] = value
 	}
 	return status
 }

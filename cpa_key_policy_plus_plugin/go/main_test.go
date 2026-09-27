@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -26,9 +27,13 @@ func setupTestState(t *testing.T) policyplus.KeyRecord {
 	state.keyState = policyplus.KeyPolicyState{}
 	state.keyStatePath = ""
 	state.rpmBuckets = map[string][]time.Time{}
-	state.priceBook = policyplus.PriceBook{}
-	state.priceBookChecked = time.Time{}
-	state.priceBookRepriced = ""
+	state.priceBook = policyplus.PriceBook{
+		Source: policyplus.CostSourceCPAMPCachedPriceBook,
+		Prices: map[string]policyplus.ModelPrice{
+			"gpt-5.5": {Model: "gpt-5.5", InputPerMillion: 1, OutputPerMillion: 10},
+		},
+	}
+	state.priceBookChecked = time.Now()
 	state.lastConfigError = ""
 	state.lastConfigErrorAt = time.Time{}
 	old := state.store
@@ -143,8 +148,11 @@ func TestPluginRegistrationIsPolicyPlusExclusiveAuth(t *testing.T) {
 	if !reg.Capabilities.FrontendAuthProvider || !reg.Capabilities.FrontendAuthProviderExclusive {
 		t.Fatalf("frontend auth capabilities = %#v", reg.Capabilities)
 	}
-	if !reg.Capabilities.ModelRouter || !reg.Capabilities.Executor {
-		t.Fatalf("plus must expose deny-only model route/executor for explicit policy 429s: %#v", reg.Capabilities)
+	if reg.SchemaVersion != schemaVersion || reg.SchemaVersion < 2 || !reg.Capabilities.RequestInterceptor || !reg.Capabilities.Executor {
+		t.Fatalf("plus must expose schema-v2 request termination instead of model-route fake executor denials: %#v", reg)
+	}
+	if !reg.Capabilities.ModelRouter {
+		t.Fatalf("model routing pins carpool members to their pool account: %#v", reg.Capabilities)
 	}
 	if reg.Capabilities.ExecutorModelScope != executorModelScopeBoth {
 		t.Fatalf("executor model scope = %q", reg.Capabilities.ExecutorModelScope)
@@ -226,7 +234,6 @@ func TestInitialPlusLifecycleConfigErrorStillRegistersAndFailsClosed(t *testing.
 	state.rpmBuckets = map[string][]time.Time{}
 	state.priceBook = policyplus.PriceBook{}
 	state.priceBookChecked = time.Time{}
-	state.priceBookRepriced = ""
 	state.lastConfigError = ""
 	state.lastConfigErrorAt = time.Time{}
 	state.mu.Unlock()
@@ -286,6 +293,28 @@ func TestInitialPlusLifecycleConfigErrorStillRegistersAndFailsClosed(t *testing.
 	}
 	if statusBody.Plus["store_available"] != false || !strings.Contains(fmt.Sprint(statusBody.Plus["last_config_error"]), "not-a-dir") {
 		t.Fatalf("status API missing initial config error: %#v", statusBody.Plus)
+	}
+}
+
+func TestConfigureKeepsEmptyLegacyImportPathsDisabledAndRetainsIdentitySync(t *testing.T) {
+	setupTestState(t)
+	dir := t.TempDir()
+	statePath := filepath.Join(dir, "key-policy-state.json")
+	stateJSON := []byte(`[{"id":"identity-key","key_hash":"sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08","enabled":true,"models":["gpt-5.5"]}]`)
+	if err := os.WriteFile(statePath, stateJSON, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	configYAML := fmt.Sprintf("state_db_path: %q\nkey_policy_state_path: %q\nlegacy_quota_db_path: ''\ngovernor_state_db_path: ''\nsession_secret: test-secret\n", filepath.Join(dir, "policyplus.sqlite"), statePath)
+	if err := configure(mustJSON(t, lifecycleRequest{ConfigYAML: []byte(configYAML)})); err != nil {
+		t.Fatal(err)
+	}
+	cfg := loadedConfig()
+	if cfg.LegacyQuotaDBPath != "" || cfg.GovernorStateDBPath != "" {
+		t.Fatalf("empty legacy import paths must stay disabled: %#v", cfg)
+	}
+	keys, err := loadedStore().ListKeys(context.Background())
+	if err != nil || len(keys) != 1 || keys[0].ID != "identity-key" {
+		t.Fatalf("identity source must remain active while legacy imports are disabled: keys=%#v err=%v", keys, err)
 	}
 }
 
@@ -410,6 +439,25 @@ func TestFrontendAuthAllowsMissingSessionAndAudits(t *testing.T) {
 	}
 }
 
+func TestFrontendAuthKeepsModelListingOnIdentityPath(t *testing.T) {
+	setupTestState(t)
+	raw, err := frontendAuth(mustJSON(t, frontendAuthRequest{
+		Path:    "/v1/models",
+		Headers: http.Header{"Authorization": []string{"Bearer sk-alice-secret"}},
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var env envelope
+	if err := json.Unmarshal(raw, &env); err != nil {
+		t.Fatal(err)
+	}
+	var response frontendAuthResponse
+	if err := json.Unmarshal(env.Result, &response); err != nil || !response.Authenticated || response.Principal != "alice-key" {
+		t.Fatalf("model listing identity auth response=%#v err=%v", response, err)
+	}
+}
+
 func TestAdminSaveKeysPersistsUnifiedLimits(t *testing.T) {
 	setupTestState(t)
 	enabled := false
@@ -458,6 +506,52 @@ func TestAdminSaveKeysPersistsUnifiedLimits(t *testing.T) {
 	}
 	if len(got.Prices) != 0 {
 		t.Fatalf("Plus save should ignore per-key price edits after CPAMP pricing cutover: %#v", got.Prices)
+	}
+}
+
+func TestAdminWeeklyOnlyMigrationEndpointPreservesExistingPolicy(t *testing.T) {
+	key := setupTestState(t)
+	key.RPM = 23
+	key.Models = []string{"gpt-5.5", "gpt-6-astra"}
+	key.FiveHourUSD = floatPtr(60)
+	key.DailyLimitUSD = floatPtr(100)
+	key.WeeklyLimitUSD = floatPtr(500)
+	key.MonthlyLimitUSD = floatPtr(1500)
+	if err := loadedStore().SaveKeySettings(context.Background(), key); err != nil {
+		t.Fatal(err)
+	}
+	if err := loadedStore().InsertUsage(context.Background(), policyplus.UsageEvent{RequestID: "weekly-api-history", KeyID: key.ID, RequestedAt: time.Now(), Cost: 3}); err != nil {
+		t.Fatal(err)
+	}
+	body := []byte(`{"id":"alice-key","weekly_only":true,"weekly_usd":999}`)
+	raw, err := managementHandle(mustJSON(t, managementRequest{
+		Method: http.MethodPut,
+		Path:   "/plugins/cpa-key-policy-plus/keys/weekly-only",
+		Body:   body,
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(decodeManagementBody(t, raw)), `"quota_mode":"weekly_only"`) {
+		t.Fatalf("weekly-only endpoint response missing mode: %s", raw)
+	}
+	keys, err := loadedStore().ListKeys(context.Background())
+	if err != nil || len(keys) != 1 {
+		t.Fatalf("ListKeys err=%v keys=%#v", err, keys)
+	}
+	got := keys[0]
+	if !got.WeeklyOnly || got.FiveHourUSD != nil || got.DailyLimitUSD != nil || got.MonthlyLimitUSD != nil || got.WeeklyLimitUSD == nil || *got.WeeklyLimitUSD != 500 {
+		t.Fatalf("weekly-only migration did not preserve weekly limit: %#v", got)
+	}
+	if got.RPM != 23 || len(got.Models) != 2 || got.Models[1] != "gpt-6-astra" {
+		t.Fatalf("weekly-only migration changed policy fields: %#v", got)
+	}
+	if quota := quotaWindows(got, map[string]float64{policyplus.Range7D: 3}); len(quota) != 1 || quota[policyplus.Range7D] == nil {
+		t.Fatalf("weekly-only portal quota projection = %#v", quota)
+	}
+	summary, err := loadedStore().UsageSummary(context.Background(), got.ID, policyplus.WindowFor(policyplus.Range24H, time.Now()))
+	if err != nil || summary.Calls != 1 || summary.TotalCost != 3 {
+		t.Fatalf("weekly-only endpoint changed history: summary=%#v err=%v", summary, err)
 	}
 }
 
@@ -858,6 +952,135 @@ func TestPolicyDecisionDenialsUseExplicitCodes(t *testing.T) {
 	}
 }
 
+func TestQuotaKeyRejectsUnpricedModelButAllowsCachedCPAMPPrice(t *testing.T) {
+	key := setupTestState(t)
+	key.FiveHourUSD = nil
+	key.DailyLimitUSD = nil
+	key.WeeklyLimitUSD = floatPtr(500)
+	key.MonthlyLimitUSD = nil
+	key.Models = []string{"gpt-6-astra", "model-without-price"}
+	if err := loadedStore().SaveKeySettings(context.Background(), key); err != nil {
+		t.Fatal(err)
+	}
+	state.mu.Lock()
+	state.priceBook = policyplus.PriceBook{
+		Source: policyplus.CostSourceCPAMPCachedPriceBook,
+		Prices: map[string]policyplus.ModelPrice{
+			"gpt-6-astra": {Model: "gpt-6-astra", InputPerMillion: 2, OutputPerMillion: 12},
+		},
+	}
+	state.priceBookChecked = time.Now()
+	state.mu.Unlock()
+
+	if allowed := evaluatePolicy(key, "GPT-6-ASTRA", false); !allowed.Allowed {
+		t.Fatalf("valid cached price must remain usable: %#v", allowed)
+	}
+	denied := evaluatePolicy(key, "model-without-price", false)
+	if denied.Allowed || denied.Code != "model_price_unavailable" || denied.Param != "model" || !strings.Contains(denied.Message, "$0") {
+		t.Fatalf("unpriced quota model decision = %#v", denied)
+	}
+}
+
+func TestQuotaAdmissionRequiresApplicableCPAMPContextOrServiceTierPrice(t *testing.T) {
+	key := setupTestState(t)
+	key.FiveHourUSD = nil
+	key.DailyLimitUSD = nil
+	key.WeeklyLimitUSD = floatPtr(500)
+	key.MonthlyLimitUSD = nil
+	key.Models = []string{"context-only", "service-only", "partial-context"}
+	if err := loadedStore().SaveKeySettings(context.Background(), key); err != nil {
+		t.Fatal(err)
+	}
+	state.mu.Lock()
+	state.priceBook = policyplus.PriceBook{
+		Source: policyplus.CostSourceCPAMPCachedPriceBook,
+		Prices: map[string]policyplus.ModelPrice{
+			"context-only": {
+				Model: "context-only",
+				ContextTiers: []policyplus.ModelPriceContextTier{{
+					ThresholdTokens: 100, InputPerMillion: 2, OutputPerMillion: 8, InputConfigured: true, OutputConfigured: true,
+				}},
+			},
+			"service-only": {
+				Model: "service-only",
+				ServiceTiers: []policyplus.ModelPriceServiceTier{{
+					Mode: "fast", ServiceTier: "priority", InputPerMillion: 3, OutputPerMillion: 12, InputConfigured: true, OutputConfigured: true,
+				}},
+			},
+			"partial-context": {
+				Model: "partial-context",
+				ContextTiers: []policyplus.ModelPriceContextTier{{
+					ThresholdTokens: 100, InputPerMillion: 2, InputConfigured: true,
+				}},
+				ServiceTiers: []policyplus.ModelPriceServiceTier{{
+					Mode: "fast", ServiceTier: "priority", InputPerMillion: 3, OutputPerMillion: 12, InputConfigured: true, OutputConfigured: true,
+				}},
+			},
+		},
+	}
+	state.priceBookChecked = time.Now()
+	state.mu.Unlock()
+
+	if decision := evaluatePolicy(key, "context-only", false); decision.Allowed || decision.Code != "model_price_unavailable" {
+		t.Fatalf("context-only price must not admit unknown short context: %#v", decision)
+	}
+	if decision := evaluatePolicy(key, "service-only", false); decision.Allowed || decision.Code != "model_price_unavailable" {
+		t.Fatalf("service-only price must not admit an unspecified tier: %#v", decision)
+	}
+	if decision := evaluatePolicyWithServiceTier(key, "service-only", "priority", false); !decision.Allowed {
+		t.Fatalf("matching explicit service tier should be allowed: %#v", decision)
+	}
+	if decision := evaluatePolicyWithServiceTier(key, "service-only", "flex", false); decision.Allowed || decision.Code != "model_price_unavailable" {
+		t.Fatalf("nonmatching service tier must be rejected: %#v", decision)
+	}
+	if decision := evaluatePolicyWithServiceTier(key, "partial-context", "priority", false); decision.Allowed || decision.Code != "model_price_unavailable" {
+		t.Fatalf("incomplete possible context tier must be rejected: %#v", decision)
+	}
+}
+
+func TestRouteModelRejectsQuotaKeyWithoutMatchingRequestedServiceTierPrice(t *testing.T) {
+	setupTestState(t)
+	raw, err := routeModel(mustJSON(t, modelRouteRequest{
+		RequestedModel: "gpt-5.5",
+		Headers:        http.Header{"Authorization": []string{"Bearer sk-alice-secret"}},
+		Body:           []byte(`{"model":"gpt-5.5","service_tier":"priority"}`),
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var env envelope
+	if err := json.Unmarshal(raw, &env); err != nil {
+		t.Fatal(err)
+	}
+	var result modelRouteResponse
+	if err := json.Unmarshal(env.Result, &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Handled {
+		t.Fatalf("routing must not carry policy denials; the interceptor answers with a real 429: %#v", result)
+	}
+	raw, err = handleMethod(methodRequestInterceptBefore, mustJSON(t, requestInterceptRequest{
+		SourceFormat:   "openai-response",
+		RequestedModel: "gpt-5.5",
+		Headers:        http.Header{"Authorization": []string{"Bearer sk-alice-secret"}},
+		Body:           []byte(`{"model":"gpt-5.5","service_tier":"priority"}`),
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var interceptEnv envelope
+	if err := json.Unmarshal(raw, &interceptEnv); err != nil {
+		t.Fatal(err)
+	}
+	var intercept requestInterceptResponse
+	if err := json.Unmarshal(interceptEnv.Result, &intercept); err != nil {
+		t.Fatal(err)
+	}
+	if !intercept.Terminate || intercept.StatusCode != http.StatusTooManyRequests || intercept.ResponseHeaders.Get("X-CPA-Policy-Reason") != "model_price_unavailable" {
+		t.Fatalf("unpriced requested service tier must be terminated with 429: %#v", intercept)
+	}
+}
+
 func TestPolicyDecisionQuotaWindowsUsePostAccountingOrder(t *testing.T) {
 	windows := []struct {
 		name  string
@@ -922,8 +1145,8 @@ func TestRouteAndExecutorReturnPolicyDenied429(t *testing.T) {
 	if err := json.Unmarshal(routeEnv.Result, &routeResp); err != nil {
 		t.Fatal(err)
 	}
-	if !routeResp.Handled || routeResp.TargetKind != routeTargetSelf || routeResp.Reason != "cpa_key_policy_plus_policy_denied" {
-		t.Fatalf("route response = %#v", routeResp)
+	if routeResp.Handled {
+		t.Fatalf("denied requests are not routed into the executor; the interceptor returns 429: %#v", routeResp)
 	}
 
 	execRaw, err := executorExecute(mustJSON(t, executorCallRequest{
@@ -966,7 +1189,7 @@ func TestRouteAndExecutorReturnPolicyDenied429(t *testing.T) {
 	}
 }
 
-func TestFrontendAuthOnlySurfacesDeniedNativeKeysForModelRequests(t *testing.T) {
+func TestFrontendAuthDoesNotEmitFakePolicyDenials(t *testing.T) {
 	key := setupTestState(t)
 	key.Enabled = false
 	if err := loadedStore().SaveKeySettings(context.Background(), key); err != nil {
@@ -1005,8 +1228,160 @@ func TestFrontendAuthOnlySurfacesDeniedNativeKeysForModelRequests(t *testing.T) 
 	if err := json.Unmarshal(env.Result, &resp); err != nil {
 		t.Fatal(err)
 	}
-	if !resp.Authenticated || resp.Metadata[policyDenyMetadataPrefix+"code"] != "api_key_disabled" {
-		t.Fatalf("responses denied request should route to explicit policy body: %#v", resp)
+	if resp.Authenticated || len(resp.Metadata) != 0 {
+		t.Fatalf("frontend auth must not pretend to return a policy HTTP response: %#v", resp)
+	}
+}
+
+func TestRequestInterceptorTerminatesUnpricedInferenceWithReal429(t *testing.T) {
+	key := setupTestState(t)
+	key.Models = []string{"gpt-5.5", "gpt-cpa-verification-unpriced"}
+	if err := loadedStore().SaveKeySettings(context.Background(), key); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := handleMethod(methodRequestInterceptBefore, mustJSON(t, requestInterceptRequest{
+		SourceFormat:   "openai-response",
+		RequestedModel: "gpt-cpa-verification-unpriced",
+		Headers:        http.Header{"Authorization": []string{"Bearer sk-alice-secret"}},
+		Body:           []byte(`{"model":"gpt-cpa-verification-unpriced"}`),
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var env envelope
+	if err := json.Unmarshal(raw, &env); err != nil {
+		t.Fatal(err)
+	}
+	var resp requestInterceptResponse
+	if err := json.Unmarshal(env.Result, &resp); err != nil {
+		t.Fatal(err)
+	}
+	if !resp.Terminate || resp.StatusCode != http.StatusTooManyRequests || resp.ResponseHeaders.Get("Content-Type") == "" || resp.ResponseHeaders.Get("X-CPA-Policy-Reason") != "model_price_unavailable" {
+		t.Fatalf("request termination response = %#v", resp)
+	}
+	var body struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(resp.ResponseBody, &body); err != nil || body.Error.Code != "model_price_unavailable" {
+		t.Fatalf("termination body=%s err=%v", resp.ResponseBody, err)
+	}
+	keys, err := loadedStore().ListKeys(context.Background())
+	if err != nil || len(keys) != 1 || keys[0].BillingHoldReason != "" {
+		t.Fatalf("pre-execution termination must not create a billing hold: keys=%#v err=%v", keys, err)
+	}
+
+	raw, err = handleMethod(methodRequestInterceptBefore, mustJSON(t, requestInterceptRequest{SourceFormat: "openai-response", Headers: http.Header{"Authorization": []string{"Bearer sk-alice-secret"}}, Body: []byte(`{"not_model":"x"}`)}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(raw, &env); err != nil {
+		t.Fatal(err)
+	}
+	resp = requestInterceptResponse{}
+	if err := json.Unmarshal(env.Result, &resp); err != nil || !resp.Terminate || resp.ResponseHeaders.Get("X-CPA-Policy-Reason") != "model_price_unavailable" {
+		t.Fatalf("missing model on intercepted inference must fail closed: %#v err=%v", resp, err)
+	}
+
+	raw, err = handleMethod(methodRequestInterceptBefore, mustJSON(t, requestInterceptRequest{SourceFormat: "openai-response", Body: []byte(`{"not_model":"x"}`)}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(raw, &env); err != nil {
+		t.Fatal(err)
+	}
+	resp = requestInterceptResponse{}
+	if err := json.Unmarshal(env.Result, &resp); err != nil || resp.Terminate {
+		t.Fatalf("request without Plus credential must remain unhandled: %#v err=%v", resp, err)
+	}
+
+	raw, err = handleMethod(methodRequestInterceptBefore, mustJSON(t, requestInterceptRequest{
+		SourceFormat:   "openai-response",
+		RequestedModel: "gpt-cpa-verification-unpriced",
+		Metadata:       map[string]any{"provider": pluginID, "key_id": key.ID},
+		Body:           []byte(`{"model":"gpt-cpa-verification-unpriced"}`),
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(raw, &env); err != nil {
+		t.Fatal(err)
+	}
+	resp = requestInterceptResponse{}
+	if err := json.Unmarshal(env.Result, &resp); err != nil || !resp.Terminate || resp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("host-injected frontend identity metadata must preserve termination: %#v err=%v", resp, err)
+	}
+}
+
+func TestRequestInterceptorConsumesRPMOnceAfterFrontendIdentity(t *testing.T) {
+	key := setupTestState(t)
+	key.RPM = 1
+	if err := loadedStore().SaveKeySettings(context.Background(), key); err != nil {
+		t.Fatal(err)
+	}
+	frontRaw, err := frontendAuth(mustJSON(t, frontendAuthRequest{Path: "/v1/responses", Headers: http.Header{"Authorization": []string{"Bearer sk-alice-secret"}}, Body: []byte(`{"model":"gpt-5.5"}`)}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var env envelope
+	if err := json.Unmarshal(frontRaw, &env); err != nil {
+		t.Fatal(err)
+	}
+	var front frontendAuthResponse
+	if err := json.Unmarshal(env.Result, &front); err != nil || !front.Authenticated {
+		t.Fatalf("frontend identity response=%#v err=%v", front, err)
+	}
+	request := requestInterceptRequest{SourceFormat: "openai-response", RequestedModel: "gpt-5.5", Headers: http.Header{"Authorization": []string{"Bearer sk-alice-secret"}}, Body: []byte(`{"model":"gpt-5.5"}`)}
+	first, err := requestInterceptBeforeAuth(mustJSON(t, request))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(first, &env); err != nil {
+		t.Fatal(err)
+	}
+	var response requestInterceptResponse
+	if err := json.Unmarshal(env.Result, &response); err != nil || response.Terminate {
+		t.Fatalf("first request should consume the only RPM slot once: %#v err=%v", response, err)
+	}
+	second, err := requestInterceptBeforeAuth(mustJSON(t, request))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(second, &env); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(env.Result, &response); err != nil || !response.Terminate || response.ResponseHeaders.Get("X-CPA-Policy-Reason") != "rpm_rate_limit_exceeded" {
+		t.Fatalf("second request should receive RPM termination: %#v err=%v", response, err)
+	}
+}
+
+func TestZeroTokenInternalPolicyTraceDoesNotCreatePendingBillingHold(t *testing.T) {
+	key := setupTestState(t)
+	key.Models = []string{"gpt-cpa-verification-unpriced"}
+	if err := loadedStore().SaveKeySettings(context.Background(), key); err != nil {
+		t.Fatal(err)
+	}
+	body, _ := json.Marshal(usageRecord{
+		Model:       "gpt-cpa-verification-unpriced",
+		AuthID:      key.ID,
+		RequestedAt: time.Now(),
+		Detail:      usageDetail{},
+	})
+	if _, err := usageHandle(body); err != nil {
+		t.Fatal(err)
+	}
+	events, err := loadedStore().RecentEvents(context.Background(), key.ID, 10)
+	if err != nil || len(events) != 0 {
+		t.Fatalf("zero-token internal rejection must not become billable pending event: events=%#v err=%v", events, err)
+	}
+	keys, err := loadedStore().ListKeys(context.Background())
+	if err != nil || len(keys) != 1 || keys[0].BillingHoldReason != "" {
+		t.Fatalf("zero-token internal rejection must not set a hold: keys=%#v err=%v", keys, err)
+	}
+	count, err := loadedStore().AuditCount(context.Background(), "usage_zero_token_policy_trace")
+	if err != nil || count != 1 {
+		t.Fatalf("zero-token internal rejection must retain an audit trace: count=%d err=%v", count, err)
 	}
 }
 
@@ -1054,7 +1429,8 @@ func TestUsageHandleMapsExecutorRecordsByAuthID(t *testing.T) {
 		t.Fatal(err)
 	}
 	pricePath := createCPAMPPriceDB(t, map[string]policyplus.ModelPrice{
-		"gpt-5.4": {Model: "gpt-5.4", InputPerMillion: 10, OutputPerMillion: 20},
+		"gpt-5.4":             {Model: "gpt-5.4", InputPerMillion: 10, OutputPerMillion: 20},
+		"gpt-5.3-codex-spark": {Model: "gpt-5.3-codex-spark", InputPerMillion: 10, OutputPerMillion: 20},
 	})
 	state.mu.Lock()
 	state.cfg.CPAMPPriceDBPath = pricePath
@@ -1065,6 +1441,7 @@ func TestUsageHandleMapsExecutorRecordsByAuthID(t *testing.T) {
 		Provider:     "codex-account-3.json",
 		ExecutorType: "codex",
 		Model:        "gpt-5.3-codex-spark",
+		Alias:        "gpt-5.4",
 		AuthID:       key.ID,
 		Source:       "codex-account-3.json",
 		RequestedAt:  time.Now(),
@@ -1095,7 +1472,7 @@ func TestUsageHandleMapsExecutorRecordsByAuthID(t *testing.T) {
 	}
 	got := events[0]
 	if got.KeyID != key.ID || got.Model != "gpt-5.4" || got.RequestedModel != "gpt-5.4" || got.ActualModel != "gpt-5.3-codex-spark" {
-		t.Fatalf("usage event did not preserve auth/alias mapping: %#v", got)
+		t.Fatalf("usage event did not preserve explicit requested/actual models: %#v", got)
 	}
 	if got.Cost <= 0 {
 		t.Fatalf("usage event should use CPAMP model price book, got cost=%f event=%#v", got.Cost, got)
@@ -1105,7 +1482,36 @@ func TestUsageHandleMapsExecutorRecordsByAuthID(t *testing.T) {
 	}
 }
 
-func TestUsageHandleUsesCPAMPFastTierPricing(t *testing.T) {
+func TestUsageHandleTreatsAutoServiceTierAsDefaultPricedUsage(t *testing.T) {
+	key := setupTestState(t)
+	body, _ := json.Marshal(usageRecord{
+		Model:       "gpt-5.5",
+		AuthID:      key.ID,
+		RequestedAt: time.Now(),
+		ServiceTier: "auto",
+		Detail: usageDetail{
+			InputTokens:  100,
+			OutputTokens: 10,
+			TotalTokens:  110,
+		},
+	})
+	if _, err := usageHandle(body); err != nil {
+		t.Fatal(err)
+	}
+	events, err := loadedStore().RecentEvents(context.Background(), key.ID, 10)
+	if err != nil || len(events) != 1 {
+		t.Fatalf("events=%#v err=%v", events, err)
+	}
+	if events[0].BillingPending || events[0].Failed || events[0].Cost <= 0 || events[0].ServiceTier != "auto" || events[0].StatusCode != 0 {
+		t.Fatalf("auto tier should use normal base pricing: %#v", events[0])
+	}
+	keys, err := loadedStore().ListKeys(context.Background())
+	if err != nil || len(keys) != 1 || keys[0].BillingHoldReason != "" {
+		t.Fatalf("auto tier should not create a billing hold: keys=%#v err=%v", keys, err)
+	}
+}
+
+func TestUsageHandleSkipsUnsupportedFastTierForQuotaKey(t *testing.T) {
 	key := setupTestState(t)
 	pricePath := createCPAMPPriceDB(t, map[string]policyplus.ModelPrice{
 		"gpt-5.5": {Model: "gpt-5.5", InputPerMillion: 1, OutputPerMillion: 10, CachePerMillion: 0.1},
@@ -1133,20 +1539,146 @@ func TestUsageHandleUsesCPAMPFastTierPricing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(events) != 1 {
+	if len(events) != 1 || !events[0].BillingPending || events[0].Cost != 0 || events[0].CostBreakdown.Source != policyplus.CostSourceCPAMPBillingPending {
 		t.Fatalf("events = %#v", events)
 	}
-	got := events[0]
-	want := ((100000.0 * 1) + (10000.0 * 10)) / 1_000_000 * 2.5
-	if got.Cost < want-0.0000001 || got.Cost > want+0.0000001 {
-		t.Fatalf("fast tier cost = %.9f, want %.9f event=%#v", got.Cost, want, got)
+	keys, err := loadedStore().ListKeys(context.Background())
+	if err != nil || len(keys) != 1 || keys[0].BillingHoldReason == "" {
+		t.Fatalf("unsupported Fast tier must leave a durable billing hold: keys=%#v err=%v", keys, err)
 	}
-	if got.CostBreakdown.ServiceTierMultiplier != 2.5 || got.CostBreakdown.Source != policyplus.CostSourceCPAMPPriceBook {
-		t.Fatalf("breakdown = %#v", got.CostBreakdown)
+	if decision := evaluatePolicy(keys[0], "gpt-5.5", false); decision.Allowed || decision.Code != "billing_pending" {
+		t.Fatalf("billing hold must deny later requests: %#v", decision)
+	}
+	count, err := loadedStore().AuditCount(context.Background(), "billing_hold_set")
+	if err != nil || count != 1 {
+		t.Fatalf("unsupported Fast tier must record a durable hold audit, count=%d err=%v", count, err)
 	}
 }
 
-func TestCurrentPriceBookRecalculatesCurrentMonthUsage(t *testing.T) {
+func TestUsageHandlePersistsActualModelBillingPendingAndNarrowlyResolvesIt(t *testing.T) {
+	key := setupTestState(t)
+	body, _ := json.Marshal(usageRecord{
+		Model:       "actual-unpriced-model",
+		Alias:       "gpt-5.5",
+		AuthID:      key.ID,
+		RequestedAt: time.Now(),
+		ServiceTier: "auto",
+		Detail: usageDetail{
+			InputTokens:  100,
+			OutputTokens: 10,
+			TotalTokens:  110,
+		},
+	})
+	if _, err := usageHandle(body); err != nil {
+		t.Fatal(err)
+	}
+	store := loadedStore()
+	events, err := store.RecentEvents(context.Background(), key.ID, 10)
+	if err != nil || len(events) != 1 {
+		t.Fatalf("events=%#v err=%v", events, err)
+	}
+	pending := events[0]
+	if !pending.BillingPending || pending.BillingReason != "actual_model_price_unavailable" || pending.BillingModel != "actual-unpriced-model" || pending.ActualModel != "actual-unpriced-model" || pending.RequestedModel != "gpt-5.5" || pending.CostBreakdown.Source != policyplus.CostSourceCPAMPBillingPending {
+		t.Fatalf("actual model drift must persist a visible pending event: %#v", pending)
+	}
+	summary, err := store.UsageSummary(context.Background(), key.ID, policyplus.WindowFor(policyplus.Range7D, time.Now()))
+	if err != nil || summary.Calls != 1 || summary.BillingPending != 1 || summary.TotalCost != 0 {
+		t.Fatalf("pending event must be explicit in summary: summary=%#v err=%v", summary, err)
+	}
+	keys, err := store.ListKeys(context.Background())
+	if err != nil || len(keys) != 1 || keys[0].BillingHoldReason == "" || keys[0].BillingHoldModel != "actual-unpriced-model" {
+		t.Fatalf("actual model drift must set durable hold: keys=%#v err=%v", keys, err)
+	}
+	if err := store.ImportKeys(context.Background(), policyplus.KeyPolicyState{Keys: []policyplus.KeyRecord{key}}); err != nil {
+		t.Fatal(err)
+	}
+	keys, err = store.ListKeys(context.Background())
+	if err != nil || len(keys) != 1 || keys[0].BillingHoldReason == "" {
+		t.Fatalf("identity refresh must not clear billing hold: keys=%#v err=%v", keys, err)
+	}
+	if decision := evaluatePolicy(keys[0], "gpt-5.5", false); decision.Allowed || decision.Code != "billing_pending" {
+		t.Fatalf("durable hold must stop later requests: %#v", decision)
+	}
+
+	state.mu.Lock()
+	state.priceBook = policyplus.PriceBook{
+		Source: policyplus.CostSourceCPAMPCachedPriceBook,
+		Prices: map[string]policyplus.ModelPrice{
+			"gpt-5.5":               {Model: "gpt-5.5", InputPerMillion: 1, OutputPerMillion: 10},
+			"actual-unpriced-model": {Model: "actual-unpriced-model", InputPerMillion: 2, OutputPerMillion: 12},
+		},
+	}
+	state.priceBookChecked = time.Now()
+	state.mu.Unlock()
+	if resolved, err := store.ResolvePendingBilling(context.Background(), key.ID, currentPriceBook(context.Background(), false)); err != nil || resolved != 1 {
+		t.Fatalf("narrow pending reconciliation resolved=%d err=%v", resolved, err)
+	}
+	events, err = store.RecentEvents(context.Background(), key.ID, 10)
+	if err != nil || len(events) != 1 || events[0].BillingPending || events[0].Cost <= 0 || events[0].CostBreakdown.Source != policyplus.CostSourceCPAMPCachedPriceBook {
+		t.Fatalf("reconciled pending event = %#v err=%v", events, err)
+	}
+	keys, err = store.ListKeys(context.Background())
+	if err != nil || len(keys) != 1 || keys[0].BillingHoldReason != "" {
+		t.Fatalf("hold should clear only after narrow reconciliation: keys=%#v err=%v", keys, err)
+	}
+	if decision := evaluatePolicy(keys[0], "gpt-5.5", false); !decision.Allowed {
+		t.Fatalf("resolved key should resume normal priced requests: %#v", decision)
+	}
+}
+
+func TestAdminResolvePendingBillingEndpointUsesCachedVerifiedPrice(t *testing.T) {
+	key := setupTestState(t)
+	body, _ := json.Marshal(usageRecord{
+		Model:       "actual-pending-model",
+		Alias:       "gpt-5.5",
+		AuthID:      key.ID,
+		RequestedAt: time.Now(),
+		ServiceTier: "auto",
+		Detail: usageDetail{
+			InputTokens:  100,
+			OutputTokens: 10,
+			TotalTokens:  110,
+		},
+	})
+	if _, err := usageHandle(body); err != nil {
+		t.Fatal(err)
+	}
+	store := loadedStore()
+	book := policyplus.PriceBook{
+		Source: policyplus.CostSourceCPAMPPriceBook,
+		Prices: map[string]policyplus.ModelPrice{
+			"actual-pending-model": {Model: "actual-pending-model", InputPerMillion: 2, OutputPerMillion: 12},
+		},
+	}
+	if err := store.SaveCachedPriceBook(context.Background(), book); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := managementHandle(mustJSON(t, managementRequest{
+		Method: http.MethodPut,
+		Path:   "/plugins/cpa-key-policy-plus/keys/billing/resolve",
+		Body:   []byte(`{"id":"alice-key"}`),
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var response struct {
+		OK       bool `json:"ok"`
+		Resolved int  `json:"resolved_pending_events"`
+	}
+	if err := json.Unmarshal(decodeManagementBody(t, raw), &response); err != nil || !response.OK || response.Resolved != 1 {
+		t.Fatalf("billing resolve response=%s parsed=%#v err=%v", raw, response, err)
+	}
+	events, err := store.RecentEvents(context.Background(), key.ID, 10)
+	if err != nil || len(events) != 1 || events[0].BillingPending || events[0].Cost <= 0 {
+		t.Fatalf("endpoint did not settle pending event: events=%#v err=%v", events, err)
+	}
+	keys, err := store.ListKeys(context.Background())
+	if err != nil || len(keys) != 1 || keys[0].BillingHoldReason != "" {
+		t.Fatalf("endpoint did not clear billing hold: keys=%#v err=%v", keys, err)
+	}
+}
+
+func TestCurrentPriceBookDoesNotRepriceExistingUsage(t *testing.T) {
 	key := setupTestState(t)
 	store := loadedStore()
 	if err := store.InsertUsage(context.Background(), policyplus.UsageEvent{
@@ -1177,7 +1709,6 @@ func TestCurrentPriceBookRecalculatesCurrentMonthUsage(t *testing.T) {
 	state.cfg.CPAMPPriceDBPath = pricePath
 	state.priceBook = policyplus.PriceBook{}
 	state.priceBookChecked = time.Time{}
-	state.priceBookRepriced = ""
 	state.mu.Unlock()
 	book := currentPriceBook(context.Background(), true)
 	if book.Source != policyplus.CostSourceCPAMPPriceBook {
@@ -1190,12 +1721,11 @@ func TestCurrentPriceBookRecalculatesCurrentMonthUsage(t *testing.T) {
 	if len(events) != 1 {
 		t.Fatalf("events = %#v", events)
 	}
-	want := ((100000.0 * 1) + (10000.0 * 10)) / 1_000_000 * 2.5
-	if got := events[0].Cost; got < want-0.0000001 || got > want+0.0000001 {
-		t.Fatalf("recalculated cost = %.9f, want %.9f event=%#v", got, want, events[0])
+	if got := events[0].Cost; got != 0.001 {
+		t.Fatalf("existing cost must stay frozen, got %.9f event=%#v", got, events[0])
 	}
-	if events[0].CostBreakdown.Source != policyplus.CostSourceCPAMPPriceBook {
-		t.Fatalf("breakdown source = %#v", events[0].CostBreakdown)
+	if events[0].CostBreakdown.Source != policyplus.CostSourceKeyPolicyPlusPriceBook {
+		t.Fatalf("existing breakdown must stay frozen: %#v", events[0].CostBreakdown)
 	}
 }
 
@@ -1206,12 +1736,12 @@ func TestVisibleUsageModelDoesNotGuessForMultiModelKeys(t *testing.T) {
 		t.Fatalf("multi-model key should not guess visible alias, got %q", got)
 	}
 	got = visibleUsageModel(key, usageRecord{Model: "gpt-5.3-codex-spark"})
-	if got != "gpt-5.4" {
-		t.Fatalf("known executor alias should be projected to visible model, got %q", got)
+	if got != "gpt-5.3-codex-spark" {
+		t.Fatalf("reported model must not use a stale display alias, got %q", got)
 	}
 	got = visibleUsageModel(key, usageRecord{Model: "gpt-5.3-codex-spark", Alias: "gpt-5.3-codex-spark"})
-	if got != "gpt-5.4" {
-		t.Fatalf("internal alias field should be projected to visible model, got %q", got)
+	if got != "gpt-5.3-codex-spark" {
+		t.Fatalf("reported alias must remain visible, got %q", got)
 	}
 	got = visibleUsageModel(key, usageRecord{Model: "gpt-5.3-codex-spark", Alias: "gpt-5.4"})
 	if got != "gpt-5.4" {
@@ -1315,6 +1845,84 @@ func TestAdminModelsPrefersCPARegistryCatalog(t *testing.T) {
 	}
 }
 
+func TestAdminModelsFallsBackToLocalCPAAPIAndRefreshesAllProviders(t *testing.T) {
+	setupTestState(t)
+	const apiKey = "sk-local-cpa-models"
+	requestCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/models" {
+			http.NotFound(w, r)
+			return
+		}
+		if r.Header.Get("Authorization") != "Bearer "+apiKey {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		requestCount++
+		if requestCount == 1 {
+			_, _ = w.Write([]byte(`{"data":[{"id":"gpt-provider-model","owned_by":"openai","type":"openai"}]}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"data":[{"id":"gpt-provider-model","owned_by":"openai","type":"openai"},{"id":"grok-4.3","display_name":"Grok 4.3","owned_by":"xai","type":"xai"},{"id":"claude-provider-model","owned_by":"anthropic","type":"claude"},{"id":"gemini-provider-model","owned_by":"google","type":"gemini"},{"id":"groq-provider-model","owned_by":"groq","type":"openai"}]}`))
+	}))
+	t.Cleanup(server.Close)
+	port := strings.TrimPrefix(server.URL, "http://127.0.0.1:")
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(configPath, []byte("port: "+port+"\napi-keys:\n  - "+apiKey+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	state.mu.Lock()
+	state.cfg.NativeKeysConfigPath = configPath
+	state.mu.Unlock()
+
+	oldHostCall := hostCall
+	t.Cleanup(func() { hostCall = oldHostCall })
+	hostCall = func(method string, payload any) (json.RawMessage, error) {
+		switch method {
+		case methodHostModelsList:
+			return nil, fmt.Errorf("unsupported host callback")
+		case methodHostAuthList:
+			return json.Marshal(map[string]any{"files": []any{}})
+		default:
+			return nil, fmt.Errorf("unexpected host callback %s", method)
+		}
+	}
+
+	firstModels, warnings := adminModelCatalog()
+	if len(warnings) != 0 {
+		t.Fatalf("unexpected warnings: %#v", warnings)
+	}
+	firstByID := map[string]policyplus.ModelOption{}
+	for _, model := range firstModels {
+		firstByID[model.ID] = model
+	}
+	if firstByID["gpt-provider-model"].Source != "cpa_registry" || !firstByID["gpt-provider-model"].Known {
+		t.Fatalf("first CPA model catalog missing provider model: %#v", firstByID)
+	}
+	if _, exists := firstByID["grok-4.3"]; exists {
+		t.Fatalf("first CPA model catalog unexpectedly contains later model: %#v", firstByID)
+	}
+
+	refreshedModels, refreshedWarnings := adminModelCatalog()
+	if len(refreshedWarnings) != 0 {
+		t.Fatalf("unexpected refresh warnings: %#v", refreshedWarnings)
+	}
+	refreshedByID := map[string]policyplus.ModelOption{}
+	for _, model := range refreshedModels {
+		refreshedByID[model.ID] = model
+	}
+	for _, id := range []string{"gpt-provider-model", "grok-4.3", "claude-provider-model", "gemini-provider-model", "groq-provider-model"} {
+		model, exists := refreshedByID[id]
+		if !exists || model.Source != "cpa_registry" || !model.Known {
+			t.Fatalf("refreshed CPA catalog missing provider model %q: %#v", id, refreshedByID)
+		}
+	}
+	if refreshedByID["grok-4.3"].OwnedBy != "xai" || refreshedByID["groq-provider-model"].OwnedBy != "groq" {
+		t.Fatalf("refreshed CPA catalog lost provider metadata: %#v", refreshedByID)
+	}
+}
+
 func TestUserHTMLUsesPolicyPlusHeader(t *testing.T) {
 	html := userHTML()
 	if !strings.Contains(html, "X-CPA-Key-Policy-Plus-Key") {
@@ -1323,14 +1931,14 @@ func TestUserHTMLUsesPolicyPlusHeader(t *testing.T) {
 	if strings.Contains(html, "X-CPA-Governor-Key") {
 		t.Fatal("user page should not keep the Governor login header")
 	}
-	for _, want := range []string{"完整原生 sk- Key", "旧的 cpa_ Key 已迁移下线", "只接受 CPA 原生 sk- Key"} {
+	for _, want := range []string{"cpa_ Key 已停用", "这是 Key 预览", "只支持 sk- 开头的 Key"} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("user page missing native-key guidance %q", want)
 		}
 	}
 }
 
-func TestUserHTMLFixedRangeUX(t *testing.T) {
+func TestUserHTMLUsesWeeklyPrimaryRangeForWeeklyOnlyKeys(t *testing.T) {
 	html := userHTML()
 	for _, removed := range []string{`id="rangeSelect"`, "rangeSelect", "state.range"} {
 		if strings.Contains(html, removed) {
@@ -1338,9 +1946,11 @@ func TestUserHTMLFixedRangeUX(t *testing.T) {
 		}
 	}
 	for _, want := range []string{
-		`const PRIMARY_RANGE = "24h";`,
-		"${rangeLabel(PRIMARY_RANGE)}费用",
-		"${rangeLabel(PRIMARY_RANGE)} · 最近",
+		"function primaryRange()",
+		"state.me.quota_mode === \"weekly_only\" ? \"7d\" : \"24h\"",
+		"function visibleQuotaWindows()",
+		"const range = primaryRange();",
+		"visibleQuotaWindows().map",
 		"5 小时额度",
 		"24 小时额度",
 		"7 天额度",
@@ -1348,8 +1958,8 @@ func TestUserHTMLFixedRangeUX(t *testing.T) {
 		"未设置上限",
 		"接近上限",
 		"已超限",
-		"api(`/usage?range=${encodeURIComponent(PRIMARY_RANGE)}`",
-		"api(`/events?range=${encodeURIComponent(PRIMARY_RANGE)}&limit=100`",
+		"api(`/usage?range=${encodeURIComponent(range)}`",
+		"api(`/events?range=${encodeURIComponent(range)}&limit=100`",
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("user fixed-range page missing %q", want)
@@ -1374,37 +1984,41 @@ func TestUserHTMLIgnoresRefreshCancelNoise(t *testing.T) {
 		}
 	}
 	usageCancel := strings.Index(html, "if (isRefreshCancel(controller.signal)) return;")
-	usageError := strings.Index(html, `state.errors.usage = "用量接口同步失败："`)
+	usageError := strings.Index(html, `state.errors.usage = "用量同步失败："`)
 	if usageCancel < 0 || usageError < 0 || usageCancel > usageError {
 		t.Fatal("usage refresh cancel must be ignored before setting a sync error")
 	}
-	protectionError := strings.Index(html, `state.errors.protection = "思维链保护同步失败："`)
-	if protectionError < 0 {
-		t.Fatal("protection sync error assignment missing")
-	}
-	protectionCancel := strings.LastIndex(html[:protectionError], "if (isRefreshCancel(controller.signal)) return;")
-	if protectionCancel < 0 {
-		t.Fatal("protection refresh cancel must be ignored before setting a sync error")
+}
+
+func TestUserHTMLOmitsRetiredCodexContViewsAndPolling(t *testing.T) {
+	html := userHTML()
+	for _, forbidden := range []string{
+		"function roundSummaryText",
+		"思维链保护",
+		"fetchProtection",
+		"state.protection",
+		"/codexcont",
+		"data-tab=\"codex\"",
+	} {
+		if strings.Contains(html, forbidden) {
+			t.Fatalf("retired CodexCont UI must not remain in user page: %q", forbidden)
+		}
 	}
 }
 
-func TestUserHTMLRendersCodexContRoundDetails(t *testing.T) {
-	html := userHTML()
-	for _, want := range []string{
-		"function roundSummaryText",
-		"无轮次摘要",
-		`reasoning ${esc(r.reasoning_tokens`,
-		`["Key", keyIdentityLabel(identity)]`,
-		`["Preview", identity.preview || "-"]`,
-		`["开始时间", dt(req.started_at)]`,
-		`["更新时间", dt(req.updated_at)]`,
-		`["结束时间", dt(req.ended_at)]`,
-		"<h3>轮次</h3>",
-		"dt(req.updated_at || req.started_at)",
-	} {
-		if !strings.Contains(html, want) {
-			t.Fatalf("user protection detail missing %q", want)
-		}
+func TestCodexRequestsDoNotReadExecutorStoreWhenDisabled(t *testing.T) {
+	key := setupTestState(t)
+	state.mu.Lock()
+	state.cfg.CodexContEnabled = false
+	state.cfg.CodexSummaryDBPath = filepath.Join(t.TempDir(), "missing", "executor.sqlite")
+	state.mu.Unlock()
+	requests, source := codexRequestsForKey(key, 10)
+	if source != "disabled" || len(requests) != 0 {
+		t.Fatalf("disabled CodexCont history should not read executor state: source=%s requests=%#v", source, requests)
+	}
+	status := codexcontStatus()
+	if status["mode"] != "disabled" || status["history_source"] != "disabled" || status["health_ok"] != nil || status["url"] != nil {
+		t.Fatalf("disabled CodexCont status should not expose offline probe state: %#v", status)
 	}
 }
 
@@ -1437,7 +2051,7 @@ func TestCodexRequestsPreferExecutorSummaryBridge(t *testing.T) {
 	}
 	state.mu.Lock()
 	state.cfg.CodexSummaryDBPath = execPath
-	state.cfg.CodexContEnabled = false
+	state.cfg.CodexContEnabled = true
 	state.mu.Unlock()
 	requests, source := codexRequestsForKey(key, 10)
 	if source != "codexcont_executor_store" || len(requests) != 1 || requests[0]["request_id"] != "exec-a" {
@@ -1469,6 +2083,15 @@ func TestCodexRequestsProjectSafeExecutorDetailFields(t *testing.T) {
 		"continuation_count":                3,
 		"failure_category":                  "upstream_transport_eof",
 		"failure_detail":                    "safe diagnostic",
+		"route_decision": map[string]any{
+			"protected":    true,
+			"mode":         "protect_all",
+			"reason":       "protect_all",
+			"model":        "gpt-5.5",
+			"key_scope":    "alice-safe-alias",
+			"body_bytes":   "Authorization: Bearer sk-should-not-leak",
+			"max_continue": 8,
+		},
 		"diagnostics": map[string]any{
 			"rounds": []map[string]any{
 				{
@@ -1502,17 +2125,21 @@ func TestCodexRequestsProjectSafeExecutorDetailFields(t *testing.T) {
 	}
 	state.mu.Lock()
 	state.cfg.CodexSummaryDBPath = execPath
-	state.cfg.CodexContEnabled = false
+	state.cfg.CodexContEnabled = true
 	state.mu.Unlock()
 	requests, source := codexRequestsForKey(key, 10)
 	if source != "codexcont_executor_store" || len(requests) != 1 {
 		t.Fatalf("source=%s requests=%#v", source, requests)
 	}
 	got := requests[0]
-	for _, field := range []string{"final_status", "folded", "passthrough", "first_truncation_n", "failure_category", "failure_detail", "rounds", "diagnostics_brief"} {
+	for _, field := range []string{"final_status", "folded", "passthrough", "first_truncation_n", "failure_category", "failure_detail", "rounds", "diagnostics_brief", "route_decision"} {
 		if _, ok := got[field]; !ok {
 			t.Fatalf("projected summary missing %s: %#v", field, got)
 		}
+	}
+	routeDecision, _ := got["route_decision"].(map[string]any)
+	if routeDecision["reason"] != "protect_all" || routeDecision["key_scope"] != "alice-safe-alias" || routeDecision["body_bytes"] != nil {
+		t.Fatalf("route decision projection = %#v", routeDecision)
 	}
 	brief, _ := got["diagnostics_brief"].([]map[string]any)
 	if len(brief) != 1 || brief[0]["open_error_category"] != "upstream_transport_eof" || brief[0]["authorization"] != nil {
@@ -1558,7 +2185,7 @@ func TestCodexRequestsAllowExecutorPreviewMatchAndHideOtherKeys(t *testing.T) {
 	}
 	state.mu.Lock()
 	state.cfg.CodexSummaryDBPath = execPath
-	state.cfg.CodexContEnabled = false
+	state.cfg.CodexContEnabled = true
 	state.mu.Unlock()
 	requests, source := codexRequestsForKey(key, 10)
 	if source != "codexcont_executor_store" || len(requests) != 1 || requests[0]["request_id"] != "exec-preview" {
@@ -1590,7 +2217,7 @@ func TestCodexRequestsIncludeCurrentKeyProcessingFromExecutorStore(t *testing.T)
 	}
 	state.mu.Lock()
 	state.cfg.CodexSummaryDBPath = execPath
-	state.cfg.CodexContEnabled = false
+	state.cfg.CodexContEnabled = true
 	state.mu.Unlock()
 	requests, source := codexRequestsForKey(key, 10)
 	if source != "codexcont_executor_store" || len(requests) != 1 || requests[0]["request_id"] != "processing-live" || requests[0]["protection"] != "processing" {
@@ -1621,7 +2248,7 @@ func TestCodexRequestsHideOtherKeyProcessingFromExecutorStore(t *testing.T) {
 	}
 	state.mu.Lock()
 	state.cfg.CodexSummaryDBPath = execPath
-	state.cfg.CodexContEnabled = false
+	state.cfg.CodexContEnabled = true
 	state.mu.Unlock()
 	requests, source := codexRequestsForKey(key, 10)
 	if source != "codexcont_executor_store" || len(requests) != 0 {
@@ -1653,7 +2280,7 @@ func TestCodexRequestsHideStaleProcessingFromExecutorStore(t *testing.T) {
 	}
 	state.mu.Lock()
 	state.cfg.CodexSummaryDBPath = execPath
-	state.cfg.CodexContEnabled = false
+	state.cfg.CodexContEnabled = true
 	state.mu.Unlock()
 	requests, source := codexRequestsForKey(key, 10)
 	if source != "codexcont_executor_store" || len(requests) != 0 {
@@ -1681,7 +2308,7 @@ func TestCodexRequestsExecutorBridgeEmptyCurrentKeyIsNotError(t *testing.T) {
 	}
 	state.mu.Lock()
 	state.cfg.CodexSummaryDBPath = execPath
-	state.cfg.CodexContEnabled = false
+	state.cfg.CodexContEnabled = true
 	state.mu.Unlock()
 	requests, source := codexRequestsForKey(key, 10)
 	if source != "codexcont_executor_store" || len(requests) != 0 {
@@ -1693,7 +2320,7 @@ func TestCodexRequestsExecutorBridgeUnavailableIsExplicit(t *testing.T) {
 	key := setupTestState(t)
 	state.mu.Lock()
 	state.cfg.CodexSummaryDBPath = filepath.Join(t.TempDir(), "missing", "executor.sqlite")
-	state.cfg.CodexContEnabled = false
+	state.cfg.CodexContEnabled = true
 	state.mu.Unlock()
 	requests, source := codexRequestsForKey(key, 10)
 	if source != "codexcont_executor_store_unavailable" || len(requests) != 0 {
@@ -1737,7 +2364,7 @@ func TestAdminHTMLHasRenderedSharedCSS(t *testing.T) {
 	if strings.Contains(html, "{{CSS}}") || strings.Contains(html, "{{SHARED_CSS}}") {
 		t.Fatalf("admin html still has css placeholder")
 	}
-	if !strings.Contains(html, "--panel") || !strings.Contains(html, "CPA Key Policy+") {
+	if !strings.Contains(html, "--kp-line") || !strings.Contains(html, "CPA Key Policy+") {
 		t.Fatal("admin html should embed shared style and key policy UI")
 	}
 	if strings.Contains(html, "/v0/resource/plugins/cpa-key-policy-plus/admin/api") {

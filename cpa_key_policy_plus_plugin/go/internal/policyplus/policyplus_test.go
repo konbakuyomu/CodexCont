@@ -276,7 +276,7 @@ func TestPricingBreakdownUsesPerMillionAndCachedInput(t *testing.T) {
 	}
 }
 
-func TestCPAMPPriceBookLoadAndServiceTierCost(t *testing.T) {
+func TestCPAMPPriceBookLoadUsesBasePriceWithoutLegacyTierGuess(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "usage.sqlite")
 	db, err := sql.Open("sqlite", path)
@@ -319,16 +319,118 @@ func TestCPAMPPriceBookLoadAndServiceTierCost(t *testing.T) {
 		CacheReadTokens:     5,
 		CacheCreationTokens: 3,
 		OutputTokens:        10,
-	}, "gpt-5.5", "priority")
+	}, "gpt-5.5", "default")
 	if !ok {
 		t.Fatalf("price should be available: %#v", breakdown)
 	}
-	want := ((80*1 + 20*0.1 + 5*0.2 + 3*0.5 + 10*10) / perMillion) * 2.5
+	want := (72*1 + 20*0.1 + 5*0.2 + 3*0.5 + 10*10) / perMillion
 	if got := breakdown.Costs["total"]; got < want-0.000000000001 || got > want+0.000000000001 {
 		t.Fatalf("total cost = %.12f, want %.12f (%#v)", got, want, breakdown)
 	}
-	if breakdown.Source != CostSourceCPAMPPriceBook || breakdown.ServiceTierMultiplier != 2.5 {
+	if breakdown.Source != CostSourceCPAMPPriceBook || breakdown.ServiceTierMultiplier != 1 || breakdown.ServiceTierRule != "" {
 		t.Fatalf("breakdown source/tier = %#v", breakdown)
+	}
+}
+
+func TestCPAMPPriceBookLoadsContextAndServiceTierRules(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "usage.sqlite")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, stmt := range []string{
+		`create table model_prices (
+			model text primary key,
+			prompt_per_1m real not null,
+			completion_per_1m real not null,
+			cache_per_1m real not null,
+			cache_read_per_1m real not null default 0,
+			cache_creation_per_1m real not null default 0,
+			prompt_configured integer not null default 0,
+			completion_configured integer not null default 0,
+			cache_read_configured integer not null default 0,
+			cache_creation_configured integer not null default 0,
+			source text,
+			source_model_id text,
+			updated_at_ms integer not null,
+			synced_at_ms integer
+		)`,
+		`create table model_price_context_tiers (
+			model text not null,
+			threshold_tokens integer not null,
+			prompt_per_1m real not null,
+			completion_per_1m real not null,
+			cache_per_1m real not null,
+			cache_read_per_1m real not null default 0,
+			cache_creation_per_1m real not null default 0,
+			prompt_configured integer not null default 0,
+			completion_configured integer not null default 0,
+			cache_configured integer not null default 0,
+			cache_read_configured integer not null default 0,
+			cache_creation_configured integer not null default 0
+		)`,
+		`create table model_price_service_tiers (
+			model text not null,
+			mode text not null,
+			service_tier text not null,
+			prompt_per_1m real not null,
+			completion_per_1m real not null,
+			cache_per_1m real not null,
+			cache_read_per_1m real not null default 0,
+			cache_creation_per_1m real not null default 0,
+			prompt_configured integer not null default 0,
+			completion_configured integer not null default 0,
+			cache_configured integer not null default 0,
+			cache_read_configured integer not null default 0,
+			cache_creation_configured integer not null default 0
+		)`,
+	} {
+		if _, err := db.Exec(stmt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := db.Exec(`insert into model_prices values(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"gpt-6-astra", 1, 2, 0.1, 0.2, 0.5, 1, 1, 1, 1, "models.dev", "gpt-6-astra", 1000, 2000); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`insert into model_price_service_tiers values(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"gpt-6-astra", "fast", "priority", 3, 6, 0.3, 0.25, 4, 1, 1, 1, 1, 1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`insert into model_price_context_tiers values(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"gpt-6-astra", 100, 10, 20, 1, 2, 3, 1, 1, 1, 1, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	book, err := LoadCPAMPPriceBookFromSQLite(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	price, ok := book.PriceFor("GPT-6-ASTRA")
+	if !ok || len(price.ContextTiers) != 1 || len(price.ServiceTiers) != 1 {
+		t.Fatalf("advanced CPAMP rules missing: %#v ok=%v", price, ok)
+	}
+	short, ok := CostForUsageFromPriceBook(book, TokenUsage{
+		InputTokens: 100, CachedTokens: 20, CacheReadTokens: 5, CacheCreationTokens: 3, OutputTokens: 10,
+	}, "gpt-6-astra", "priority")
+	if !ok {
+		t.Fatalf("priority price should be available: %#v", short)
+	}
+	shortWant := (72*3 + 20*0.3 + 5*0.25 + 3*4 + 10*6) / perMillion
+	if short.Costs["total"] < shortWant-0.000000000001 || short.Costs["total"] > shortWant+0.000000000001 || short.ServiceTierRule != "fast/priority" || short.ContextThresholdTokens != 0 {
+		t.Fatalf("service tier rule not applied: got=%#v want=%f", short, shortWant)
+	}
+	long, ok := CostForUsageFromPriceBook(book, TokenUsage{InputTokens: 101, OutputTokens: 10}, "gpt-6-astra", "priority")
+	if !ok {
+		t.Fatalf("context tier price should be available: %#v", long)
+	}
+	longWant := (101*10 + 10*20) / perMillion
+	if long.Costs["total"] < longWant-0.000000000001 || long.Costs["total"] > longWant+0.000000000001 || long.ContextThresholdTokens != 100 || long.ServiceTierRule != "" {
+		t.Fatalf("context tier rule not applied: got=%#v want=%f", long, longWant)
 	}
 }
 
@@ -551,6 +653,96 @@ func TestStoreImportsLegacyQuotaSQLite(t *testing.T) {
 	resetAt, ok := plus.ResetAt(ctx, "alice-key", Range5H)
 	if !ok || resetAt != 2000000000 {
 		t.Fatalf("legacy reset not imported: resetAt=%d ok=%v", resetAt, ok)
+	}
+}
+
+func TestEnableWeeklyOnlyPreservesPolicyAndBlocksLegacyReimports(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	store, err := OpenStore(filepath.Join(dir, "policyplus.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	key := KeyRecord{
+		ID:              "weekly-key",
+		Name:            "Weekly Key",
+		KeyHash:         "sha256:" + SHA256Hex("sk-weekly"),
+		Enabled:         true,
+		Preview:         HashPreview(SHA256Hex("sk-weekly")),
+		RPM:             17,
+		Models:          []string{"gpt-6-astra", "gpt-5.6-sol"},
+		FiveHourUSD:     ptr(60),
+		DailyLimitUSD:   ptr(100),
+		WeeklyLimitUSD:  ptr(500),
+		MonthlyLimitUSD: ptr(1500),
+	}
+	if err := store.UpsertKey(ctx, key); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.InsertUsage(ctx, UsageEvent{RequestID: "weekly-history", KeyID: key.ID, RequestedAt: time.Now(), Cost: 4}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Reset(ctx, key.ID, Range7D, time.Unix(1000, 0)); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.EnableWeeklyOnly(ctx, key.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	// A stale JSON source still contains all four legacy values. It may refresh
+	// identity metadata, but it cannot reactivate stopped quota windows.
+	if err := store.ImportKeys(ctx, KeyPolicyState{Keys: []KeyRecord{key}}); err != nil {
+		t.Fatal(err)
+	}
+
+	legacyPath := filepath.Join(dir, "legacy.sqlite")
+	legacy, err := sql.Open("sqlite", legacyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, stmt := range []string{
+		`create table key_limits(policy_id text primary key, five_hour_limit_usd real, monthly_limit_usd real)`,
+		`create table keys(id text primary key, five_hour_limit_usd real, daily_limit_usd real, weekly_limit_usd real, monthly_limit_usd real)`,
+		`create table reset_watermarks(key_id text, window text, reset_at integer, primary key(key_id, window))`,
+	} {
+		if _, err := legacy.Exec(stmt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := legacy.Exec(`insert into key_limits values(?, ?, ?)`, key.ID, 60, 1500); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := legacy.Exec(`insert into keys values(?, ?, ?, ?, ?)`, key.ID, 60, 100, 500, 1500); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := legacy.Exec(`insert into reset_watermarks values(?, ?, ?)`, key.ID, Range7D, 2000); err != nil {
+		t.Fatal(err)
+	}
+	if err := legacy.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ImportLegacyQuotaSQLite(ctx, legacyPath, "legacy"); err != nil {
+		t.Fatal(err)
+	}
+
+	keys, err := store.ListKeys(ctx)
+	if err != nil || len(keys) != 1 {
+		t.Fatalf("ListKeys err=%v keys=%#v", err, keys)
+	}
+	got := keys[0]
+	if !got.WeeklyOnly || got.FiveHourUSD != nil || got.DailyLimitUSD != nil || got.MonthlyLimitUSD != nil || got.WeeklyLimitUSD == nil || *got.WeeklyLimitUSD != 500 {
+		t.Fatalf("weekly-only limits were refilled: %#v", got)
+	}
+	if got.RPM != 17 || len(got.Models) != 2 || got.Models[0] != "gpt-6-astra" {
+		t.Fatalf("weekly-only migration changed preserved policy fields: %#v", got)
+	}
+	if resetAt, ok := store.ResetAt(ctx, key.ID, Range7D); !ok || resetAt != 1000 {
+		t.Fatalf("legacy import changed weekly reset watermark: resetAt=%d ok=%v", resetAt, ok)
+	}
+	summary, err := store.UsageSummary(ctx, key.ID, WindowFor(Range24H, time.Now()))
+	if err != nil || summary.Calls != 1 || summary.TotalCost != 4 {
+		t.Fatalf("weekly-only migration changed usage history: summary=%#v err=%v", summary, err)
 	}
 }
 
@@ -1038,6 +1230,70 @@ func TestRecentCodexSummariesFromSQLiteReadsExternalExecutorStore(t *testing.T) 
 	missing, err := RecentCodexSummariesFromSQLite(ctx, filepath.Join(t.TempDir(), "missing.sqlite"), "alice-key", 10)
 	if err == nil || missing != nil {
 		t.Fatalf("missing executor db should fail soft for caller: items=%#v err=%v", missing, err)
+	}
+}
+
+func TestResolvePendingBillingKeepsHoldWhenAnotherPendingRowAppears(t *testing.T) {
+	ctx := context.Background()
+	store, err := OpenStore(filepath.Join(t.TempDir(), "policyplus.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	key := KeyRecord{
+		ID:             "race-key",
+		Name:           "Race Key",
+		KeyHash:        "sha256:" + SHA256Hex("sk-race-key"),
+		Enabled:        true,
+		Preview:        HashPreview(SHA256Hex("sk-race-key")),
+		WeeklyLimitUSD: ptr(500),
+	}
+	if err := store.UpsertKey(ctx, key); err != nil {
+		t.Fatal(err)
+	}
+	pending := UsageEvent{
+		RequestID:      "pending-before-resolve",
+		KeyID:          key.ID,
+		Model:          "actual-priced-model",
+		ActualModel:    "actual-priced-model",
+		RequestedAt:    time.Now(),
+		BillingPending: true,
+		BillingReason:  "actual_model_price_unavailable",
+		BillingModel:   "actual-priced-model",
+		CostBreakdown: CostBreakdown{
+			Source:               CostSourceCPAMPBillingPending,
+			Model:                "actual-priced-model",
+			PriceMissing:         true,
+			BillingPending:       true,
+			BillingPendingReason: "actual_model_price_unavailable",
+			BillingPriceModel:    "actual-priced-model",
+		},
+	}
+	if err := store.InsertUsage(ctx, pending); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec(`create trigger insert_pending_during_resolution
+		after update of billing_pending on usage_events
+		when old.billing_pending != 0 and new.billing_pending = 0
+		begin
+			insert into usage_events(request_id, key_id, requested_at, failed, cost, cost_breakdown_json, billing_pending, billing_pending_reason, billing_price_model)
+			values('pending-race', 'race-key', strftime('%s','now'), 0, 0, '{}', 1, 'race_injected', 'race-model');
+		end`); err != nil {
+		t.Fatal(err)
+	}
+	book := PriceBook{Source: CostSourceCPAMPPriceBook, Prices: map[string]ModelPrice{
+		"actual-priced-model": {Model: "actual-priced-model", InputPerMillion: 2, OutputPerMillion: 12},
+	}}
+	if _, err := store.ResolvePendingBilling(ctx, key.ID, book); err == nil {
+		t.Fatal("resolution must fail when a new pending row appears before hold release")
+	}
+	events, err := store.RecentEvents(ctx, key.ID, 10)
+	if err != nil || len(events) != 1 || !events[0].BillingPending {
+		t.Fatalf("failed resolution must roll back to original pending event: events=%#v err=%v", events, err)
+	}
+	keys, err := store.ListKeys(ctx)
+	if err != nil || len(keys) != 1 || keys[0].BillingHoldReason == "" {
+		t.Fatalf("failed resolution must preserve hold: keys=%#v err=%v", keys, err)
 	}
 }
 

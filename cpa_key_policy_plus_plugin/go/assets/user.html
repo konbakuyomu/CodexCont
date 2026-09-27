@@ -3,152 +3,528 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="light dark">
   <title>CPA 用量自助页</title>
   <style>{{CSS}}</style>
+  <style>
+    /* Receipt figures: Iosevka (c) 2015-2023 Renzhi Li, SIL Open Font License 1.1, subset to Basic Latin. */
+    @font-face {
+      font-family: "KP Receipt";
+      font-weight: 400;
+      font-display: swap;
+      src: url(data:font/woff2;base64,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) format("woff2");
+      unicode-range: U+0020-007E, U+00A0, U+00B7, U+00D7, U+2013-2014, U+2026, U+2212, U+2248, U+2264-2265;
+    }
+    @font-face {
+      font-family: "KP Receipt";
+      font-weight: 700;
+      font-display: swap;
+      src: url(data:font/woff2;base64,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) format("woff2");
+      unicode-range: U+0020-007E, U+00A0, U+00B7, U+00D7, U+2013-2014, U+2026, U+2212, U+2248, U+2264-2265;
+    }
+
+    body.kp-user {
+      --kp-figures: "KP Receipt", var(--kp-font);
+      --kp-bg: #e4e6e9;
+      --kp-paper: #fbfbfa;
+      --kp-surface: #fbfbfa;
+      --kp-sunken: #f0f1f1;
+      --kp-hover: #f0f1f2;
+      --kp-text: #26282c;
+      --kp-text-2: #4a4e55;
+      --kp-text-3: #666a72;
+      --kp-line: #e3e5e8;
+      --kp-line-strong: #c4c7cc;
+      --kp-rule: #bfc3c9;
+      --kp-accent: #26282c;
+      --kp-accent-ink: #fbfbfa;
+      --kp-ok: #26282c;
+      --kp-warn: #b8356a;
+      --kp-over: #b42f28;
+      --kp-pending: #2c54c2;
+      --kp-selection: rgba(44, 84, 194, .16);
+      --kp-fresh: rgba(38, 40, 44, .08);
+      --kp-shadow: 0 1px 1px rgba(20, 22, 26, .05), 0 16px 36px -22px rgba(20, 22, 26, .42);
+    }
+    @media (prefers-color-scheme: dark) {
+      body.kp-user {
+        --kp-bg: #101113;
+        --kp-paper: #1b1d20;
+        --kp-surface: #1b1d20;
+        --kp-sunken: #232529;
+        --kp-hover: #24262a;
+        --kp-text: #e9eae6;
+        --kp-text-2: #c4c7cb;
+        --kp-text-3: #9ea2a9;
+        --kp-line: #2c2f33;
+        --kp-line-strong: #43474d;
+        --kp-rule: #3c4046;
+        --kp-accent: #e9eae6;
+        --kp-accent-ink: #1b1d20;
+        --kp-ok: #e9eae6;
+        --kp-warn: #f27daa;
+        --kp-over: #ff7c72;
+        --kp-pending: #8aa8ff;
+        --kp-selection: rgba(138, 168, 255, .24);
+        --kp-fresh: rgba(233, 234, 230, .07);
+        --kp-shadow: 0 1px 1px rgba(0, 0, 0, .4), 0 18px 40px -24px rgba(0, 0, 0, .85);
+      }
+    }
+
+    .counter { min-height: 100vh; padding: 32px 24px 56px; }
+    .slip { background: var(--kp-paper); border-radius: 3px; box-shadow: var(--kp-shadow); }
+    .rule { margin: 0; border: 0; border-top: 1px dashed var(--kp-rule); }
+    .boot { margin: 22vh auto 0; text-align: center; color: var(--kp-text-2); }
+
+    /* Login */
+    .login-slip { width: min(440px, 100%); margin: 10vh auto 0; padding: 28px 28px 22px; }
+    .login-slip h1 { font-size: var(--kp-fs-lg); font-weight: 700; }
+    .login-form { margin-top: 18px; padding-top: 16px; border-top: 1px dashed var(--kp-rule); }
+    .field-label { display: block; margin-bottom: 8px; font-size: var(--kp-fs-sm); font-weight: 600; }
+    .login-row { display: flex; gap: 8px; }
+    .login-row .input { font-family: var(--kp-figures); }
+    .hint { margin-top: 10px; font-size: var(--kp-fs-xs); color: var(--kp-text-3); }
+    .err { margin-top: 10px; min-height: 1.3em; font-size: var(--kp-fs-sm); font-weight: 600; color: var(--kp-over); }
+
+    /* Desk: balance slip beside the roll */
+    .desk {
+      display: grid;
+      grid-template-columns: minmax(300px, 372px) minmax(0, 780px);
+      gap: 24px;
+      justify-content: center;
+      align-items: start;
+      max-width: 1180px;
+      margin: 0 auto;
+    }
+    .balance { position: sticky; top: 24px; padding: 22px 22px 20px; }
+    .bal-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+    .bal-head h1 { font-size: var(--kp-fs-md); font-weight: 700; line-height: 1.35; }
+    .bal-actions { display: flex; gap: 4px; margin: -4px -8px 0 0; }
+    .bal-actions .btn { border-color: transparent; background: transparent; color: var(--kp-text-2); }
+    .bal-actions .btn:hover:not(:disabled) { border-color: var(--kp-line-strong); background: var(--kp-hover); color: var(--kp-text); }
+    .i-refresh { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+    .is-syncing .i-refresh { animation: kp-spin .8s linear infinite; }
+    .holder { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 10px; margin-top: 6px; }
+    .holder-name { font-weight: 600; overflow-wrap: anywhere; }
+    .holder-key { font-size: var(--kp-fs-xs); color: var(--kp-text-3); }
+    .live { display: flex; align-items: center; gap: 7px; margin: 8px 0 14px; font-size: var(--kp-fs-xs); color: var(--kp-text-3); }
+    .live-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--kp-text-3); }
+    .live[data-state="ok"] .live-dot { background: var(--kp-text); animation: kp-breathe 2.4s ease-in-out infinite; }
+    .live[data-state="info"] .live-dot { background: transparent; border: 1.5px solid var(--kp-text); border-right-color: transparent; animation: kp-spin .8s linear infinite; }
+    .live[data-state="warn"] .live-dot,
+    .live[data-state="bad"] .live-dot { background: transparent; border: 1.5px solid var(--kp-text-2); }
+    .live[data-state="bad"] { color: var(--kp-text-2); }
+
+    .verdict { padding: 14px 0 16px; }
+    .verdict-title { font-size: var(--kp-fs-xl); font-weight: 700; line-height: 1.3; text-wrap: balance; }
+    .verdict-detail { margin-top: 4px; font-size: var(--kp-fs-sm); color: var(--kp-text-2); text-wrap: pretty; }
+    .verdict.is-warn .verdict-title { color: var(--kp-warn); }
+    .verdict.is-over .verdict-title { color: var(--kp-over); }
+    .verdict.is-pending .verdict-title { color: var(--kp-pending); }
+
+    .windows { border-top: 1px dashed var(--kp-rule); }
+    .win { padding: 12px 0 13px; }
+    .win + .win { border-top: 1px dashed var(--kp-rule); }
+    .win-top { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+    .win-title { font-size: var(--kp-fs-sm); font-weight: 600; }
+    .win-state { font-size: var(--kp-fs-xs); font-weight: 600; color: var(--kp-text-3); }
+    .win-warn .win-state,
+    .win-over .win-state,
+    .stamp {
+      display: inline-block;
+      padding: 0 5px;
+      border: 1.5px solid currentColor;
+      border-radius: 3px;
+      font-size: var(--kp-fs-xs);
+      font-weight: 700;
+      letter-spacing: .04em;
+      line-height: 1.5;
+    }
+    .win-warn .win-state { color: var(--kp-warn); }
+    .win-over .win-state { color: var(--kp-over); }
+    .win-figs { display: flex; align-items: baseline; gap: 6px; margin-top: 4px; }
+    .win-used { font-size: var(--kp-fs-xl); font-weight: 700; letter-spacing: -.01em; }
+    .win-of { color: var(--kp-text-2); }
+    .win-left { margin-left: auto; font-size: var(--kp-fs-sm); color: var(--kp-text-2); }
+    .win-over .win-used { color: var(--kp-over); }
+    .win .meter { margin-top: 8px; height: 5px; border-radius: 1px; }
+    .win-foot { margin-top: 6px; font-size: var(--kp-fs-xs); color: var(--kp-text-3); }
+
+    .trend { padding: 14px 0 12px; border-top: 1px dashed var(--kp-rule); }
+    .trend-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+    .trend-head h2 { font-size: var(--kp-fs-sm); font-weight: 600; }
+    .trend-peak { font-size: var(--kp-fs-xs); color: var(--kp-text-2); }
+    .trend-plot { position: relative; height: 76px; margin-top: 10px; border-bottom: 1px solid var(--kp-text); cursor: crosshair; touch-action: pan-y; }
+    .trend-plot svg { display: block; width: 100%; height: 100%; overflow: visible; }
+    .trend-plot rect { fill: var(--kp-text); transition: opacity .15s ease; }
+    .trend-plot rect.is-zero { fill: var(--kp-rule); }
+    .trend-plot.is-scrubbing rect { opacity: .3; }
+    .trend-plot.is-scrubbing rect.is-active { opacity: 1; }
+    .trend-plot:focus-visible { outline-offset: 4px; }
+    .trend-axis { display: flex; justify-content: space-between; margin-top: 4px; font-size: 11px; color: var(--kp-text-3); }
+    .trend-tip { display: block; min-height: 1.5em; margin-top: 6px; font-size: var(--kp-fs-xs); color: var(--kp-text-2); }
+
+    .tally { display: grid; gap: 5px; margin: 0; padding: 12px 0; border-top: 1px dashed var(--kp-rule); }
+    .tally-row { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+    .tally-row dt { color: var(--kp-text-2); }
+    .tally-row dd { margin: 0; font-weight: 600; text-align: right; }
+    .tally-sub { margin-top: -3px; font-size: var(--kp-fs-xs); color: var(--kp-text-3); text-align: right; }
+    .total { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding-top: 10px; border-top: 3px double var(--kp-text); }
+    .total span { font-weight: 600; }
+    .total b { font-size: var(--kp-fs-2xl); font-weight: 700; letter-spacing: -.01em; }
+
+    /* Roll */
+    .roll { min-width: 0; padding: 20px 0 0; }
+    .roll-head { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 12px; padding: 0 22px 14px; border-bottom: 1px dashed var(--kp-rule); }
+    .roll-head h2 { font-size: var(--kp-fs-lg); font-weight: 700; }
+    .roll-scope { margin-top: 2px; font-size: var(--kp-fs-xs); color: var(--kp-text-3); }
+    .roll-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+    .seg { display: inline-flex; overflow: hidden; border: 1px solid var(--kp-line-strong); border-radius: var(--kp-radius-sm); }
+    .seg-btn { min-height: 30px; padding: 0 12px; border: 0; background: transparent; color: var(--kp-text-2); font-size: var(--kp-fs-xs); font-weight: 600; cursor: pointer; }
+    .seg-btn + .seg-btn { border-left: 1px solid var(--kp-line-strong); }
+    .seg-btn:hover { background: var(--kp-hover); color: var(--kp-text); }
+    .seg-btn[aria-pressed="true"] { background: var(--kp-text); color: var(--kp-paper); }
+    .seg-btn:focus-visible { outline-offset: -3px; }
+    .seg-count { margin-left: 4px; font-family: var(--kp-figures); }
+    .select { min-height: 32px; max-width: 200px; padding: 0 28px 0 10px; border: 1px solid var(--kp-line-strong); border-radius: var(--kp-radius-sm); background: var(--kp-paper); color: var(--kp-text); font-size: var(--kp-fs-xs); }
+    .notice { margin: 12px 22px 0; padding: 8px 10px; border: 1px dashed var(--kp-text-3); border-radius: 3px; font-size: var(--kp-fs-xs); color: var(--kp-text-2); }
+    .notice:empty { display: none; }
+
+    .lines { padding: 4px 8px 8px; overflow-anchor: auto; }
+    .day { padding: 14px 14px 4px; }
+    .day h3 { display: flex; align-items: center; gap: 10px; font-size: var(--kp-fs-xs); font-weight: 600; letter-spacing: .06em; color: var(--kp-text-3); }
+    .day h3::after { content: ""; flex: 1; border-top: 1px dashed var(--kp-rule); }
+    .line { border-radius: 4px; }
+    .line.is-fresh { animation: kp-print 1.6s var(--kp-ease); }
+    .line-main {
+      display: grid;
+      grid-template-columns: 72px minmax(0, 1fr) auto 14px;
+      grid-template-areas: "time what cost chev" ". sub sub .";
+      column-gap: 12px;
+      row-gap: 1px;
+      align-items: baseline;
+      width: 100%;
+      padding: 9px 14px;
+      border: 0;
+      border-radius: 4px;
+      background: transparent;
+      color: inherit;
+      text-align: left;
+      cursor: pointer;
+    }
+    .line-main:hover { background: var(--kp-hover); }
+    .line.is-open > .line-main { background: var(--kp-sunken); border-radius: 4px 4px 0 0; }
+    .line-time { grid-area: time; font-size: var(--kp-fs-sm); color: var(--kp-text-2); }
+    .line-what { grid-area: what; display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; min-width: 0; }
+    .line-model { font-family: var(--kp-figures); font-weight: 700; overflow-wrap: anywhere; }
+    .line-fail { font-size: var(--kp-fs-xs); font-weight: 700; }
+    .line-meta { font-size: var(--kp-fs-xs); color: var(--kp-text-3); }
+    .line-cost { grid-area: cost; justify-self: end; }
+    .line-amt { font-weight: 700; }
+    .line-amt.is-zero { font-weight: 400; color: var(--kp-text-3); }
+    .stamp-pending { color: var(--kp-pending); }
+    .line-sub { grid-area: sub; overflow: hidden; font-size: var(--kp-fs-xs); color: var(--kp-text-3); text-overflow: ellipsis; white-space: nowrap; }
+    .line-chev { grid-area: chev; align-self: center; width: 14px; height: 14px; fill: none; stroke: var(--kp-text-3); stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; transition: transform .2s var(--kp-ease); }
+    .line.is-open .line-chev { transform: rotate(180deg); }
+    .line-detail { padding: 4px 14px 16px 98px; border-radius: 0 0 4px 4px; background: var(--kp-sunken); }
+    .calc { display: grid; gap: 3px; padding: 10px 0; border-bottom: 1px dashed var(--kp-rule); }
+    .calc-row { display: grid; grid-template-columns: minmax(88px, 1fr) auto minmax(76px, auto); gap: 12px; align-items: baseline; font-size: var(--kp-fs-sm); }
+    .calc-label, .calc-qty { color: var(--kp-text-2); }
+    .calc-qty, .calc-amt { text-align: right; }
+    .calc-note { font-size: var(--kp-fs-xs); color: var(--kp-text-3); }
+    .calc-total { display: flex; justify-content: space-between; gap: 12px; padding-top: 8px; font-weight: 700; }
+    .facts { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 16px; margin: 12px 0 0; font-size: var(--kp-fs-xs); }
+    .facts dt { color: var(--kp-text-3); }
+    .facts dd { margin: 0; color: var(--kp-text-2); overflow-wrap: anywhere; }
+    .pending-note { margin-top: 10px; font-size: var(--kp-fs-xs); font-weight: 600; color: var(--kp-pending); }
+    .failure { max-height: 160px; margin-top: 10px; padding: 8px 10px; overflow: auto; border-radius: 3px; background: var(--kp-paper); font-size: var(--kp-fs-xs); white-space: pre-wrap; overflow-wrap: anywhere; }
+    .empty { padding: 36px 22px; text-align: center; color: var(--kp-text-2); }
+    .empty .btn { margin-top: 12px; }
+    .roll-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 22px 16px; border-top: 1px dashed var(--kp-rule); font-size: var(--kp-fs-xs); color: var(--kp-text-3); }
+    .roll-end { flex: 1; text-align: center; letter-spacing: .3em; }
+
+    /* Carpool share, printed like one more window on the slip */
+    .pool { padding: 12px 0 13px; border-top: 1px dashed var(--kp-rule); }
+    .pool-top { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+    .pool-title { font-size: var(--kp-fs-sm); font-weight: 600; overflow-wrap: anywhere; }
+    .pool .meter { margin-top: 8px; height: 5px; border-radius: 1px; }
+    .pool-facts { display: grid; gap: 3px; margin: 8px 0 0; font-size: var(--kp-fs-xs); }
+    .pool-facts div { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+    .pool-facts dt { color: var(--kp-text-3); }
+    .pool-facts dd { margin: 0; color: var(--kp-text-2); text-align: right; }
+    .team { display: grid; gap: 2px; margin-top: 10px; padding-top: 8px; border-top: 1px dotted var(--kp-rule); font-size: var(--kp-fs-xs); }
+    .team li { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; color: var(--kp-text-2); }
+    .team li.is-self { color: var(--kp-text); font-weight: 700; }
+    .team li.is-over .team-fig { color: var(--kp-over); font-weight: 700; }
+    .i-pin { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+
+    /* Card: the same slip cut down to what matters at a glance */
+    body.kp-card-mode .counter { min-height: 0; padding: 12px; }
+    .card-slip { width: min(340px, 100%); margin: 0 auto; padding: 16px 16px 12px; }
+    .card-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+    .card-name { min-width: 0; font-weight: 700; overflow-wrap: anywhere; }
+    .card-live { display: flex; flex: none; align-items: center; gap: 6px; font-size: var(--kp-fs-xs); color: var(--kp-text-3); }
+    .card-live .live-dot { width: 6px; height: 6px; }
+    .card-live[data-state="ok"] .live-dot { background: var(--kp-text); }
+    .card-main { margin-top: 10px; padding: 10px 0 12px; border-top: 1px dashed var(--kp-rule); }
+    .card-label { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; font-size: var(--kp-fs-xs); color: var(--kp-text-2); }
+    .card-label b { font-weight: 700; }
+    .card-big { margin-top: 2px; font-size: 1.875rem; font-weight: 700; letter-spacing: -.01em; line-height: 1.2; }
+    .card-big small { margin-left: 6px; font-size: var(--kp-fs-sm); font-weight: 400; color: var(--kp-text-2); letter-spacing: 0; }
+    .card-main.is-warn .card-big, .card-main.is-warn .card-label b { color: var(--kp-warn); }
+    .card-main.is-over .card-big, .card-main.is-over .card-label b { color: var(--kp-over); }
+    .card-main .meter { margin-top: 8px; height: 5px; border-radius: 1px; }
+    .card-sub { margin-top: 6px; font-size: var(--kp-fs-xs); color: var(--kp-text-2); text-wrap: pretty; }
+    .card-rows { display: grid; gap: 3px; padding: 9px 0; border-top: 1px dashed var(--kp-rule); font-size: var(--kp-fs-xs); }
+    .card-rows div { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; color: var(--kp-text-2); }
+    .card-rows div b { color: var(--kp-text); font-weight: 600; }
+    .card-rows div.is-over b { color: var(--kp-over); }
+    .card-rows div.is-warn b { color: var(--kp-warn); }
+    .card-foot { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding-top: 8px; border-top: 3px double var(--kp-text); font-size: var(--kp-fs-xs); color: var(--kp-text-3); }
+    .card-foot .btn { min-height: 26px; padding: 0 9px; }
+    body.is-pip { min-height: 0; background: var(--kp-paper); }
+    body.is-pip .counter { padding: 0; }
+    body.is-pip .card-slip { width: 100%; padding: 12px 14px 10px; border-radius: 0; box-shadow: none; }
+
+    @keyframes kp-breathe { 50% { opacity: .3; } }
+    @keyframes kp-print {
+      0% { transform: translateY(-6px); background-color: var(--kp-fresh); }
+      20% { transform: none; }
+      100% { background-color: transparent; }
+    }
+
+    @media (max-width: 920px) {
+      .desk { grid-template-columns: minmax(0, 640px); }
+      .balance { position: static; }
+    }
+    @media (max-width: 560px) {
+      .counter { padding: 12px 10px 40px; }
+      .login-slip { margin-top: 6vh; padding: 22px 18px 18px; }
+      .login-row { flex-direction: column; }
+      .balance { padding: 18px 16px 16px; }
+      .roll-head { padding: 0 14px 12px; }
+      .lines { padding: 4px 2px 8px; }
+      .line-main { grid-template-columns: 62px minmax(0, 1fr) auto; grid-template-areas: "time what cost" "sub sub sub"; column-gap: 10px; padding: 9px 12px; }
+      .line-chev { display: none; }
+      .line-detail { padding: 4px 12px 14px; }
+      .calc-row { grid-template-columns: minmax(64px, 1fr) auto minmax(64px, auto); gap: 8px; font-size: var(--kp-fs-xs); }
+      .roll-foot { padding: 12px 14px 14px; }
+      .notice { margin: 12px 14px 0; }
+    }
+  </style>
 </head>
-<body>
-<main class="shell">
-  <header id="topbar" class="topbar">
-    <div class="brand">
-      <div class="mark">U</div>
-      <div>
-        <h1>CPA 用量自助页</h1>
-        <p class="subtitle">单 Key 实时监控、额度明细和思维链保护状态</p>
-      </div>
-    </div>
-    <div class="toolbar">
-      <span id="live" class="chip stream warn"><span class="dot"></span><span>未登录</span></span>
-      <span id="active-chip" class="chip info hidden"><span class="dot"></span><span>活跃 0</span></span>
-      <button id="refresh" class="ghost sync-button hidden" type="button" aria-live="polite">
-        <span class="sync-light" aria-hidden="true"></span>
-        <span class="sync-label">刷新</span>
-      </button>
-      <button id="logout" class="ghost hidden" type="button">退出</button>
-    </div>
-  </header>
+<body class="kp-user">
+<main class="counter">
+  <p id="boot" class="boot">正在读取会话…</p>
 
-  <section class="panel login" id="login">
-    <div class="panel-head"><h2>登录</h2></div>
-    <div class="panel-body">
-      <p class="muted">请使用 CPA/CPAMP 中管理的完整原生 sk- Key。</p>
+  <section id="login" class="slip login-slip hidden" aria-labelledby="loginTitle">
+    <h1 id="loginTitle">CPA 用量自助页</h1>
+    <form id="loginForm" class="login-form" novalidate>
+      <label class="field-label" for="key">完整 Key</label>
       <div class="login-row">
-        <input id="key" type="password" autocomplete="off" spellcheck="false" placeholder="粘贴完整 sk- 原生 Key">
-        <button id="loginBtn" class="primary" type="button">登录</button>
+        <input id="key" class="input" type="password" autocomplete="off" spellcheck="false" placeholder="粘贴完整 sk- 原生 Key" aria-describedby="keyHint err">
+        <button id="loginBtn" class="btn primary" type="submit">登录</button>
       </div>
-      <p id="err"></p>
-    </div>
+      <p id="keyHint" class="hint">Key 只用于登录，不会保存。</p>
+      <p id="err" class="err" role="alert"></p>
+    </form>
   </section>
 
-  <section id="app" class="hidden">
-    <section class="metrics" id="cards"></section>
-    <section class="user-quota-windows" id="quotaCards" aria-label="额度窗口"></section>
-    <section class="panel">
-      <div class="panel-body">
-        <div class="tabs">
-          <button data-tab="usage" class="active" type="button">额度与明细</button>
-          <button data-tab="codex" type="button">思维链保护</button>
+  <section id="card" class="slip card-slip hidden" aria-label="用量小票"></section>
+
+  <div id="app" class="desk hidden">
+    <aside id="balance" class="slip balance" aria-label="余额单">
+      <div class="bal-head">
+        <h1>CPA 用量自助页</h1>
+        <div class="bal-actions">
+          <button id="refresh" class="btn small" type="button" aria-live="polite">
+            <svg class="i-refresh" viewBox="0 0 16 16" aria-hidden="true"><path d="M13.25 8a5.25 5.25 0 1 1-1.54-3.71"/><path d="M13.25 2.75v3h-3"/></svg>
+            <span class="sync-label">刷新</span>
+          </button>
+          <button id="pin" class="btn small hidden" type="button" title="钉到桌面：把小票放在屏幕角落，一直置顶显示" aria-label="钉到桌面">
+            <svg class="i-pin" viewBox="0 0 16 16" aria-hidden="true"><path d="M9.5 2.5l4 4-2 1-2.5 2.5.5 3-1 1-3-3L2.5 14l-.5-.5 3.5-3.5-3-3 1-1 3 .5L9 4.5z"/></svg>
+          </button>
+          <button id="logout" class="btn small" type="button">退出</button>
         </div>
-        <div id="content"></div>
       </div>
+      <div class="holder"><span id="keyName" class="holder-name"></span><span id="keyPreview" class="holder-key num"></span></div>
+      <div id="live" class="live" data-state="info" role="status"><span class="live-dot" aria-hidden="true"></span><span class="live-text">正在同步</span></div>
+      <div id="verdict" class="verdict" aria-live="polite"></div>
+      <section id="pool" class="pool hidden" aria-labelledby="poolTitle"></section>
+      <div id="quotaCards" class="windows" aria-label="额度窗口"></div>
+      <figure id="trend" class="trend hidden">
+        <figcaption class="trend-head"><h2 id="trendTitle">近 24 小时每小时消费</h2><span id="trendPeak" class="trend-peak num"></span></figcaption>
+        <div id="trendPlot" class="trend-plot" tabindex="0" role="group" aria-labelledby="trendTitle" aria-describedby="trendTip"></div>
+        <div id="trendAxis" class="trend-axis num" aria-hidden="true"></div>
+        <output id="trendTip" class="trend-tip" aria-live="polite"></output>
+      </figure>
+      <dl id="tally" class="tally"></dl>
+      <div id="total" class="total"></div>
+    </aside>
+
+    <section class="slip roll" aria-labelledby="rollTitle">
+      <div class="roll-head">
+        <div>
+          <h2 id="rollTitle">消费明细</h2>
+          <div id="rollScope" class="roll-scope"></div>
+        </div>
+        <div class="roll-tools">
+          <div class="seg" role="group" aria-label="按状态筛选">
+            <button class="seg-btn" type="button" data-filter="all" aria-pressed="true">全部</button>
+            <button class="seg-btn" type="button" data-filter="failed" aria-pressed="false">只看失败<span id="failedCount" class="seg-count"></span></button>
+          </div>
+          <label><span class="visually-hidden">按模型筛选</span><select id="modelFilter" class="select"><option value="">全部模型</option></select></label>
+        </div>
+      </div>
+      <div id="rollNotice" class="notice" role="status"></div>
+      <ol id="lines" class="lines"></ol>
+      <div id="rollFoot" class="roll-foot"></div>
     </section>
-  </section>
+  </div>
 </main>
 
 <script>
 const USER_API = location.pathname.startsWith("/key-policy-plus-user") ? "/key-policy-plus-user/api" : "/v0/resource/plugins/cpa-key-policy-plus/user/api";
-const PRIMARY_RANGE = "24h";
+const LOGGED_OUT_FLAG = "cpa_key_policy_plus_logged_out";
+const EVENTS_LIMIT = 100;
+const PAGE_SIZE = 40;
+const CARD_MODE = new URLSearchParams(location.search).get("view") === "card";
 const $ = (id) => document.getElementById(id);
 const state = {
-  tab: "usage",
   me: null,
   usage: null,
+  trend: null,
+  trendUnavailable: false,
+  trendIndex: -1,
+  trendFetchedAt: 0,
+  eventMap: new Map(),
   events: [],
-  protection: [],
+  olderExhausted: false,
+  loadingOlder: false,
+  filter: "all",
+  model: "",
+  visible: PAGE_SIZE,
   expandedEvents: new Set(),
-  expandedProtection: new Set(),
-  eventSigs: {},
-  protectionSigs: {},
+  seenEvents: new Set(),
   freshEvents: new Set(),
-  freshProtection: new Set(),
-  cardSig: "",
-  usageRenderSig: "",
-  protectionRenderSig: "",
-  errors: {usage:"", protection:""},
+  errors: {usage:"", older:""},
+  lastSync: 0,
   timer: null,
   refreshTimer: null,
   timeoutTimer: null,
   controller: null,
   seq: 0,
-  refreshing: false
+  refreshing: false,
+  active: false,
+  pool: null,
+  poolUnavailable: false,
+  pip: null,
+  live: {kind: "info", text: "正在同步"}
 };
+
 const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));
-const num = (v) => Number(v || 0).toLocaleString();
-const money = (v, digits=3) => v == null ? "未设" : "$" + Number(v || 0).toFixed(digits);
-const dt = (v) => v ? new Date(v).toLocaleString() : "-";
-const signature = (value) => JSON.stringify(value || {});
+const numberFormat = new Intl.NumberFormat("zh-CN");
+const num = (v) => numberFormat.format(Number(v || 0));
+const signature = (value) => JSON.stringify(value ?? null);
 const rangeLabel = (v) => ({ "5h":"5 小时", "24h":"24 小时", "7d":"7 天", "month":"本月" }[v] || v || "-");
-const duration = (v) => {
-  if (v == null || Number(v) <= 0) return "-";
+const weekdays = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
+function money(v, digits=2){
+  if (v == null || v === "") return "未设";
   const n = Number(v);
-  return n < 1000 ? `${Math.round(n)} ms` : `${(n / 1000).toFixed(2)} s`;
-};
+  if (!Number.isFinite(n)) return "未设";
+  if (digits === 2 && n > 0 && n < 0.005) return "<$0.01";
+  return "$" + n.toFixed(digits);
+}
+function unitPrice(perMillion){
+  const n = Number(perMillion);
+  if (!Number.isFinite(n)) return "-";
+  const fixed = n >= 1 ? n.toFixed(2) : n.toFixed(4).replace(/(\.\d\d\d*?)0+$/, "$1");
+  return `$${fixed}/M`;
+}
 const pct = (v) => {
   if (v == null || !Number.isFinite(Number(v))) return "-";
   return `${(Number(v) * 100).toFixed(1)}%`;
 };
-const labels = {
-  success:["成功","ok"],
-  protected_clean:["已保护","ok"],
-  auto_continued:["已自动续写","info"],
-  risk_uncontinued:["疑似截断","warn"],
-  passthrough:["透传","warn"],
-  failed:["失败","bad"],
-  incomplete:["未完整","warn"],
-  processing:["处理中","info"]
+const duration = (v) => {
+  if (v == null || Number(v) <= 0) return "-";
+  const n = Number(v);
+  if (n < 1000) return `${Math.round(n)} ms`;
+  return `${(n / 1000).toFixed(n < 10000 ? 2 : 1)} s`;
 };
-const PROCESSING_STALE_MS = 10 * 60 * 1000;
-function chip(value, fallback){
-  const item = labels[value] || [fallback || value || "未知", ""];
-  return `<span class="chip ${item[1]}"><span class="dot"></span>${esc(item[0])}</span>`;
+const pad = (n) => String(n).padStart(2, "0");
+const clock = (d) => `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+const hm = (d) => `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+const dayKey = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+function dayOffset(d){
+  const start = new Date(); start.setHours(0, 0, 0, 0);
+  const other = new Date(d); other.setHours(0, 0, 0, 0);
+  return Math.round((other - start) / 86400000);
 }
+function dayLabel(d){
+  const base = `${d.getMonth() + 1}月${d.getDate()}日 ${weekdays[d.getDay()]}`;
+  const offset = dayOffset(d);
+  if (offset === 0) return `今天 · ${base}`;
+  if (offset === -1) return `昨天 · ${base}`;
+  return base;
+}
+function whenLabel(unix){
+  const d = new Date(Number(unix) * 1000);
+  const offset = dayOffset(d);
+  const day = offset === 0 ? "今天" : offset === 1 ? "明天" : `${d.getMonth() + 1}月${d.getDate()}日`;
+  const minutes = Math.round((d.getTime() - Date.now()) / 60000);
+  let rel = "";
+  if (minutes > 0 && minutes < 60) rel = `（约 ${minutes} 分钟后）`;
+  else if (minutes >= 60 && minutes < 48 * 60) rel = `（约 ${Math.round(minutes / 60)} 小时后）`;
+  return `${day} ${hm(d)}${rel}`;
+}
+const beijingFormat = new Intl.DateTimeFormat("zh-CN", {timeZone:"Asia/Shanghai", month:"numeric", day:"numeric", hour:"2-digit", minute:"2-digit", hour12:false});
+function resetLabel(unix){
+  const parts = Object.fromEntries(beijingFormat.formatToParts(new Date(Number(unix) * 1000)).map(p => [p.type, p.value]));
+  return `${parts.month}月${parts.day}日 ${parts.hour}:${parts.minute}`;
+}
+// Short Beijing-time form for same-day account windows, with a relative hint.
+function shortResetLabel(unix){
+  const at = new Date(Number(unix) * 1000);
+  const p = Object.fromEntries(beijingFormat.formatToParts(at).map(x => [x.type, x.value]));
+  const n = Object.fromEntries(beijingFormat.formatToParts(new Date()).map(x => [x.type, x.value]));
+  const minutes = Math.round((at.getTime() - Date.now()) / 60000);
+  const rel = minutes > 0 && minutes < 60 ? ` · 约 ${minutes} 分钟后` : minutes >= 60 && minutes < 48 * 60 ? ` · 约 ${Math.round(minutes / 60)} 小时后` : "";
+  return `${p.month === n.month && p.day === n.day ? "" : `${p.month}月${p.day}日 `}${p.hour}:${p.minute} 恢复${rel}`;
+}
+function reasonText(reason){
+  return ({
+    model_price_unavailable: "模型价格缺失",
+    cpamp_price_unavailable: "CPAMP 价格不可用",
+    billing_price_unavailable: "计费价格不可用",
+    model_or_service_tier_price_unavailable: "模型或服务等级价格缺失"
+  })[reason] || reason || "价格规则待核验";
+}
+
 function setLive(kind, text){
   const el = $("live");
-  el.className = `chip stream ${kind}`;
-  el.querySelector("span:last-child").textContent = text;
-  $("topbar").classList.toggle("live-active", ["ok", "info", "warn", "bad"].includes(kind));
-  applySyncLight(kind);
-}
-function applySyncLight(kind){
-  const refresh = $("refresh");
-  refresh.classList.remove("live-ok", "live-info", "live-warn", "live-bad");
-  if (["ok", "info", "warn", "bad"].includes(kind)) refresh.classList.add(`live-${kind}`);
+  el.dataset.state = kind;
+  el.querySelector(".live-text").textContent = text;
+  state.live = {kind, text};
+  renderCard();
 }
 function setRefreshState(kind, text){
   const refresh = $("refresh");
-  refresh.classList.remove("syncing", "just-updated", "sync-error");
+  refresh.classList.toggle("is-syncing", kind === "syncing");
   refresh.disabled = kind === "syncing";
   refresh.setAttribute("aria-busy", kind === "syncing" ? "true" : "false");
-  if (kind === "syncing") refresh.classList.add("syncing");
-  if (kind === "updated") refresh.classList.add("just-updated");
-  if (kind === "error") refresh.classList.add("sync-error");
   refresh.querySelector(".sync-label").textContent = text || "刷新";
   clearTimeout(state.refreshTimer);
   if (kind === "updated" || kind === "error") {
-    state.refreshTimer = setTimeout(() => {
-      refresh.classList.remove("just-updated", "sync-error");
-      refresh.querySelector(".sync-label").textContent = "刷新";
-    }, 1300);
+    state.refreshTimer = setTimeout(() => { refresh.querySelector(".sync-label").textContent = "刷新"; }, 1400);
   }
 }
+function syncedText(){
+  return state.lastSync ? `${clock(new Date(state.lastSync))} 更新` : "";
+}
 function markRefreshStart(force){
-  $("topbar").classList.add("live-active");
   if (force) {
-    $("app").classList.add("app-syncing");
     setRefreshState("syncing", "同步中");
     setLive("info", "正在同步");
-  } else {
-    $("topbar").classList.add("live-tick");
-    setTimeout(() => $("topbar").classList.remove("live-tick"), 720);
   }
 }
 function refreshMinimumDelay(force, startedAt){
@@ -157,35 +533,23 @@ function refreshMinimumDelay(force, startedAt){
   return new Promise(resolve => setTimeout(resolve, waitMs));
 }
 function markRefreshDone(force){
-  $("app").classList.remove("app-syncing");
-  if (force) setRefreshState("updated", "刚刚更新");
-  setLive("ok", "实时已连接");
+  state.lastSync = Date.now();
+  if (force) setRefreshState("updated", "已更新");
+  setLive("ok", `实时 · ${syncedText()}`);
 }
 function markRefreshError(force){
-  $("app").classList.remove("app-syncing");
   if (force) setRefreshState("error", "同步失败");
-  setLive("bad", "连接异常");
+  setLive("bad", state.lastSync ? `连接异常 · 显示 ${clock(new Date(state.lastSync))} 的数据` : "连接异常");
 }
-function changedIds(items, previous, idOf, sigOf){
-  const next = {};
-  const changed = new Set();
-  const hadPrevious = Object.keys(previous || {}).length > 0;
-  (items || []).forEach((item, index) => {
-    const id = idOf(item, index);
-    const sig = signature(sigOf(item));
-    next[id] = sig;
-    if (hadPrevious && previous[id] !== sig) changed.add(id);
-  });
-  return {next, changed};
-}
+
 function enteredKey(){
   return $("key").value.trim().replace(/^authorization\s*:\s*/i,"").replace(/^(bearer\s+)+/i,"").trim();
 }
 function localKeyHint(v){
   if (!v) return "请粘贴完整的 CPA 原生 sk- Key。";
-  if (/^cpa_/i.test(v)) return "旧的 cpa_ Key 已迁移下线。现在请使用 CPA/CPAMP 管理的原生 sk- Key。";
-  if (v.includes("...") || v.includes("…")) return "这是列表里的 Key 预览，不是完整 Key。请使用 CPAMP 里的完整 sk- Key。";
-  if (!/^sk[-_]/i.test(v)) return "用量自助页现在只接受 CPA 原生 sk- Key。";
+  if (/^cpa_/i.test(v)) return "cpa_ Key 已停用，请用 sk- Key。";
+  if (v.includes("...") || v.includes("…")) return "这是 Key 预览，请粘贴完整 Key。";
+  if (!/^sk[-_]/i.test(v)) return "只支持 sk- 开头的 Key。";
   return "";
 }
 async function api(path, opts={}){
@@ -203,6 +567,9 @@ function isAuthError(e){
   const data = (e && e.data) || {};
   return e && (e.status === 401 || e.status === 403 || data.category === "auth" || data.error === "not_authenticated");
 }
+function isMissingRoute(e){
+  return e && [403, 404, 405].includes(e.status) && !(e.data && e.data.category === "auth");
+}
 function isRefreshCancel(signal){
   return signal && signal.aborted && signal.reason === "refresh_cancelled";
 }
@@ -218,85 +585,14 @@ function cancelRefresh(){
   state.refreshTimer = null;
   state.refreshing = false;
   state.seq += 1;
-  $("app").classList.remove("app-syncing");
-  $("refresh").classList.remove("syncing", "just-updated", "sync-error");
-  $("refresh").disabled = false;
-  $("refresh").setAttribute("aria-busy", "false");
-  $("refresh").querySelector(".sync-label").textContent = "刷新";
+  const refresh = $("refresh");
+  refresh.classList.remove("is-syncing");
+  refresh.disabled = false;
+  refresh.setAttribute("aria-busy", "false");
+  refresh.querySelector(".sync-label").textContent = "刷新";
 }
-function eventID(e, index=0){
-  return e.request_id || `${e.requested_at || ""}-${e.model || ""}-${index}`;
-}
-function protectionID(e, index=0){
-  return e.request_id || `${e.started_at || e.updated_at || ""}-${e.model || ""}-${index}`;
-}
-function protectionTimeMs(req){
-  for (const field of ["started_at", "updated_at", "ended_at"]) {
-    const raw = req && req[field];
-    if (!raw) continue;
-    const ms = Date.parse(raw);
-    if (Number.isFinite(ms)) return ms;
-  }
-  return Number.NEGATIVE_INFINITY;
-}
-function activeTimeMs(req){
-  for (const field of ["updated_at", "started_at", "ended_at"]) {
-    const raw = req && req[field];
-    if (!raw) continue;
-    const ms = Date.parse(raw);
-    if (Number.isFinite(ms)) return ms;
-  }
-  return Number.NaN;
-}
-function isActiveProcessing(req, now=Date.now()){
-  if (!req || (req.status !== "processing" && req.protection !== "processing")) return false;
-  const ms = activeTimeMs(req);
-  return !Number.isFinite(ms) || (now - ms <= PROCESSING_STALE_MS);
-}
-function activeProcessingCount(items){
-  const now = Date.now();
-  return (items || []).filter(req => isActiveProcessing(req, now)).length;
-}
-function updateActiveChip(){
-  const el = $("active-chip");
-  if (!el) return;
-  el.querySelector("span:last-child").textContent = `活跃 ${num(activeProcessingCount(state.protection))}`;
-}
-function sortProtectionItems(items){
-  return [...(items || [])].sort((a, b) => protectionTimeMs(b) - protectionTimeMs(a));
-}
-function protectionMap(){
-  const out = {};
-  (state.protection || []).forEach((req, index) => {
-    out[protectionID(req, index)] = req;
-    if (req.request_id) out[req.request_id] = req;
-  });
-  return out;
-}
-function detailList(items){
-  return `<dl class="kv">${items.map(([k,v]) => `<dt>${esc(k)}</dt><dd>${esc(v == null || v === "" ? "-" : v)}</dd>`).join("")}</dl>`;
-}
-function keyIdentityLabel(identity){
-  if (!identity) return "-";
-  return identity.name || identity.alias || identity.preview || identity.id || "-";
-}
-function roundSummaryText(rounds){
-  if (!Array.isArray(rounds) || !rounds.length) return "无轮次摘要";
-  return rounds.map(r => `#${esc(r.round ?? "-")} reasoning ${esc(r.reasoning_tokens ?? "-")} / ${esc(r.decision || "-")}`).join("<br>");
-}
-function statusChip(ev){
-  if (ev.failed) return chip("failed");
-  return chip("success");
-}
-function cacheSemanticsNote(tokens, usage){
-  const compat = Number(tokens.cached_input ?? usage.cached_tokens ?? 0);
-  const read = Number(tokens.cache_read ?? usage.cache_read_tokens ?? 0);
-  const write = Number(tokens.cache_creation ?? usage.cache_creation_tokens ?? 0);
-  if (compat > 0 && read === 0 && write === 0) {
-    return "CPA/CPAMP 的 cached_tokens 是兼容缓存命中桶；细粒度 Cache Read/Write 为 0 时仍可能代表真实缓存命中。";
-  }
-  return "缓存命中、细粒度读写和费用按 Key Policy+ 当前价格表估算。";
-}
+
+/* Quota windows */
 function limitForRange(limits, range){
   if (!limits) return null;
   if (range === "5h") return limits.five_hour_usd;
@@ -306,301 +602,739 @@ function limitForRange(limits, range){
   return null;
 }
 const quotaWindows = [
-  {range:"5h", title:"5 小时额度", desc:"最近 5 小时"},
-  {range:"24h", title:"24 小时额度", desc:"最近 24 小时"},
-  {range:"7d", title:"7 天额度", desc:"滚动 7 天"},
-  {range:"month", title:"本月额度", desc:"北京时间本月"}
+  {range:"5h", title:"5 小时额度", desc:"最近 5 小时 · 滚动"},
+  {range:"24h", title:"24 小时额度", desc:"最近 24 小时 · 滚动"},
+  {range:"7d", title:"7 天额度", desc:"最近 7 天 · 滚动"},
+  {range:"month", title:"本月额度", desc:"自然月"}
 ];
+function primaryRange(){
+  return state.me && state.me.quota_mode === "weekly_only" ? "7d" : "24h";
+}
+function visibleQuotaWindows(){
+  return state.me && state.me.quota_mode === "weekly_only"
+    ? quotaWindows.filter(item => item.range === "7d")
+    : quotaWindows;
+}
 function quotaState(used, limit){
   if (limit == null || limit === "") return {text:"未设置上限", cls:"unset", percent:0};
   const max = Number(limit || 0);
-  if (max <= 0) return {text:"已超限", cls:"bad", percent:100};
+  if (max <= 0) return {text:"已超限", cls:"over", percent:100};
   const percent = Math.min(Math.max(Number(used || 0) / max, 0), 1) * 100;
-  if (Number(used || 0) >= max) return {text:"已超限", cls:"bad", percent:100};
+  if (Number(used || 0) >= max) return {text:"已超限", cls:"over", percent:100};
   if (percent >= 80) return {text:"接近上限", cls:"warn", percent};
   return {text:"正常", cls:"ok", percent};
 }
-function renderQuotaWindowCard(item, windows, limits){
-  const used = Number((windows || {})[item.range] || 0);
-  const limit = limitForRange(limits, item.range);
-  const state = quotaState(used, limit);
+function windowRows(){
+  const me = state.me || {};
+  const windows = me.usage || {};
+  const limits = me.limits || {};
+  const quota = me.quota || {};
+  // In a carpool the share replaces the USD windows; they only show usage.
+  const pooled = Boolean((me.pool || {}).usd_windows_off);
+  return visibleQuotaWindows().map(item => {
+    const used = Number(windows[item.range] || 0);
+    const limit = pooled ? null : limitForRange(limits, item.range);
+    return {item, used, limit, st: pooled ? {text:"按份额", cls:"unset", percent:0} : quotaState(used, limit), q: quota[item.range] || {}};
+  });
+}
+function ppText(v, digits=2){
+  const n = Number(v);
+  return Number.isFinite(n) ? `${n.toFixed(digits)}%` : "-";
+}
+function signedPP(v){
+  const n = Number(v || 0);
+  return `${n > 0 ? "+" : n < 0 ? "−" : ""}${Math.abs(n).toFixed(2)}`;
+}
+/* Carpool share */
+function poolShare(){
+  const pool = state.pool;
+  if (!pool || !pool.me) return null;
+  const me = pool.me;
+  return {
+    pool, me,
+    burst: me.burst && me.burst.active ? me.burst : null,
+    owner: me.role === "owner",
+    pinned: me.role === "pinned",
+    reset: Number((pool.account || {}).reset_at || 0),
+    borrow: pool.borrow && pool.borrow.active ? pool.borrow : null
+  };
+}
+// How far a bursting member is past their share, in points; 0 within it.
+function burstOverPP(share){
+  if (!share || !share.burst) return 0;
+  const over = Number(share.me.used_pp || 0) - Number(share.me.available_pp || 0);
+  return over >= 0.005 ? over : 0;
+}
+// A borrow lasts until the member's own account takes requests again.
+function borrowEnd(b){ return Number(b.until || 0); }
+function borrowText(share){
+  const b = share.borrow;
+  const end = borrowEnd(b);
+  return `本车暂时用不了，已改用「${b.lender}」${end ? `，${resetLabel(end)}前` : ""}。`;
+}
+function joinSentences(first, second){
+  if (!first) return second;
+  return /[。！？.!?]$/.test(first) ? first + second : first + "。" + second;
+}
+function verdict(){
+  const base = quotaVerdict();
+  const share = poolShare();
+  // Billing holds, disabled keys and used-up USD windows already block.
+  if (!share || base.cls === "pending" || base.cls === "over") return base;
+  if (share.borrow) return {cls:"ok", title:"借用中", detail: borrowText(share)};
+  if (share.owner || share.pinned) return base;
+  const {pool, me, burst, reset} = share;
+  if (burst) {
+    return {...base, detail: joinSentences(base.detail, `爽蹬中，${resetLabel(burst.cycle_reset_at)}前不限份额${burst.mode === "carry" ? "，超出部分下周期扣回" : ""}。`)};
+  }
+  if (me.state === "over") {
+    return {cls:"over", title:"份额已用完", detail: reset ? `${resetLabel(reset)}恢复。` : "账号重置后恢复。"};
+  }
+  if (base.cls === "warn") return base;
+  if (me.state === "near") {
+    return {cls:"warn", title:"份额快用完", detail:`份额只剩 ${ppText(Math.max(me.remaining_pp, 0))}` + (me.remaining_usd != null ? `（约 ${money(me.remaining_usd)}）` : "") + "。"};
+  }
+  return {...base, detail: joinSentences(base.detail, `份额还剩 ${ppText(Math.max(me.remaining_pp, 0))}。`)};
+}
+function quotaVerdict(){
+  const me = state.me || {};
+  const hold = me.billing_hold || {};
+  if (hold.active) {
+    return {cls:"pending", title:"已暂停：费用待核算", detail:`${hold.model || "未知模型"} ${reasonText(hold.reason)}，管理员结算后恢复。`};
+  }
+  if (me.enabled === false) return {cls:"over", title:"这把 Key 已停用", detail:"请联系管理员。"};
+  const rows = windowRows();
+  const over = rows.filter(row => row.st.cls === "over");
+  if (over.length) {
+    const times = over.map(row => Number(row.item.range === "month" ? row.q.resets_at : row.q.recovers_at) || 0);
+    const when = times.every(t => t > 0) ? Math.max(...times) : 0;
+    return {
+      cls:"over",
+      title:"已被拦截",
+      detail:`${over.map(row => row.item.title).join("、")}已用完` + (when ? `，预计${whenLabel(when)}恢复。` : "。")
+    };
+  }
+  const byRoom = (a, b) => (a.limit - a.used) - (b.limit - b.used);
+  const near = rows.filter(row => row.st.cls === "warn").sort(byRoom);
+  if (near.length) {
+    return {cls:"warn", title:"即将用完", detail:`${near[0].item.title}只剩 ${money(Math.max(near[0].limit - near[0].used, 0))}。`};
+  }
+  if ((me.pool || {}).usd_windows_off) {
+    return {cls:"ok", title:"现在可以使用", detail:""};
+  }
+  const limited = rows.filter(row => row.st.cls === "ok").sort(byRoom);
+  if (limited.length) {
+    return {cls:"ok", title:"现在可以使用", detail:`${limited[0].item.title}还剩 ${money(limited[0].limit - limited[0].used)}。`};
+  }
+  return {cls:"ok", title:"现在可以使用", detail:"未设置费用上限。"};
+}
+function renderQuotaWindowCard(row){
+  const {item, used, limit, st, q} = row;
   const hasLimit = !(limit == null || limit === "");
   const remaining = hasLimit ? Math.max(Number(limit || 0) - used, 0) : null;
-  return `<article class="user-quota-card ${state.cls}">
-    <div class="user-quota-head">
-      <div>
-        <div class="user-quota-title">${esc(item.title)}</div>
-        <div class="user-quota-desc">${esc(item.desc)}</div>
-      </div>
-      <span class="user-quota-status">${esc(state.text)}</span>
-    </div>
-    <div class="user-quota-used"><span>已用</span><strong>${money(used, 3)}</strong></div>
-    <div class="user-quota-lines">
-      <div><span>上限</span><b>${hasLimit ? money(limit, 3) : "未设置"}</b></div>
-      <div><span>剩余</span><b>${hasLimit ? money(remaining, 3) : "不限额"}</b></div>
-    </div>
-    ${hasLimit ? `<div class="user-quota-progress" aria-label="${esc(item.title)}使用进度"><span style="width:${state.percent.toFixed(1)}%"></span></div>` : `<div class="user-quota-note">仅展示当前用量，暂不拦截该窗口。</div>`}
+  let foot = item.desc;
+  if (item.range === "month" && q.resets_at) foot = `${resetLabel(q.resets_at)}重置`;
+  if (st.cls === "over" && q.recovers_at) foot = `${item.desc} · 预计${whenLabel(q.recovers_at)}恢复`;
+  const meterCls = st.cls === "warn" ? " is-warn" : st.cls === "over" ? " is-over" : "";
+  return `<article class="win win-${st.cls}">
+    <div class="win-top"><h3 class="win-title">${esc(item.title)}</h3><b class="win-state">${esc(st.text)}</b></div>
+    <div class="win-figs num">${hasLimit
+      ? `<span class="win-used">${money(used)}</span><span class="win-of">/ ${money(limit)}</span><span class="win-left">剩 ${money(remaining)}</span>`
+      : `<span class="win-used">${money(used)}</span>`}</div>
+    ${hasLimit ? `<div class="meter${meterCls}" role="img" aria-label="${esc(item.title)}已用 ${Math.round(st.percent)}%"><span style="--p:${st.percent.toFixed(1)}%"></span></div>` : ""}
+    <div class="win-foot">${esc(foot)}</div>
   </article>`;
 }
-function renderCards(force=false){
+function renderBalance(){
+  const me = state.me;
+  if (!me) return;
+  $("keyName").textContent = me.name || me.alias || "-";
+  $("keyPreview").textContent = String(me.preview || "").replace(/\.\.\./g, "…");
+  const v = verdict();
+  $("verdict").className = `verdict is-${v.cls}`;
+  $("verdict").innerHTML = `<div class="verdict-title">${esc(v.title)}</div>${v.detail ? `<div class="verdict-detail">${esc(v.detail)}</div>` : ""}`;
+  $("quotaCards").innerHTML = windowRows().map(renderQuotaWindowCard).join("");
+  renderPool();
+  renderTally();
+  renderCard();
+  fitBalance();
+}
+function renderPool(){
+  const el = $("pool");
+  const share = poolShare();
+  if (!share) { el.classList.add("hidden"); el.innerHTML = ""; return; }
+  const {pool, me, burst, owner, pinned} = share;
+  const acct = pool.account || {};
+  let cls = "ok", stateText = "正常";
+  if (share.borrow) stateText = "借用中";
+  else if (owner) stateText = "车主不限";
+  else if (pinned) stateText = "固定路由";
+  else if (burst) stateText = "爽蹬中";
+  else if (me.state === "over") { cls = "over"; stateText = "已用完"; }
+  else if (me.state === "near") { cls = "warn"; stateText = "快用完"; }
+  const used = Number(me.used_pp || 0);
+  const avail = Number(me.available_pp || 0);
+  const remaining = Number(me.remaining_pp || 0);
+  const percent = avail > 0 ? Math.min(Math.max(used / avail, 0), 1) * 100 : (used > 0 ? 100 : 0);
+  let figs, meter = "";
+  const foot = [];
+  if (owner || pinned) {
+    figs = `<span class="win-used">${ppText(used)}</span><span class="win-left">本周期已用</span>`;
+  } else {
+    const over = burstOverPP(share);
+    figs = `<span class="win-used">${ppText(used)}</span><span class="win-of">/ ${ppText(avail)}</span><span class="win-left">${over ? `超出 ${ppText(over)}` : `剩 ${ppText(Math.max(remaining, 0))}`}</span>`;
+    meter = `<div class="meter${cls === "warn" ? " is-warn" : cls === "over" ? " is-over" : ""}" role="img" aria-label="拼车份额已用 ${Math.round(percent)}%"><span style="--p:${percent.toFixed(1)}%"></span></div>`;
+    if (me.remaining_usd != null && remaining > 0) foot.push(`约剩 ${money(me.remaining_usd)}`);
+    if (me.carry_pp) foot.push(`含上期结转 ${signedPP(me.carry_pp)}`);
+  }
+  const facts = [];
+  if (acct.full) facts.push(["这个号", acct.full_until ? `已满 · ${resetLabel(acct.full_until)}恢复` : "现在用不了"]);
+  if (pool.account_hidden) {
+    if (acct.reset_at) facts.push(["份额重置", resetLabel(acct.reset_at)]);
+  } else if (pool.in_cycle && acct.used_percent != null) facts.push(["账号本周", `${Math.round(acct.used_percent)}%${acct.reset_at ? ` · ${resetLabel(acct.reset_at)}重置` : ""}`]);
+  else if (acct.status === "reset_pending") facts.push(["账号本周", "已重置"]);
+  if (acct.short) {
+    const reset = Number(acct.short.reset_at || 0);
+    facts.push(["5 小时窗口", reset && reset * 1000 <= Date.now() ? "已重置" : `${Math.round(acct.short.used_percent)}%${reset ? ` · ${shortResetLabel(reset)}` : ""}`]);
+  }
+  const team = (pool.account_hidden ? [] : pool.team || []).map(row => {
+    const over = !(row.burst && row.burst.active) && row.state === "over";
+    const fig = row.role === "owner" || row.available_pp == null ? ppText(row.used_pp) : `${ppText(row.used_pp)} / ${ppText(row.available_pp, row.available_pp % 1 ? 2 : 0)}`;
+    return `<li class="${row.self ? "is-self" : ""}${over ? " is-over" : ""}"><span>${esc(row.label)}${!row.self && row.burst && row.burst.active ? " · 爽蹬中" : ""}</span><span class="team-fig num">${fig}</span></li>`;
+  });
+  const unnamed = [["其他人", pool.others_pp], ["借给其他车", pool.lent_pp], ["追踪前 / CPA 外", pool.untracked_pp]];
+  for (const [label, value] of unnamed) {
+    if (Number(value || 0) >= 0.005) team.push(`<li><span>${label}</span><span class="team-fig num">${ppText(value)}</span></li>`);
+  }
+  el.className = `pool win-${cls}`;
+  el.innerHTML = `<div class="pool-top"><h2 id="poolTitle" class="pool-title">拼车 · ${esc(pool.name)}</h2><b class="win-state">${esc(stateText)}</b></div>
+    <div class="win-figs num">${figs}</div>${meter}
+    ${foot.length ? `<div class="win-foot num">${esc(foot.join(" · "))}</div>` : ""}
+    <dl class="pool-facts">${facts.map(([k, v]) => `<div><dt>${esc(k)}</dt><dd class="num">${esc(v)}</dd></div>`).join("")}</dl>
+    ${team.length ? `<ol class="team" aria-label="本周期各人用量">${team.join("")}</ol>` : ""}
+`;
+}
+
+/* Card and pin-to-desktop */
+function cardMainHTML(){
+  const share = poolShare();
+  const v = verdict();
+  if (v.cls === "over" || v.cls === "pending") {
+    // Whatever blocks the key leads the card, even when the share has room.
+    const extra = share && !share.owner && v.title !== "份额已用完" ? `拼车份额剩 ${ppText(Math.max(Number(share.me.remaining_pp || 0), 0))}` : "";
+    return `<div class="card-main is-${v.cls === "pending" ? "warn" : "over"}">
+      <div class="card-label"><span>${esc(share ? `拼车 · ${share.pool.name}` : "当前状态")}</span><b>${v.cls === "pending" ? "已暂停" : "拦截中"}</b></div>
+      <div class="card-big">${esc(v.title)}</div>
+      <div class="card-sub">${esc(v.detail)}</div>
+      ${extra ? `<div class="card-sub num">${esc(extra)}</div>` : ""}
+    </div>`;
+  }
+  if (share && share.pinned && !share.borrow) return windowCardHTML();
+  if (share && share.borrow) {
+    const b = share.borrow;
+    const end = borrowEnd(b);
+    const sub = ["本车现在用不了"];
+    if (end) sub.push(`${resetLabel(end)}前`);
+    return `<div class="card-main is-ok">
+      <div class="card-label"><span>拼车 · ${esc(share.pool.name)}</span><b>借用中</b></div>
+      <div class="card-big">借用「${esc(b.lender)}」</div>
+      <div class="card-sub">${esc(sub.join(" · "))}</div>
+      ${Number(b.used_pp || 0) >= 0.005 ? `<div class="card-sub num">${esc(`已借用 ${ppText(b.used_pp)} · ${money(b.cost_usd)}`)}</div>` : ""}
+    </div>`;
+  }
+  if (share && !share.owner) {
+    const {pool, me, burst} = share;
+    const acct = pool.account || {};
+    const cls = burst ? "ok" : me.state === "over" ? "over" : me.state === "near" ? "warn" : "ok";
+    const rem = Math.max(Number(me.remaining_pp || 0), 0);
+    const used = Number(me.used_pp || 0), avail = Number(me.available_pp || 0);
+    const percent = avail > 0 ? Math.min(Math.max(used / avail, 0), 1) * 100 : 100;
+    const over = burstOverPP(share);
+    const sub = [`已用 ${ppText(used)} / ${ppText(avail)}`];
+    if (pool.in_cycle && acct.used_percent != null) sub.push(`账号本周 ${Math.round(acct.used_percent)}%`);
+    if (acct.reset_at) sub.push(`${resetLabel(acct.reset_at)}重置`);
+    return `<div class="card-main is-${cls}">
+      <div class="card-label"><span>拼车 · ${esc(pool.name)}</span><b>${burst ? "爽蹬中" : cls === "over" ? "已用完" : cls === "warn" ? "快用完" : "正常"}</b></div>
+      <div class="card-big num">${over ? `超出 ${ppText(over)}` : cls === "over" ? "份额已用完" : `剩 ${ppText(rem)}`}${me.remaining_usd != null && rem > 0 ? `<small>≈ ${money(me.remaining_usd)}</small>` : ""}</div>
+      <div class="meter${cls === "warn" ? " is-warn" : cls === "over" ? " is-over" : ""}"><span style="--p:${percent.toFixed(1)}%"></span></div>
+      <div class="card-sub num">${esc(sub.join(" · "))}</div>
+      ${over && burst.mode === "carry" ? `<div class="card-sub num">${esc(`下周期最多扣回 ${ppText(over)}`)}</div>` : ""}
+    </div>`;
+  }
+  if (share && share.owner) {
+    const acct = share.pool.account || {};
+    return `<div class="card-main">
+      <div class="card-label"><span>拼车 · ${esc(share.pool.name)}</span><b>车主</b></div>
+      <div class="card-big num">${share.pool.in_cycle && acct.used_percent != null ? `账号 ${Math.round(acct.used_percent)}%` : "账号 —"}</div>
+      <div class="card-sub num">${esc(`你本周期已用 ${ppText(share.me.used_pp)}` + (acct.reset_at ? ` · ${resetLabel(acct.reset_at)}重置` : ""))}</div>
+    </div>`;
+  }
+  return windowCardHTML();
+}
+// The card for a key held to its USD windows.
+function windowCardHTML(){
+  const rows = windowRows();
+  const row = rows.find(r => r.item.range === primaryRange()) || rows[0];
+  if (!row) return `<div class="card-main"><div class="card-big">—</div></div>`;
+  const has = !(row.limit == null || row.limit === "");
+  const cls = row.st.cls === "over" ? "over" : row.st.cls === "warn" ? "warn" : "ok";
+  return `<div class="card-main is-${cls}">
+    <div class="card-label"><span>${esc(row.item.title)}</span><b>${esc(row.st.text)}</b></div>
+    <div class="card-big num">${has ? `剩 ${money(Math.max(Number(row.limit) - row.used, 0))}` : money(row.used)}${has ? "" : "<small>不限额</small>"}</div>
+    ${has ? `<div class="meter${cls === "ok" ? "" : " is-" + cls}"><span style="--p:${row.st.percent.toFixed(1)}%"></span></div>` : ""}
+    <div class="card-sub num">${esc(has ? `已用 ${money(row.used)} / ${money(row.limit)}` : row.item.desc)}</div>
+  </div>`;
+}
+function cardHTML(){
+  const me = state.me || {};
+  const share = poolShare();
+  const primary = share && !share.owner && !share.pinned ? "" : primaryRange();
+  const rows = windowRows().filter(r => !(r.limit == null || r.limit === "") && r.item.range !== primary);
+  const lines = rows.map(r => `<div class="${r.st.cls === "over" ? "is-over" : r.st.cls === "warn" ? "is-warn" : ""}"><span>${esc(r.item.title)}</span><b class="num">${money(r.used)} / ${money(r.limit)}</b></div>`);
+  const live = state.live || {};
+  return `<div class="card-head"><div class="card-name">${esc(me.name || me.alias || "CPA 用量")}</div><div class="card-live live" data-state="${esc(live.kind)}"><span class="live-dot" aria-hidden="true"></span>${esc(live.kind === "ok" ? "实时" : live.kind === "bad" ? "连接异常" : "同步中")}</div></div>
+    ${cardMainHTML()}
+    ${lines.length ? `<div class="card-rows">${lines.join("")}</div>` : ""}
+    <div class="card-foot"><span class="num">${esc(syncedText() || "正在同步")}</span><button class="btn small" type="button" data-card-refresh>刷新</button></div>`;
+}
+function renderCard(){
   if (!state.me) return;
-  const usageSummary = (state.usage || {}).summary || {};
-  const usage = usageSummary.usage || {};
-  const windows = state.me.usage || {};
-  const limits = state.me.limits || {};
-  const calls = Number(usageSummary.calls || 0);
-  const failed = Number(usageSummary.failed || 0);
+  if (CARD_MODE && state.active) $("card").innerHTML = cardHTML();
+  if (state.pip) {
+    const root = state.pip.document.getElementById("cardRoot");
+    if (root) root.innerHTML = cardHTML();
+  }
+}
+async function pinCard(){
+  if (state.pip) { state.pip.focus(); return; }
+  if ("documentPictureInPicture" in window) {
+    try {
+      const pip = await window.documentPictureInPicture.requestWindow({width: 300, height: 320});
+      document.querySelectorAll("style").forEach(node => pip.document.head.appendChild(node.cloneNode(true)));
+      const meta = pip.document.createElement("meta");
+      meta.name = "color-scheme";
+      meta.content = "light dark";
+      pip.document.head.appendChild(meta);
+      pip.document.title = "用量小票";
+      pip.document.body.className = "kp-user kp-card-mode is-pip";
+      pip.document.body.innerHTML = `<main class="counter"><section id="cardRoot" class="slip card-slip" aria-label="用量小票"></section></main>`;
+      pip.document.body.addEventListener("click", (e) => { if (e.target.closest("[data-card-refresh]")) refreshActive(true); });
+      pip.addEventListener("pagehide", () => { state.pip = null; });
+      state.pip = pip;
+      renderCard();
+      return;
+    } catch (_) {}
+  }
+  window.open(location.pathname + "?view=card", "kp-card", "popup=yes,width=340,height=420");
+}
+function renderTally(){
+  const summary = (state.usage || {}).summary;
+  if (!summary) { $("tally").innerHTML = ""; $("total").innerHTML = ""; return; }
+  const usage = summary.usage || {};
+  const calls = Number(summary.calls || 0);
+  const failed = Number(summary.failed || 0);
+  const billingPendingCount = Number(summary.billing_pending || 0);
+  const settledCalls = Math.max(calls - billingPendingCount, 0);
+  const successRate = settledCalls ? (settledCalls - failed) / settledCalls : null;
   const cacheTotal = Number(usage.cached_tokens || 0) + Number(usage.cache_read_tokens || 0) + Number(usage.cache_creation_tokens || 0);
-  const successRate = calls ? (calls - failed) / calls : null;
-  const nextSig = signature({me:state.me, usage:usageSummary, range:PRIMARY_RANGE});
-  if (!force && state.cardSig === nextSig) return;
-  state.cardSig = nextSig;
-  updateActiveChip();
-  $("cards").innerHTML = `
-    <article class="metric"><div class="label">当前 Key</div><div class="value">${esc(state.me.name || "-")}</div><div class="hint">${esc(state.me.preview || "")}</div></article>
-    <article class="metric"><div class="label">${rangeLabel(PRIMARY_RANGE)}费用</div><div class="value">${money(usageSummary.total_cost, 3)}</div><div class="hint">额度上限 ${money(limitForRange(limits, PRIMARY_RANGE), 3)}</div></article>
-    <article class="metric"><div class="label">调用统计</div><div class="value">${num(calls)} 次</div><div class="hint">成功率 ${pct(successRate)} · 失败 ${num(failed)}</div></article>
-    <article class="metric"><div class="label">Token</div><div class="value">${num(usage.total_tokens)}</div><div class="hint">I ${num(usage.input_tokens)} / O ${num(usage.output_tokens)}</div></article>
-    <article class="metric"><div class="label">思考量</div><div class="value">${num(usage.reasoning_tokens)}</div><div class="hint">Responses reasoning tokens</div></article>
-    <article class="metric"><div class="label">缓存活动</div><div class="value">${num(cacheTotal)}</div><div class="hint">兼容命中 ${num(usage.cached_tokens)} · R ${num(usage.cache_read_tokens)} / W ${num(usage.cache_creation_tokens)}</div></article>`;
-  $("quotaCards").innerHTML = quotaWindows.map((item) => renderQuotaWindowCard(item, windows, limits)).join("");
+  const range = primaryRange();
+  $("tally").innerHTML = `
+    <div class="tally-row"><dt>调用</dt><dd class="num">${num(calls)} 次</dd></div>
+    <div class="tally-sub num">成功率 ${pct(successRate)} · 失败 ${num(failed)}${billingPendingCount ? ` · 待核算 ${num(billingPendingCount)}` : ""}</div>
+    <div class="tally-row"><dt>Token</dt><dd class="num">${num(usage.total_tokens)}</dd></div>
+    <div class="tally-sub num">输入 ${num(usage.input_tokens)} · 输出 ${num(usage.output_tokens)}</div>
+    <div class="tally-row"><dt>思考量</dt><dd class="num">${num(usage.reasoning_tokens)}</dd></div>
+    <div class="tally-row"><dt>缓存活动</dt><dd class="num">${num(cacheTotal)}</dd></div>`;
+  $("total").innerHTML = `<span>${esc(rangeLabel(range))}合计</span><b class="num">${money(summary.total_cost)}</b>`;
+}
+function fitBalance(){
+  const el = $("balance");
+  if (!el || getComputedStyle(el).position !== "sticky") return;
+  el.style.top = `${Math.min(24, window.innerHeight - el.offsetHeight - 24)}px`;
+}
+
+/* Trend */
+function bucketLabel(bucket, daily, last){
+  const start = new Date(Number(bucket.start) * 1000);
+  if (daily) return dayOffset(start) === 0 ? "今天" : `${start.getMonth() + 1}月${start.getDate()}日 ${weekdays[start.getDay()]}`;
+  const end = new Date(Number(bucket.end) * 1000);
+  return `${hm(start)}–${last ? "现在" : hm(end)}`;
+}
+function trendTip(index){
+  const t = state.trend;
+  if (!t || !t.buckets || !t.buckets[index]) return "";
+  const daily = Number(t.bucket_seconds) >= 86400;
+  const b = t.buckets[index];
+  const parts = [bucketLabel(b, daily, index === t.buckets.length - 1), money(b.cost), `${num(b.calls)} 次`];
+  if (b.failed) parts.push(`失败 ${num(b.failed)}`);
+  if (b.billing_pending) parts.push(`待核算 ${num(b.billing_pending)}`);
+  return parts.join(" · ");
+}
+function renderTrend(){
+  const figure = $("trend");
+  const t = state.trend;
+  if (state.trendUnavailable || !t || !Array.isArray(t.buckets) || !t.buckets.length) {
+    figure.classList.add("hidden");
+    fitBalance();
+    return;
+  }
+  figure.classList.remove("hidden");
+  const buckets = t.buckets;
+  const daily = Number(t.bucket_seconds) >= 86400;
+  const n = buckets.length;
+  const max = Math.max(...buckets.map(b => Number(b.cost || 0)), 0);
+  const peak = buckets.reduce((best, b, i) => Number(b.cost || 0) > Number(buckets[best].cost || 0) ? i : best, 0);
+  if (state.trendIndex < 0 || state.trendIndex >= n) state.trendIndex = n - 1;
+  $("trendTitle").textContent = daily ? `近 ${rangeLabel(t.range)}每天消费` : `近 ${rangeLabel(t.range)}每小时消费`;
+  $("trendPeak").textContent = max > 0 ? `峰值 ${money(max)}` : "暂无消费";
+  const slot = 10;
+  const bars = buckets.map((b, i) => {
+    const cost = Number(b.cost || 0);
+    const h = max > 0 ? Math.max(cost / max * 60, cost > 0 ? 1.5 : 0) : 0;
+    const zero = h === 0;
+    return `<rect class="${zero ? "is-zero" : ""}${i === state.trendIndex ? " is-active" : ""}" x="${i * slot + 1.5}" y="${zero ? 59.2 : 60 - h}" width="${slot - 3}" height="${zero ? 0.8 : h}"></rect>`;
+  }).join("");
+  $("trendPlot").innerHTML = `<svg viewBox="0 0 ${n * slot} 60" preserveAspectRatio="none" shape-rendering="crispEdges" aria-hidden="true">${bars}</svg>`;
+  $("trendPlot").setAttribute("aria-label", `共 ${money(t.total_cost)}，峰值 ${money(max)}（${bucketLabel(buckets[peak], daily, peak === n - 1)}）。用左右方向键逐个查看。`);
+  const ticks = [0, Math.round((n - 1) / 3), Math.round((n - 1) * 2 / 3), n - 1];
+  $("trendAxis").innerHTML = ticks.map((i, k) => {
+    const start = new Date(Number(buckets[i].start) * 1000);
+    const label = k === ticks.length - 1 ? (daily ? "今天" : "现在") : daily ? weekdays[start.getDay()] : `${pad(start.getHours())}:00`;
+    return `<span>${esc(label)}</span>`;
+  }).join("");
+  $("trendTip").textContent = trendTip(state.trendIndex);
+  fitBalance();
+}
+function setTrendIndex(index, scrubbing){
+  const t = state.trend;
+  if (!t || !t.buckets || !t.buckets.length) return;
+  const next = Math.max(0, Math.min(t.buckets.length - 1, index));
+  state.trendIndex = next;
+  $("trendPlot").classList.toggle("is-scrubbing", Boolean(scrubbing));
+  $("trendPlot").querySelectorAll("rect").forEach((rect, i) => rect.classList.toggle("is-active", i === next));
+  $("trendTip").textContent = trendTip(next);
+}
+
+/* Roll */
+function eventID(e){
+  return e.request_id || `${e.requested_at || ""}|${e.model || ""}|${e.latency_ms || 0}|${e.cost || 0}`;
+}
+function billingPending(ev){
+  return Boolean((ev && ev.billing_pending) || (ev && ev.cost_breakdown && ev.cost_breakdown.billing_pending));
+}
+function billingPendingReason(ev){
+  const breakdown = (ev && ev.cost_breakdown) || {};
+  return (ev && ev.billing_pending_reason) || breakdown.billing_pending_reason || "价格规则待核验";
+}
+function modelOf(ev){
+  return ev.model || ev.actual_model || ev.requested_model || "-";
+}
+function eventSig(e){
+  return signature([e.requested_at, e.failed, e.model, e.actual_model, e.latency_ms, e.ttft_ms, e.cost, e.usage, e.failure,
+    e.reasoning_effort, e.service_tier, e.status_code, e.billing_pending, e.billing_pending_reason]);
+}
+function sourceLabel(source){
+  return ({
+    cpamp_price_book: "CPAMP 模型价格",
+    cpamp_cached_price_book: "CPAMP 缓存价格",
+    key_policy_plus_price_book: "Plus 价格表",
+    cpamp_billing_pending: "待核算",
+    cpamp_price_unavailable: "价格不可用"
+  })[source] || source || "-";
+}
+function calcRow(label, tokens, cost, pending){
+  const t = Number(tokens || 0);
+  const c = Number(cost || 0);
+  const unit = t > 0 && !pending ? ` × ${unitPrice(c * 1e6 / t)}` : "";
+  return `<div class="calc-row"><span class="calc-label">${esc(label)}</span><span class="calc-qty num">${num(t)}${unit}</span><span class="calc-amt num">${pending ? "待核算" : money(c, 4)}</span></div>`;
 }
 function eventDetail(ev){
   const usage = ev.usage || {};
   const breakdown = ev.cost_breakdown || {};
   const tokens = breakdown.tokens || {};
   const costs = breakdown.costs || {};
-  const prices = breakdown.prices || {};
-  const failure = ev.failure || "无失败详情";
-  const limits = (state.me || {}).limits || {};
-  return `<tr class="detail-row"><td colspan="9"><div class="detail-grid">
-    <section class="detail-card"><h3>请求信息</h3>${detailList([
-      ["请求 ID", ev.request_id || "-"],
-      ["接口", ev.endpoint || "-"],
-      ["Provider", ev.provider || "-"],
-      ["Executor", ev.executor_type || "-"],
-      ["状态码", ev.status_code || "-"],
-      ["请求模型", ev.requested_model || ev.model || "-"],
-      ["实际模型", ev.actual_model || ev.model || "-"],
-      ["Service Tier", ev.service_tier || "-"],
-      ["Reasoning Effort", ev.reasoning_effort || "-"],
-    ])}</section>
-    <section class="detail-card"><h3>Token 组成</h3>${detailList([
-      ["输入", num(tokens.input ?? usage.input_tokens)],
-      ["未缓存输入", num(tokens.billable_uncached_input ?? Math.max(Number(usage.input_tokens || 0) - Number(usage.cached_tokens || 0), 0))],
-      ["CPA 缓存命中", num(tokens.cached_input ?? usage.cached_tokens)],
-      ["Cache Read", num(tokens.cache_read ?? usage.cache_read_tokens)],
-      ["Cache Write", num(tokens.cache_creation ?? usage.cache_creation_tokens)],
-      ["缓存活动合计", num(Number(tokens.cached_input ?? usage.cached_tokens ?? 0) + Number(tokens.cache_read ?? usage.cache_read_tokens ?? 0) + Number(tokens.cache_creation ?? usage.cache_creation_tokens ?? 0))],
-      ["输出", num(tokens.output ?? usage.output_tokens)],
-      ["思考量", num(tokens.reasoning ?? usage.reasoning_tokens)],
-      ["可见输出估算", num(tokens.visible_output_estimate ?? Math.max(Number(usage.output_tokens || 0) - Number(usage.reasoning_tokens || 0), 0))],
-      ["总量", num(tokens.total ?? usage.total_tokens)],
-    ])}<p class="detail-note">${esc(cacheSemanticsNote(tokens, usage))}</p></section>
-    <section class="detail-card"><h3>费用组成</h3>${detailList([
-      ["价格模型", breakdown.model || ev.model || "-"],
-      ["来源", breakdown.source || "-"],
-      ["单位", "usd_per_1m_tokens"],
-      ["输入单价", prices.input_per_million == null ? "-" : `$${prices.input_per_million}/M`],
-      ["缓存读单价", prices.cache_read_per_million == null ? "-" : `$${prices.cache_read_per_million}/M`],
-      ["输出单价", prices.output_per_million == null ? "-" : `$${prices.output_per_million}/M`],
-      ["输入费用", money(costs.input, 4)],
-      ["缓存费用", money(Number(costs.cached_input || 0) + Number(costs.cache_read || 0) + Number(costs.cache_creation || 0), 4)],
-      ["输出费用", money(costs.output, 4)],
-      ["总费用", money(costs.total ?? ev.cost, 4)],
-    ])}</section>
-    <section class="detail-card"><h3>限额与失败</h3>${detailList([
-      ["当前范围", rangeLabel(PRIMARY_RANGE)],
-      ["额度上限", money(limitForRange(limits, PRIMARY_RANGE), 3)],
-      ["计入额度", "5 小时 / 24 小时 / 7 天 / 本月"],
-      ["TTFT", duration(ev.ttft_ms)],
-      ["总耗时", duration(ev.latency_ms)],
-    ])}<div class="failure-box mono">${esc(failure)}</div></section>
-  </div></td></tr>`;
+  const pending = billingPending(ev);
+  const rows = [];
+  const uncached = tokens.billable_uncached_input ?? Math.max(Number(usage.input_tokens || 0) - Number(usage.cached_tokens || 0) - Number(usage.cache_read_tokens || 0) - Number(usage.cache_creation_tokens || 0), 0);
+  rows.push(calcRow("输入（未缓存）", uncached, costs.input, pending));
+  const cachedIn = tokens.cached_input ?? usage.cached_tokens;
+  if (Number(cachedIn || 0) > 0 || Number(costs.cached_input || 0) > 0) rows.push(calcRow("缓存命中", cachedIn, costs.cached_input, pending));
+  const cacheRead = tokens.cache_read ?? usage.cache_read_tokens;
+  if (Number(cacheRead || 0) > 0 || Number(costs.cache_read || 0) > 0) rows.push(calcRow("缓存读取", cacheRead, costs.cache_read, pending));
+  const cacheWrite = tokens.cache_creation ?? usage.cache_creation_tokens;
+  if (Number(cacheWrite || 0) > 0 || Number(costs.cache_creation || 0) > 0) rows.push(calcRow("缓存写入", cacheWrite, costs.cache_creation, pending));
+  rows.push(calcRow("输出", tokens.output ?? usage.output_tokens, costs.output, pending));
+  const reasoning = Number(tokens.reasoning ?? usage.reasoning_tokens ?? 0);
+  const visible = Number(tokens.visible_output_estimate ?? Math.max(Number(usage.output_tokens || 0) - reasoning, 0));
+  const requested = ev.requested_model || ev.model || "-";
+  const actual = ev.actual_model || ev.model || "-";
+  const quotaLabel = state.me && state.me.quota_mode === "weekly_only" ? "滚动 7 天" : "5 小时 / 24 小时 / 7 天 / 本月";
+  const facts = [
+    ["请求 ID", ev.request_id || "-"],
+    ["接口", ev.endpoint || "-"],
+    ["模型", requested === actual ? requested : `${requested} → ${actual}`],
+    ["通道", [ev.provider, ev.executor_type].filter(Boolean).join(" · ") || "-"],
+    ["状态", ev.status_code ? `HTTP ${ev.status_code}` : "-"],
+    ["Service Tier", ev.service_tier || "-"],
+    ["Reasoning Effort", ev.reasoning_effort || "-"],
+    ["耗时", `TTFT ${duration(ev.ttft_ms)} · 总 ${duration(ev.latency_ms)}`],
+    ["计价", `${sourceLabel(breakdown.source)} · ${breakdown.model || ev.model || "-"}`],
+    ["计入额度", pending ? "待核算，Key 已冻结" : quotaLabel]
+  ];
+  return `<div class="calc">
+      ${rows.join("")}
+      <div class="calc-note num">其中思考 ${num(reasoning)} · 可见输出约 ${num(visible)}</div>
+      <div class="calc-total"><span>合计</span><span class="num">${pending ? "待核算" : money(costs.total ?? ev.cost, 4)}</span></div>
+    </div>
+    <dl class="facts">${facts.map(([k, v]) => `<dt>${esc(k)}</dt><dd class="num">${esc(v)}</dd>`).join("")}</dl>
+    ${pending ? `<p class="pending-note">${esc(reasonText(billingPendingReason(ev)))}，费用待核算。</p>` : ""}
+    ${ev.failed ? `<div class="failure num">${esc(ev.failure || "无失败详情")}</div>` : ""}`;
 }
-function renderUsage(force=false){
-  if (state.tab !== "usage") return;
-  const protect = protectionMap();
-  const sig = signature({
-    range: PRIMARY_RANGE,
-    usage: state.usage,
-    events: state.events,
-    protection: state.protection.map((req) => ({
-      request_id:req.request_id, protection:req.protection, status:req.status,
-      latest_reasoning_tokens:req.latest_reasoning_tokens, continuation_count:req.continuation_count
-    })),
-    expanded: Array.from(state.expandedEvents),
-    fresh: Array.from(state.freshEvents)
-  });
-  if (!force && state.usageRenderSig === sig) return;
-  state.usageRenderSig = sig;
-  const events = state.events || [];
-  const rows = events.map((ev, index) => {
-    const id = eventID(ev, index);
+function domId(id){
+  return String(id).replace(/[^a-zA-Z0-9_-]/g, "_");
+}
+function lineHTML(ev, id, open){
+  const usage = ev.usage || {};
+  const pending = billingPending(ev);
+  const input = Number(usage.input_tokens || 0);
+  const cached = Number(usage.cached_tokens || 0) + Number(usage.cache_read_tokens || 0);
+  const cachePct = input > 0 && cached > 0 ? Math.round(Math.min(cached / input, 1) * 100) : null;
+  const meta = [ev.reasoning_effort, ev.service_tier && ev.service_tier !== "default" ? ev.service_tier : ""].filter(Boolean).join(" · ");
+  const sub = ev.failed
+    ? (ev.failure || "请求失败")
+    : [`${num(usage.total_tokens)} tok`, cachePct != null ? `缓存 ${cachePct}%` : "", duration(ev.latency_ms)].filter(Boolean).join(" · ");
+  const cost = Number(ev.cost || 0);
+  const amount = pending
+    ? `<b class="stamp stamp-pending">待核算</b>`
+    : `<span class="line-amt num${cost === 0 ? " is-zero" : ""}">${money(cost, 4)}</span>`;
+  const detailId = `d-${domId(id)}`;
+  return `<li class="line${ev.failed ? " is-failed" : ""}${open ? " is-open" : ""}">
+    <button class="line-main" type="button" data-event="${esc(id)}" aria-expanded="${open}" aria-controls="${detailId}">
+      <span class="line-time num">${esc(clock(new Date(ev.requested_at)))}</span>
+      <span class="line-what"><span class="line-model">${esc(modelOf(ev))}</span>${ev.failed ? `<b class="line-fail">失败${ev.status_code ? " " + esc(ev.status_code) : ""}</b>` : ""}${meta ? `<span class="line-meta">${esc(meta)}</span>` : ""}</span>
+      <span class="line-cost">${amount}</span>
+      <span class="line-sub${ev.failed ? "" : " num"}">${esc(sub)}</span>
+      <svg class="line-chev" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 6.25l4 4 4-4"/></svg>
+    </button>
+    ${open ? `<div class="line-detail" id="${detailId}">${eventDetail(ev)}</div>` : ""}
+  </li>`;
+}
+function filteredEvents(){
+  return state.events.filter(ev => (state.filter !== "failed" || ev.failed) && (!state.model || modelOf(ev) === state.model));
+}
+function reconcile(container, items, animate){
+  const keep = new Set(items.map(item => item.key));
+  const existing = new Map();
+  Array.from(container.children).forEach(el => existing.set(el.dataset.key, el));
+  const active = document.activeElement;
+  const activeKey = active && container.contains(active) ? (active.closest("[data-key]") || {}).dataset?.key : "";
+  const tpl = document.createElement("template");
+  const build = (item) => {
+    tpl.innerHTML = item.html.trim();
+    const el = tpl.content.firstElementChild;
+    el.dataset.key = item.key;
+    el.dataset.sig = item.sig;
+    return el;
+  };
+  let cursor = container.firstElementChild;
+  for (const item of items) {
+    while (cursor && !keep.has(cursor.dataset.key)) {
+      const next = cursor.nextElementSibling;
+      cursor.remove();
+      cursor = next;
+    }
+    let el = existing.get(item.key);
+    if (el && el.dataset.sig !== item.sig) {
+      const next = build(item);
+      if (el === cursor) cursor = next;
+      el.replaceWith(next);
+      el = next;
+    } else if (!el) {
+      el = build(item);
+      if (animate && item.fresh) el.classList.add("is-fresh");
+    }
+    if (el === cursor) cursor = cursor.nextElementSibling;
+    else container.insertBefore(el, cursor);
+  }
+  while (cursor) {
+    const next = cursor.nextElementSibling;
+    cursor.remove();
+    cursor = next;
+  }
+  if (activeKey && (!document.activeElement || document.activeElement === document.body)) {
+    const target = container.querySelector(`[data-key="${CSS.escape(activeKey)}"] .line-main`);
+    if (target) target.focus({preventScroll: true});
+  }
+}
+function renderRoll(animate=false){
+  const range = primaryRange();
+  const list = filteredEvents();
+  const shown = list.slice(0, state.visible);
+  const failedTotal = state.events.filter(ev => ev.failed).length;
+  const moreOlder = !state.olderExhausted && state.events.length >= EVENTS_LIMIT;
+  $("rollScope").textContent = `${rangeLabel(range)} · ${num(state.events.length)}${moreOlder ? "+" : ""} 条请求`;
+  $("failedCount").textContent = failedTotal ? ` ${failedTotal}` : "";
+  document.querySelectorAll("[data-filter]").forEach(btn => btn.setAttribute("aria-pressed", String(btn.dataset.filter === state.filter)));
+  renderModelOptions();
+  $("rollNotice").textContent = [state.errors.usage, state.errors.older].filter(Boolean).join(" ");
+  const items = [];
+  let lastDay = "";
+  for (const ev of shown) {
+    const d = new Date(ev.requested_at);
+    const key = dayKey(d);
+    if (key !== lastDay) {
+      const label = dayLabel(d);
+      items.push({key:`day:${key}`, sig:label, html:`<li class="day"><h3>${esc(label)}</h3></li>`});
+      lastDay = key;
+    }
+    const id = eventID(ev);
     const open = state.expandedEvents.has(id);
-    const usage = ev.usage || {};
-    const cacheTotal = Number(usage.cached_tokens || 0) + Number(usage.cache_read_tokens || 0) + Number(usage.cache_creation_tokens || 0);
-    const p = protect[ev.request_id || id];
-    const actual = ev.actual_model && ev.actual_model !== ev.model ? ev.actual_model : "";
-    const main = `<tr class="data-row">
-      <td><div>${dt(ev.requested_at)}</div><small class="mono">${esc(ev.request_id || "")}</small></td>
-      <td>${statusChip(ev)}${ev.failure ? `<div class="muted">${esc(ev.failure)}</div>` : ""}</td>
-      <td><div class="mono">${esc(ev.model || "-")}</div>${actual ? `<small class="mono">${esc(actual)}</small>` : ""}</td>
-      <td><span class="strong">${esc(ev.reasoning_effort || "-")}</span><div class="muted">Tier ${esc(ev.service_tier || "-")}</div></td>
-      <td><span class="strong">${duration(ev.latency_ms)}</span><div class="muted">TTFT ${duration(ev.ttft_ms)}</div></td>
-      <td><span class="strong">${num(usage.total_tokens)}</span><div class="muted">I ${num(usage.input_tokens)} / O ${num(usage.output_tokens)}</div></td>
-      <td><span class="strong">${num(cacheTotal)}</span><div class="muted">C ${num(usage.cached_tokens)} / R ${num(usage.cache_read_tokens)} / W ${num(usage.cache_creation_tokens)}</div></td>
-      <td>${p ? chip(p.protection) : `<span class="muted">-</span>`}</td>
-      <td><span class="strong">${money(ev.cost, 4)}</span><button class="ghost compact" data-event="${esc(id)}" type="button">${open ? "收起" : "展开"}</button></td>
-    </tr>`;
-    return main + (open ? eventDetail(ev) : "");
-  }).join("") || `<tr><td colspan="9"><div class="empty">暂无 ${rangeLabel(PRIMARY_RANGE)} 请求明细</div></td></tr>`;
-  const error = state.errors.usage ? `<div class="notice">${esc(state.errors.usage)}</div>` : "";
-  $("content").innerHTML = `<div class="panel embedded-panel">
-    <div class="panel-head"><h2>单 Key 实时监控</h2><span class="muted">${rangeLabel(PRIMARY_RANGE)} · 最近 ${num(events.length)} 条</span></div>
-    ${error}
-    <div class="table-wrap"><table class="realtime-table"><thead><tr>
-      <th style="width:170px">时间</th><th style="width:130px">状态</th><th style="width:170px">模型</th><th style="width:130px">思考/Tier</th>
-      <th style="width:120px">TTFT/耗时</th><th style="width:130px">Tokens</th><th style="width:150px">Cache</th><th style="width:140px">保护</th><th style="width:130px">费用</th>
-    </tr></thead><tbody>${rows}</tbody></table></div>
-  </div>`;
-  $("content").querySelectorAll("[data-event]").forEach(btn => btn.onclick = () => {
-    const id = btn.getAttribute("data-event");
-    if (state.expandedEvents.has(id)) state.expandedEvents.delete(id); else state.expandedEvents.add(id);
-    renderUsage(true);
-  });
+    items.push({key:`ev:${id}`, sig:signature([eventSig(ev), open]), html:lineHTML(ev, id, open), fresh:state.freshEvents.has(id)});
+  }
+  if (!items.length) {
+    const filtered = state.filter !== "all" || state.model;
+    items.push({
+      key: filtered ? "empty:filtered" : "empty:none",
+      sig: range,
+      html: filtered
+        ? `<li class="empty">没有符合筛选的请求。<br><button class="btn small" type="button" data-clear-filters>清除筛选</button></li>`
+        : `<li class="empty">${esc(rangeLabel(range))}内还没有请求。</li>`
+    });
+  }
+  reconcile($("lines"), items, animate);
+  const remaining = list.length - shown.length;
+  let foot = "";
+  if (remaining > 0) {
+    foot = `<span class="num">已显示 ${num(shown.length)} / ${num(list.length)} 条</span><button id="more" class="btn small" type="button">再显示 ${num(Math.min(PAGE_SIZE, remaining))} 条</button>`;
+  } else if (moreOlder) {
+    foot = `<span class="num">已显示 ${num(shown.length)} 条</span><button id="more" class="btn small" type="button"${state.loadingOlder ? " disabled" : ""}>${state.loadingOlder ? "正在加载…" : "加载更早的记录"}</button>`;
+  } else if (shown.length) {
+    foot = `<span class="roll-end">以下空白</span>`;
+  }
+  $("rollFoot").innerHTML = foot;
+  $("rollFoot").classList.toggle("hidden", !foot);
+  const more = $("more");
+  if (more) more.onclick = () => (remaining > 0 ? showMore() : fetchOlder());
 }
-function protectionDetail(req){
-  const identity = req.key_identity || {};
-  return `<tr class="detail-row"><td colspan="8"><div class="detail-grid">
-    <section class="detail-card"><h3>请求信息</h3>${detailList([
-      ["请求 ID", req.request_id || "-"],
-      ["Key", keyIdentityLabel(identity)],
-      ["Preview", identity.preview || "-"],
-      ["模型", req.model || "-"],
-      ["路径", req.path || "-"],
-      ["状态", req.status || "-"],
-      ["最终状态", req.final_status || "-"],
-      ["开始时间", dt(req.started_at)],
-      ["更新时间", dt(req.updated_at)],
-      ["结束时间", dt(req.ended_at)],
-      ["耗时", duration(req.duration_ms)],
-    ])}</section>
-    <section class="detail-card"><h3>保护判断</h3><dl class="kv">
-      <dt>保护结果</dt><dd>${chip(req.protection)}</dd>
-      <dt>是否折叠</dt><dd>${req.folded == null ? "-" : (req.folded ? "是" : "否")}</dd>
-      <dt>是否透传</dt><dd>${req.passthrough == null ? "-" : (req.passthrough ? "是" : "否")}</dd>
-      <dt>透传原因</dt><dd>${esc(req.passthrough_reason || "-")}</dd>
-      <dt>停止原因</dt><dd>${esc(req.stopped_reason || "-")}</dd>
-    </dl></section>
-    <section class="detail-card"><h3>Reasoning 指标</h3>${detailList([
-      ["命中轮", req.first_truncation_round == null ? "-" : "#" + req.first_truncation_round],
-      ["命中 reasoning", req.first_truncation_reasoning_tokens == null ? "-" : num(req.first_truncation_reasoning_tokens)],
-      ["命中 n", req.first_truncation_n == null ? "-" : req.first_truncation_n],
-      ["末轮 reasoning", req.latest_reasoning_tokens == null ? "-" : num(req.latest_reasoning_tokens)],
-      ["自动续写", num(req.continuation_count)],
-    ])}</section>
-    <section class="detail-card"><h3>轮次</h3><p class="muted mono">${roundSummaryText(req.rounds)}</p></section>
-    <section class="detail-card"><h3>失败摘要</h3><div class="failure-box mono">${esc(req.failure_category || req.failure_reason || req.failure_detail || "无失败详情")}</div></section>
-  </div></td></tr>`;
+function renderModelOptions(){
+  const select = $("modelFilter");
+  const counts = new Map();
+  state.events.forEach(ev => counts.set(modelOf(ev), (counts.get(modelOf(ev)) || 0) + 1));
+  const models = [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+  if (state.model && !counts.has(state.model)) models.push([state.model, 0]);
+  const sig = signature(models);
+  if (select.dataset.sig === sig) return;
+  select.dataset.sig = sig;
+  select.innerHTML = `<option value="">全部模型</option>` + models.map(([m, c]) => `<option value="${esc(m)}">${esc(m)}（${c}）</option>`).join("");
+  select.value = state.model;
 }
-function renderProtection(force=false){
-  if (state.tab !== "codex") return;
-  const sig = signature({
-    items: state.protection,
-    expanded: Array.from(state.expandedProtection),
-    fresh: Array.from(state.freshProtection)
-  });
-  if (!force && state.protectionRenderSig === sig) return;
-  state.protectionRenderSig = sig;
-  const items = sortProtectionItems(state.protection || []);
-  updateActiveChip();
-  const rows = items.map((req, index) => {
-    const id = protectionID(req, index);
-    const open = state.expandedProtection.has(id);
-    const main = `<tr class="data-row">
-      <td><div>${dt(req.updated_at || req.started_at)}</div><small class="mono">${esc(req.request_id || "")}</small></td>
-      <td>${chip(req.protection)}</td>
-      <td><div class="mono">${esc(req.model || "-")}</div><div class="muted">${esc(req.status || "-")}</div></td>
-      <td><span class="strong">${req.first_truncation_round == null ? "-" : "#" + esc(req.first_truncation_round)}</span><div class="muted">${req.first_truncation_reasoning_tokens == null ? "" : num(req.first_truncation_reasoning_tokens)}</div></td>
-      <td><span class="strong">${req.latest_reasoning_tokens == null ? "-" : num(req.latest_reasoning_tokens)}</span><div class="muted">续写 ${num(req.continuation_count)}</div></td>
-      <td><span class="strong">${duration(req.duration_ms)}</span><div class="muted">${esc(req.stopped_reason || "-")}</div></td>
-      <td>${esc(req.failure_category || req.failure_reason || req.failure_detail || "-")}</td>
-      <td><button class="ghost compact" data-protection="${esc(id)}" type="button">${open ? "收起" : "展开"}</button></td>
-    </tr>`;
-    return main + (open ? protectionDetail(req) : "");
-  }).join("") || `<tr><td colspan="8"><div class="empty">暂无归属于当前 Key 的保护记录</div></td></tr>`;
-  const continued = items.filter(x => x.protection === "auto_continued").length;
-  const risk = items.filter(x => x.protection === "risk_uncontinued").length;
-  const failed = items.filter(x => x.protection === "failed").length;
-  const error = state.errors.protection ? `<div class="notice">${esc(state.errors.protection)}</div>` : "";
-  $("content").innerHTML = `<div class="panel embedded-panel">
-    <div class="panel-head"><h2>思维链保护实时状态</h2><span class="muted">${num(items.length)} 条 · 自动续写 ${num(continued)} · 疑似截断 ${num(risk)} · 失败 ${num(failed)}</span></div>
-    ${error}
-    <div class="table-wrap"><table class="realtime-table"><thead><tr>
-      <th style="width:180px">时间</th><th style="width:140px">保护结果</th><th style="width:160px">模型</th><th style="width:130px">命中轮</th>
-      <th style="width:140px">末轮 reasoning</th><th style="width:140px">耗时/停止</th><th>失败摘要</th><th style="width:90px">操作</th>
-    </tr></thead><tbody>${rows}</tbody></table></div>
-  </div>`;
-  $("content").querySelectorAll("[data-protection]").forEach(btn => btn.onclick = () => {
-    const id = btn.getAttribute("data-protection");
-    if (state.expandedProtection.has(id)) state.expandedProtection.delete(id); else state.expandedProtection.add(id);
-    renderProtection(true);
-  });
+function showMore(){
+  state.visible += PAGE_SIZE;
+  renderRoll();
 }
-function renderCurrent(force=false){
-  if (state.tab === "usage") renderUsage(force);
-  else renderProtection(force);
+function rebuildEvents(){
+  state.events = [...state.eventMap.values()].sort((a, b) => new Date(b.requested_at) - new Date(a.requested_at));
 }
+function pruneToWindow(){
+  const hours = primaryRange() === "7d" ? 7 * 24 : 24;
+  const cutoff = Date.now() - hours * 3600 * 1000 - 60000;
+  for (const [id, ev] of state.eventMap) {
+    if (new Date(ev.requested_at).getTime() < cutoff) state.eventMap.delete(id);
+  }
+}
+async function fetchOlder(){
+  if (state.loadingOlder || !state.events.length) return;
+  state.loadingOlder = true;
+  state.errors.older = "";
+  renderRoll();
+  const range = primaryRange();
+  const oldest = state.events[state.events.length - 1];
+  const before = Math.floor(new Date(oldest.requested_at).getTime() / 1000);
+  try {
+    const resp = await api(`/events?range=${encodeURIComponent(range)}&limit=${EVENTS_LIMIT}&before=${before}`);
+    const events = resp.events || [];
+    let added = 0;
+    for (const ev of events) {
+      const id = eventID(ev);
+      if (!state.eventMap.has(id)) { state.eventMap.set(id, ev); added += 1; }
+      state.seenEvents.add(id);
+    }
+    if (events.length < EVENTS_LIMIT || added === 0) state.olderExhausted = true;
+    rebuildEvents();
+    state.visible += PAGE_SIZE;
+  } catch (e) {
+    if (isAuthError(e)) { sessionExpired(e); return; }
+    state.errors.older = "加载更早记录失败：" + errorMessage(e);
+  } finally {
+    state.loadingOlder = false;
+  }
+  state.freshEvents = new Set();
+  renderRoll();
+}
+
+/* Sync */
 async function fetchMe(seq, signal){
   const meResp = await api("/me", {signal});
   if (seq !== state.seq) return;
   state.me = meResp.me;
-  renderCards();
+  renderBalance();
 }
 async function fetchUsage(seq, signal){
+  const range = primaryRange();
   const [usageResp, eventResp] = await Promise.all([
-    api(`/usage?range=${encodeURIComponent(PRIMARY_RANGE)}`, {signal}),
-    api(`/events?range=${encodeURIComponent(PRIMARY_RANGE)}&limit=100`, {signal})
+    api(`/usage?range=${encodeURIComponent(range)}`, {signal}),
+    api(`/events?range=${encodeURIComponent(range)}&limit=100`, {signal})
   ]);
   if (seq !== state.seq) return;
   state.usage = usageResp;
   state.errors.usage = "";
   const events = eventResp.events || [];
-  const result = changedIds(events, state.eventSigs, eventID, e => ({
-    requested_at:e.requested_at, failed:e.failed, model:e.model, actual_model:e.actual_model,
-    latency_ms:e.latency_ms, ttft_ms:e.ttft_ms, cost:e.cost, usage:e.usage, failure:e.failure,
-    reasoning_effort:e.reasoning_effort, service_tier:e.service_tier, status_code:e.status_code
-  }));
-  state.events = events;
-  state.eventSigs = result.next;
-  state.freshEvents = result.changed;
-  renderCards();
-  renderUsage();
-}
-async function fetchProtection(seq, signal){
-  const cc = await api("/codexcont?limit=100", {signal});
-  if (seq !== state.seq) return;
-  const requests = sortProtectionItems(cc.requests || []);
-  state.errors.protection = "";
-  const result = changedIds(requests, state.protectionSigs, protectionID, r => ({
-    protection:r.protection, status:r.status, latest_reasoning_tokens:r.latest_reasoning_tokens,
-    continuation_count:r.continuation_count, stopped_reason:r.stopped_reason, failure_category:r.failure_category, failure_reason:r.failure_reason, failure_detail:r.failure_detail,
-    duration_ms:r.duration_ms, first_truncation_round:r.first_truncation_round
-  }));
-  state.protection = requests;
-  state.protectionSigs = result.next;
-  state.freshProtection = result.changed;
-  updateActiveChip();
-  renderUsage();
-  renderProtection();
-}
-async function refreshActive(force=false, includeInactive=false){
-  if ($("app").classList.contains("hidden")) {
-    setLive("warn", "未登录");
-    return;
+  const hadSeen = state.seenEvents.size > 0;
+  const fresh = new Set();
+  if (events.length < EVENTS_LIMIT) {
+    state.eventMap = new Map(events.map(ev => [eventID(ev), ev]));
+    state.olderExhausted = true;
+  } else {
+    events.forEach(ev => state.eventMap.set(eventID(ev), ev));
+    pruneToWindow();
   }
-  if (!force && document.hidden) return;
+  events.forEach(ev => {
+    const id = eventID(ev);
+    if (hadSeen && !state.seenEvents.has(id)) fresh.add(id);
+    state.seenEvents.add(id);
+  });
+  state.freshEvents = fresh;
+  rebuildEvents();
+  renderBalance();
+  renderRoll(true);
+}
+async function fetchPool(signal){
+  if (state.poolUnavailable) return;
+  try {
+    const resp = await api("/pool", {signal});
+    state.pool = resp.pool || null;
+  } catch (e) {
+    if (isAuthError(e)) throw e;
+    if (isMissingRoute(e)) state.poolUnavailable = true;
+  }
+  renderBalance();
+}
+async function fetchTrend(signal){
+  if (state.trendUnavailable) return;
+  const range = primaryRange();
+  try {
+    const resp = await api(`/trend?range=${encodeURIComponent(range)}&tz_offset=${new Date().getTimezoneOffset()}`, {signal});
+    state.trend = resp.trend || null;
+    state.trendFetchedAt = Date.now();
+  } catch (e) {
+    if (isAuthError(e)) throw e;
+    if (isMissingRoute(e)) state.trendUnavailable = true;
+  }
+  renderTrend();
+}
+async function refreshActive(force=false){
+  if (!state.active) return;
+  if (!force && document.hidden && !state.pip) return;
   if (state.refreshing) {
     if (!force) return;
     cancelRefresh();
@@ -617,27 +1351,18 @@ async function refreshActive(force=false, includeInactive=false){
   try {
     await fetchMe(seq, controller.signal);
     let partial = false;
-    const jobs = [];
-    if (includeInactive || state.tab === "usage") {
-      jobs.push(fetchUsage(seq, controller.signal).catch(e => {
+    const trendDue = force || !state.trendFetchedAt || Date.now() - state.trendFetchedAt > 60000;
+    await Promise.all([
+      fetchPool(controller.signal),
+      CARD_MODE ? Promise.resolve() : fetchUsage(seq, controller.signal).catch(e => {
         if (isRefreshCancel(controller.signal)) return;
         if (isAuthError(e)) throw e;
         partial = true;
-        state.errors.usage = "用量接口同步失败：" + errorMessage(e);
-        renderUsage(true);
-      }));
-    }
-    if (includeInactive || state.tab === "usage" || state.tab === "codex") {
-      jobs.push(fetchProtection(seq, controller.signal).catch(e => {
-        if (isRefreshCancel(controller.signal)) return;
-        if (isAuthError(e)) throw e;
-        partial = true;
-        state.errors.protection = "思维链保护同步失败：" + errorMessage(e);
-        renderUsage(true);
-        renderProtection(true);
-      }));
-    }
-    await Promise.all(jobs);
+        state.errors.usage = "用量同步失败：" + errorMessage(e);
+        renderRoll();
+      }),
+      trendDue && !CARD_MODE ? fetchTrend(controller.signal) : Promise.resolve()
+    ]);
     await refreshMinimumDelay(force, startedAt);
     if (seq !== state.seq) return;
     if (partial) {
@@ -649,19 +1374,8 @@ async function refreshActive(force=false, includeInactive=false){
   } catch(e) {
     await refreshMinimumDelay(force, startedAt);
     if (seq === state.seq) {
-      if (isAuthError(e)) {
-        setLive("bad", "会话已过期");
-        if (force) setRefreshState("error", "重新登录");
-        clearInterval(state.timer);
-        $("app").classList.add("hidden");
-        $("login").classList.remove("hidden");
-        $("refresh").classList.add("hidden");
-        $("active-chip").classList.add("hidden");
-        $("logout").classList.add("hidden");
-        $("err").textContent = errorMessage(e, "会话已过期，请重新登录。");
-      } else {
-        markRefreshError(force);
-      }
+      if (isAuthError(e)) sessionExpired(e);
+      else markRefreshError(force);
     }
   } finally {
     if (seq === state.seq) {
@@ -671,52 +1385,168 @@ async function refreshActive(force=false, includeInactive=false){
     }
   }
 }
+function schedule(){
+  clearInterval(state.timer);
+  state.timer = setInterval(() => refreshActive(false), CARD_MODE ? 30000 : 5000);
+}
+
+/* Session */
+function resetData(){
+  state.me = null;
+  state.usage = null;
+  state.trend = null;
+  state.trendIndex = -1;
+  state.trendFetchedAt = 0;
+  state.eventMap = new Map();
+  state.events = [];
+  state.olderExhausted = false;
+  state.visible = PAGE_SIZE;
+  state.expandedEvents = new Set();
+  state.seenEvents = new Set();
+  state.freshEvents = new Set();
+  state.errors = {usage:"", older:""};
+  state.lastSync = 0;
+  state.pool = null;
+  $("lines").innerHTML = "";
+  $("card").innerHTML = "";
+}
+function showLogin(message){
+  clearInterval(state.timer);
+  state.active = false;
+  if (state.pip) { state.pip.close(); state.pip = null; }
+  $("boot").classList.add("hidden");
+  $("app").classList.add("hidden");
+  $("card").classList.add("hidden");
+  $("login").classList.remove("hidden");
+  $("err").textContent = message || "";
+  $("key").focus();
+}
+function enterApp(){
+  state.active = true;
+  $("boot").classList.add("hidden");
+  $("login").classList.add("hidden");
+  $(CARD_MODE ? "card" : "app").classList.remove("hidden");
+  setLive("info", "正在同步");
+  renderBalance();
+  renderRoll();
+  refreshActive(true);
+  schedule();
+}
+function sessionExpired(e){
+  cancelRefresh();
+  resetData();
+  showLogin(errorMessage(e, "会话已过期，请重新登录。"));
+}
 async function loginNow(){
   $("err").textContent = "";
   const raw = enteredKey();
   const hint = localKeyHint(raw);
   if (hint) { $("err").textContent = "登录失败：" + hint; return; }
+  const btn = $("loginBtn");
+  btn.disabled = true;
+  btn.textContent = "登录中…";
   try {
-    await api("/session", {headers:{"X-CPA-Key-Policy-Plus-Key": raw}});
-    state.errors = {usage:"", protection:""};
-    $("login").classList.add("hidden");
-    $("app").classList.remove("hidden");
-    $("refresh").classList.remove("hidden");
-    $("active-chip").classList.remove("hidden");
-    $("logout").classList.remove("hidden");
-    $("topbar").classList.add("live-active");
-    setLive("ok", "实时已连接");
-    renderCurrent(true);
-    await refreshActive(true, true);
-    schedule();
+    const resp = await api("/session", {headers:{"X-CPA-Key-Policy-Plus-Key": raw}});
+    try { sessionStorage.removeItem(LOGGED_OUT_FLAG); } catch (_) {}
+    $("key").value = "";
+    resetData();
+    state.me = resp.me || null;
+    enterApp();
   } catch(e) {
     $("err").textContent = "登录失败：" + ((e.data || {}).message || e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "登录";
   }
 }
-function switchTab(tab){
-  if (state.tab === tab) return;
-  state.tab = tab;
-  document.querySelectorAll(".tabs button").forEach(b => b.classList.toggle("active", b.dataset.tab === tab));
-  renderCurrent(true);
-  refreshActive(false);
-}
-function schedule(){
+async function logoutNow(){
+  cancelRefresh();
   clearInterval(state.timer);
-  state.timer = setInterval(() => refreshActive(false), 5000);
+  try { sessionStorage.setItem(LOGGED_OUT_FLAG, "1"); } catch (_) {}
+  try { await api("/logout"); } catch (_) {}
+  resetData();
+  showLogin("已退出。");
 }
-$("loginBtn").onclick = loginNow;
+async function boot(){
+  let loggedOut = false;
+  try { loggedOut = sessionStorage.getItem(LOGGED_OUT_FLAG) === "1"; } catch (_) {}
+  if (loggedOut) { showLogin(); return; }
+  try {
+    const resp = await api("/me");
+    state.me = resp.me;
+    enterApp();
+  } catch (e) {
+    showLogin(isAuthError(e) ? "" : "暂时连不上用量服务，请稍后刷新。");
+  }
+}
+
+$("loginForm").addEventListener("submit", (e) => { e.preventDefault(); loginNow(); });
 $("refresh").onclick = () => refreshActive(true);
-$("logout").onclick = () => location.reload();
-document.querySelectorAll(".tabs button").forEach(btn => btn.onclick = () => switchTab(btn.dataset.tab));
-document.addEventListener("visibilitychange", () => {
-  if (document.hidden) {
-    if (state.refreshing) cancelRefresh();
+$("logout").onclick = logoutNow;
+$("pin").onclick = pinCard;
+$("card").addEventListener("click", (e) => { if (e.target.closest("[data-card-refresh]")) refreshActive(true); });
+if (CARD_MODE) {
+  document.body.classList.add("kp-card-mode");
+  document.title = "用量小票 · CPA";
+}
+if (!CARD_MODE && window.matchMedia && matchMedia("(pointer: fine)").matches) $("pin").classList.remove("hidden");
+$("lines").addEventListener("click", (e) => {
+  const clear = e.target.closest("[data-clear-filters]");
+  if (clear) {
+    state.filter = "all";
+    state.model = "";
+    state.visible = PAGE_SIZE;
+    renderRoll();
     return;
   }
-  if (!$("app").classList.contains("hidden")) refreshActive(true);
+  const btn = e.target.closest("[data-event]");
+  if (!btn) return;
+  const id = btn.getAttribute("data-event");
+  if (state.expandedEvents.has(id)) state.expandedEvents.delete(id); else state.expandedEvents.add(id);
+  state.freshEvents = new Set();
+  renderRoll();
 });
-window.addEventListener("pageshow", () => { if (!$("app").classList.contains("hidden")) refreshActive(true); });
-window.addEventListener("focus", () => { if (!$("app").classList.contains("hidden")) refreshActive(true); });
+document.querySelectorAll("[data-filter]").forEach(btn => btn.addEventListener("click", () => {
+  state.filter = btn.dataset.filter;
+  state.visible = PAGE_SIZE;
+  state.freshEvents = new Set();
+  renderRoll();
+}));
+$("modelFilter").addEventListener("change", (e) => {
+  state.model = e.target.value;
+  state.visible = PAGE_SIZE;
+  state.freshEvents = new Set();
+  renderRoll();
+});
+$("trendPlot").addEventListener("pointermove", (e) => {
+  const t = state.trend;
+  if (!t || !t.buckets || !t.buckets.length) return;
+  const rect = e.currentTarget.getBoundingClientRect();
+  setTrendIndex(Math.floor((e.clientX - rect.left) / rect.width * t.buckets.length), true);
+});
+$("trendPlot").addEventListener("pointerleave", () => setTrendIndex(state.trend ? state.trend.buckets.length - 1 : 0, false));
+$("trendPlot").addEventListener("keydown", (e) => {
+  const t = state.trend;
+  if (!t || !t.buckets) return;
+  const moves = {ArrowLeft: -1, ArrowRight: 1};
+  if (e.key in moves) setTrendIndex(state.trendIndex + moves[e.key], true);
+  else if (e.key === "Home") setTrendIndex(0, true);
+  else if (e.key === "End") setTrendIndex(t.buckets.length - 1, true);
+  else return;
+  e.preventDefault();
+});
+$("trendPlot").addEventListener("blur", () => $("trendPlot").classList.remove("is-scrubbing"));
+window.addEventListener("resize", fitBalance);
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) {
+    if (state.refreshing && !state.pip) cancelRefresh();
+    return;
+  }
+  if (state.active) refreshActive(true);
+});
+window.addEventListener("pageshow", (e) => { if (e.persisted && state.active) refreshActive(true); });
+window.addEventListener("focus", () => { if (state.active && Date.now() - state.lastSync > 3000) refreshActive(true); });
+boot();
 </script>
 </body>
 </html>

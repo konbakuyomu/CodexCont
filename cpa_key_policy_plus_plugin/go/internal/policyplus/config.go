@@ -24,6 +24,15 @@ type Config struct {
 	CodexContURL         string `yaml:"codexcont_url"`
 	FailMode             string `yaml:"fail_mode"`
 	PollIntervalMS       int    `yaml:"poll_interval_ms"`
+	// Sub2PoolURL and Sub2PoolAPIKey optionally show a Sub2Pool capacity
+	// estimate next to the pool's own; it never feeds the ledger.
+	Sub2PoolURL    string `yaml:"sub2pool_url"`
+	Sub2PoolAPIKey string `yaml:"sub2pool_api_key"`
+	// CPAMPURL and CPAMPAdminKeyFile let the plugin name its keys in CPAMP's
+	// request monitor. The key file defaults to cpamp-admin-key next to the
+	// state DB; without it nothing is pushed.
+	CPAMPURL          string `yaml:"cpamp_url"`
+	CPAMPAdminKeyFile string `yaml:"cpamp_admin_key_file"`
 }
 
 func DefaultConfig() Config {
@@ -36,6 +45,7 @@ func DefaultConfig() Config {
 		CodexContURL:     "http://codexcont:8787",
 		FailMode:         "fallback",
 		PollIntervalMS:   1500,
+		CPAMPURL:         "http://cpamp:18317",
 	}
 }
 
@@ -60,6 +70,10 @@ func (c Config) Normalize() Config {
 	if c.PollIntervalMS <= 0 {
 		c.PollIntervalMS = 1500
 	}
+	c.Sub2PoolURL = strings.TrimRight(strings.TrimSpace(c.Sub2PoolURL), "/")
+	c.Sub2PoolAPIKey = strings.TrimSpace(c.Sub2PoolAPIKey)
+	c.CPAMPURL = strings.TrimRight(strings.TrimSpace(c.CPAMPURL), "/")
+	c.CPAMPAdminKeyFile = strings.TrimSpace(c.CPAMPAdminKeyFile)
 	return c
 }
 
