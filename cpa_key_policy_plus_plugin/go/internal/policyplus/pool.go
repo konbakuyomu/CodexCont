@@ -589,9 +589,88 @@ type Pool struct {
 	// RoutedSince is when the pool last got its account or model prefix; member
 	// requests before it could not have been pinned.
 	RoutedSince int64 `json:"routed_since,omitempty"`
-	UpdatedAt   int64 `json:"updated_at"`
+	// Provider is the CPA provider of the pool account ("" means codex). A key
+	// may ride one pool per provider, since each serves different models.
+	Provider string `json:"provider,omitempty"`
+	// BudgetUSD makes the pool meter a weekly dollar budget instead of the
+	// account's own quota signal, for accounts that report none (xai). Usage
+	// is the account's settled cost against the budget; cycles are 7 days
+	// long and end at BudgetResetAt plus a whole number of weeks.
+	BudgetUSD     *float64 `json:"budget_usd,omitempty"`
+	BudgetResetAt int64    `json:"budget_reset_at,omitempty"`
+	UpdatedAt     int64    `json:"updated_at"`
 	// Bursts are the members' bursts not yet settled, current cycle or past.
 	Bursts []MemberBurst `json:"-"`
+}
+
+// ProviderName is the pool account's provider, codex when unset.
+func (p Pool) ProviderName() string {
+	if provider := strings.ToLower(strings.TrimSpace(p.Provider)); provider != "" {
+		return provider
+	}
+	return "codex"
+}
+
+// Budgeted reports a pool metered against a weekly dollar budget.
+func (p Pool) Budgeted() bool { return p.BudgetUSD != nil && *p.BudgetUSD > 0 }
+
+// BudgetCycleSeconds is the length of a budget pool's cycle.
+const BudgetCycleSeconds = 7 * 24 * 3600
+
+// BudgetCycleEnd is when the budget cycle running at now ends.
+func BudgetCycleEnd(anchor, now int64) int64 {
+	if anchor <= 0 {
+		return 0
+	}
+	d := now - anchor
+	n := d / BudgetCycleSeconds
+	if d%BudgetCycleSeconds != 0 && d < 0 {
+		n--
+	}
+	return anchor + (n+1)*BudgetCycleSeconds
+}
+
+// DefaultBudgetResetAt is next Monday 00:00 Beijing time.
+func DefaultBudgetResetAt(now time.Time) int64 {
+	loc := time.FixedZone("Asia/Shanghai", 8*3600)
+	local := now.In(loc)
+	days := (8 - int(local.Weekday())) % 7
+	if days == 0 {
+		days = 7
+	}
+	next := time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, loc).AddDate(0, 0, days)
+	return next.Unix()
+}
+
+// BudgetObservations turns one budget cycle's settled costs into the quota
+// observations an account with a real signal would have produced: the cycle
+// starts at 0% and every cost moves it by 100*cost/budget points. Costs are
+// merged per timestamp so each rise carries its own cost.
+func BudgetObservations(budget float64, cycleEnd int64, events []CostEvent) []QuotaObservation {
+	if budget <= 0 || cycleEnd <= 0 {
+		return nil
+	}
+	startMS := (cycleEnd - BudgetCycleSeconds) * 1000
+	endMS := cycleEnd * 1000
+	minutes := int64(BudgetCycleSeconds / 60)
+	obs := []QuotaObservation{{CycleResetAt: cycleEnd, UsedPercent: 0, ObservedAtMS: startMS, WindowMinutes: minutes}}
+	sorted := append([]CostEvent(nil), events...)
+	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].AtMS < sorted[j].AtMS })
+	used := 0.0
+	for i := 0; i < len(sorted); {
+		at := sorted[i].AtMS
+		cost := 0.0
+		for i < len(sorted) && sorted[i].AtMS == at {
+			cost += sorted[i].Cost
+			i++
+		}
+		if at <= startMS || at > endMS || cost <= 0 {
+			continue
+		}
+		used += 100 * cost / budget
+		obs = append(obs, QuotaObservation{CycleResetAt: cycleEnd, UsedPercent: used, ObservedAtMS: at, WindowMinutes: minutes})
+	}
+	return obs
 }
 
 // BurstOf returns the member's running burst.
@@ -672,16 +751,26 @@ func ValidatePools(pools []Pool) error {
 			}
 			seenAuth[auth] = pool.ID
 		}
+		if pool.BudgetUSD != nil {
+			budget := *pool.BudgetUSD
+			if math.IsNaN(budget) || math.IsInf(budget, 0) || budget <= 0 || budget > 1e6 {
+				return fmt.Errorf("拼车池 %s 的每周预算需要大于 0", pool.ID)
+			}
+		}
+		if strings.TrimSpace(pool.AuthIndex) != "" && pool.ProviderName() != "codex" && !pool.Budgeted() {
+			return fmt.Errorf("拼车池 %s 的账号没有额度信号，需要填写每周预算", pool.ID)
+		}
 		total := 0.0
 		for _, member := range pool.Members {
 			keyID := strings.TrimSpace(member.KeyID)
 			if keyID == "" {
 				return fmt.Errorf("拼车池 %s 有空的成员 Key", pool.ID)
 			}
-			if other, ok := seenKey[keyID]; ok {
-				return fmt.Errorf("一把 Key 只能加入一个拼车池（已在 %s）", other)
+			slot := pool.ProviderName() + "\x00" + keyID
+			if other, ok := seenKey[slot]; ok {
+				return fmt.Errorf("一把 Key 在同一类账号里只能加入一个拼车池（已在 %s）", other)
 			}
-			seenKey[keyID] = pool.ID
+			seenKey[slot] = pool.ID
 			if member.SharePercent == nil {
 				continue
 			}
@@ -700,7 +789,8 @@ func ValidatePools(pools []Pool) error {
 
 func (s *Store) ListPools(ctx context.Context) ([]Pool, error) {
 	rows, err := s.db.QueryContext(ctx, `select id, name, auth_index, model_prefix, visibility, coalesce(sub2pool_account_id, 0),
-		coalesce(lend_during_burst, 0), coalesce(hide_account, 0), case when coalesce(routed_since, 0) > 0 then routed_since else created_at end, updated_at
+		coalesce(lend_during_burst, 0), coalesce(hide_account, 0), case when coalesce(routed_since, 0) > 0 then routed_since else created_at end, updated_at,
+		coalesce(provider, ''), budget_usd, coalesce(budget_reset_at, 0)
 		from pools order by created_at asc, id asc`)
 	if err != nil {
 		return nil, err
@@ -710,13 +800,16 @@ func (s *Store) ListPools(ctx context.Context) ([]Pool, error) {
 	for rows.Next() {
 		var pool Pool
 		var lend, hide int
+		var budget sql.NullFloat64
 		if err := rows.Scan(&pool.ID, &pool.Name, &pool.AuthIndex, &pool.ModelPrefix, &pool.Visibility,
-			&pool.Sub2PoolAccountID, &lend, &hide, &pool.RoutedSince, &pool.UpdatedAt); err != nil {
+			&pool.Sub2PoolAccountID, &lend, &hide, &pool.RoutedSince, &pool.UpdatedAt,
+			&pool.Provider, &budget, &pool.BudgetResetAt); err != nil {
 			rows.Close()
 			return nil, err
 		}
 		pool.LendDuringBurst = lend != 0
 		pool.HideAccount = hide != 0
+		pool.BudgetUSD = nullFloatPtr(budget)
 		pool.Visibility = NormalizePoolVisibility(pool.Visibility)
 		index[pool.ID] = len(pools)
 		pools = append(pools, pool)
@@ -779,6 +872,13 @@ func (s *Store) SavePools(ctx context.Context, pools []Pool) error {
 		pools[i].AuthIndex = strings.TrimSpace(pools[i].AuthIndex)
 		pools[i].ModelPrefix = strings.TrimSpace(pools[i].ModelPrefix)
 		pools[i].Visibility = NormalizePoolVisibility(pools[i].Visibility)
+		pools[i].Provider = strings.ToLower(strings.TrimSpace(pools[i].Provider))
+		if pools[i].Provider == "codex" {
+			pools[i].Provider = ""
+		}
+		if pools[i].Budgeted() && pools[i].BudgetResetAt <= 0 {
+			pools[i].BudgetResetAt = DefaultBudgetResetAt(time.Now())
+		}
 		for j := range pools[i].Members {
 			member := &pools[i].Members[j]
 			member.KeyID = strings.TrimSpace(member.KeyID)
@@ -819,15 +919,17 @@ func (s *Store) SavePools(ctx context.Context, pools []Pool) error {
 		if pool.Sub2PoolAccountID < 0 {
 			pool.Sub2PoolAccountID = 0
 		}
-		if _, err := tx.ExecContext(ctx, `insert into pools(id, name, auth_index, model_prefix, visibility, sub2pool_account_id, lend_during_burst, hide_account, routed_since, created_at, updated_at)
-			values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		if _, err := tx.ExecContext(ctx, `insert into pools(id, name, auth_index, model_prefix, visibility, sub2pool_account_id, lend_during_burst, hide_account, routed_since, provider, budget_usd, budget_reset_at, created_at, updated_at)
+			values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			on conflict(id) do update set name=excluded.name,
 			routed_since=case when pools.auth_index != excluded.auth_index or pools.model_prefix != excluded.model_prefix
 				then excluded.routed_since else pools.routed_since end,
 			auth_index=excluded.auth_index, model_prefix=excluded.model_prefix, visibility=excluded.visibility,
 			sub2pool_account_id=excluded.sub2pool_account_id, lend_during_burst=excluded.lend_during_burst,
-			hide_account=excluded.hide_account, updated_at=excluded.updated_at`,
-			pool.ID, pool.Name, pool.AuthIndex, pool.ModelPrefix, pool.Visibility, pool.Sub2PoolAccountID, boolInt(pool.LendDuringBurst), boolInt(pool.HideAccount), now, now+int64(i), now); err != nil {
+			hide_account=excluded.hide_account, provider=excluded.provider, budget_usd=excluded.budget_usd,
+			budget_reset_at=excluded.budget_reset_at, updated_at=excluded.updated_at`,
+			pool.ID, pool.Name, pool.AuthIndex, pool.ModelPrefix, pool.Visibility, pool.Sub2PoolAccountID, boolInt(pool.LendDuringBurst), boolInt(pool.HideAccount), now,
+			pool.Provider, floatPtrValue(pool.BudgetUSD), pool.BudgetResetAt, now+int64(i), now); err != nil {
 			return err
 		}
 	}

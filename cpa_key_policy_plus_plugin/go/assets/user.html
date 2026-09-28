@@ -351,6 +351,7 @@
       <div id="live" class="live" data-state="info" role="status"><span class="live-dot" aria-hidden="true"></span><span class="live-text">正在同步</span></div>
       <div id="verdict" class="verdict" aria-live="polite"></div>
       <section id="pool" class="pool hidden" aria-labelledby="poolTitle"></section>
+      <div id="poolMore"></div>
       <div id="quotaCards" class="windows" aria-label="额度窗口"></div>
       <figure id="trend" class="trend hidden">
         <figcaption class="trend-head"><h2 id="trendTitle">近 24 小时每小时消费</h2><span id="trendPeak" class="trend-peak num"></span></figcaption>
@@ -417,6 +418,7 @@ const state = {
   refreshing: false,
   active: false,
   pool: null,
+  pools: [],
   poolUnavailable: false,
   pip: null,
   live: {kind: "info", text: "正在同步"}
@@ -629,12 +631,16 @@ function windowRows(){
   const windows = me.usage || {};
   const limits = me.limits || {};
   const quota = me.quota || {};
-  // In a carpool the share replaces the USD windows; they only show usage.
+  // In a carpool the share meters the pool's models; a USD limit still
+  // covers every other model and counts only that usage ("池外").
   const pooled = Boolean((me.pool || {}).usd_windows_off);
   return visibleQuotaWindows().map(item => {
-    const used = Number(windows[item.range] || 0);
-    const limit = pooled ? null : limitForRange(limits, item.range);
-    return {item, used, limit, st: pooled ? {text:"按份额", cls:"unset", percent:0} : quotaState(used, limit), q: quota[item.range] || {}};
+    const q = quota[item.range] || {};
+    const limit = limitForRange(limits, item.range);
+    const hasLimit = !(limit == null || limit === "");
+    if (pooled && !hasLimit) return {item, used: Number(windows[item.range] || 0), limit: null, st: {text:"按份额", cls:"unset", percent:0}, q};
+    const used = pooled ? Number(q.used_usd || 0) : Number(windows[item.range] || 0);
+    return {item: pooled ? {...item, title: `池外 · ${item.title}`} : item, used, limit, st: quotaState(used, limit), q};
   });
 }
 function ppText(v, digits=2){
@@ -646,8 +652,7 @@ function signedPP(v){
   return `${n > 0 ? "+" : n < 0 ? "−" : ""}${Math.abs(n).toFixed(2)}`;
 }
 /* Carpool share */
-function poolShare(){
-  const pool = state.pool;
+function poolShare(pool = state.pool){
   if (!pool || !pool.me) return null;
   const me = pool.me;
   return {
@@ -761,8 +766,17 @@ function renderBalance(){
 }
 function renderPool(){
   const el = $("pool");
-  const share = poolShare();
-  if (!share) { el.classList.add("hidden"); el.innerHTML = ""; return; }
+  const main = poolSection(poolShare(), "poolTitle");
+  if (!main) { el.className = "pool hidden"; el.innerHTML = ""; }
+  else { el.className = main.cls; el.innerHTML = main.html; }
+  // Other pools the key rides (a Grok pool next to the Codex one).
+  $("poolMore").innerHTML = state.pools.slice(1).map((pool, i) => {
+    const more = poolSection(poolShare(pool), `poolTitle${i + 2}`);
+    return more ? `<section class="${more.cls}" aria-labelledby="poolTitle${i + 2}">${more.html}</section>` : "";
+  }).join("");
+}
+function poolSection(share, titleId){
+  if (!share) return null;
   const {pool, me, burst, owner, pinned} = share;
   const acct = pool.account || {};
   let cls = "ok", stateText = "正常";
@@ -789,9 +803,10 @@ function renderPool(){
   }
   const facts = [];
   if (acct.full) facts.push(["这个号", acct.full_until ? `已满 · ${resetLabel(acct.full_until)}恢复` : "现在用不了"]);
+  const whole = pool.budgeted ? "预算本周" : "账号本周";
   if (pool.account_hidden) {
     if (acct.reset_at) facts.push(["份额重置", resetLabel(acct.reset_at)]);
-  } else if (pool.in_cycle && acct.used_percent != null) facts.push(["账号本周", `${Math.round(acct.used_percent)}%${acct.reset_at ? ` · ${resetLabel(acct.reset_at)}重置` : ""}`]);
+  } else if (pool.in_cycle && acct.used_percent != null) facts.push([whole, `${Math.round(acct.used_percent)}%${acct.reset_at ? ` · ${resetLabel(acct.reset_at)}重置` : ""}`]);
   else if (acct.status === "reset_pending") facts.push(["账号本周", "已重置"]);
   if (acct.short) {
     const reset = Number(acct.short.reset_at || 0);
@@ -806,13 +821,12 @@ function renderPool(){
   for (const [label, value] of unnamed) {
     if (Number(value || 0) >= 0.005) team.push(`<li><span>${label}</span><span class="team-fig num">${ppText(value)}</span></li>`);
   }
-  el.className = `pool win-${cls}`;
-  el.innerHTML = `<div class="pool-top"><h2 id="poolTitle" class="pool-title">拼车 · ${esc(pool.name)}</h2><b class="win-state">${esc(stateText)}</b></div>
+  return {cls: `pool win-${cls}`, html: `<div class="pool-top"><h2 id="${titleId}" class="pool-title">拼车 · ${esc(pool.name)}</h2><b class="win-state">${esc(stateText)}</b></div>
     <div class="win-figs num">${figs}</div>${meter}
     ${foot.length ? `<div class="win-foot num">${esc(foot.join(" · "))}</div>` : ""}
     <dl class="pool-facts">${facts.map(([k, v]) => `<div><dt>${esc(k)}</dt><dd class="num">${esc(v)}</dd></div>`).join("")}</dl>
     ${team.length ? `<ol class="team" aria-label="本周期各人用量">${team.join("")}</ol>` : ""}
-`;
+`};
 }
 
 /* Card and pin-to-desktop */
@@ -891,6 +905,13 @@ function cardHTML(){
   const primary = share && !share.owner && !share.pinned ? "" : primaryRange();
   const rows = windowRows().filter(r => !(r.limit == null || r.limit === "") && r.item.range !== primary);
   const lines = rows.map(r => `<div class="${r.st.cls === "over" ? "is-over" : r.st.cls === "warn" ? "is-warn" : ""}"><span>${esc(r.item.title)}</span><b class="num">${money(r.used)} / ${money(r.limit)}</b></div>`);
+  for (const pool of state.pools.slice(1)) {
+    const extra = poolShare(pool);
+    if (!extra || extra.owner || extra.pinned) continue;
+    const over = !extra.burst && extra.me.state === "over";
+    const text = extra.burst ? "爽蹬中" : over ? "份额已用完" : `剩 ${ppText(Math.max(Number(extra.me.remaining_pp || 0), 0))}`;
+    lines.push(`<div class="${over ? "is-over" : extra.me.state === "near" ? "is-warn" : ""}"><span>拼车 · ${esc(pool.name)}</span><b class="num">${esc(text)}</b></div>`);
+  }
   const live = state.live || {};
   return `<div class="card-head"><div class="card-name">${esc(me.name || me.alias || "CPA 用量")}</div><div class="card-live live" data-state="${esc(live.kind)}"><span class="live-dot" aria-hidden="true"></span>${esc(live.kind === "ok" ? "实时" : live.kind === "bad" ? "连接异常" : "同步中")}</div></div>
     ${cardMainHTML()}
@@ -1312,7 +1333,8 @@ async function fetchPool(signal){
   if (state.poolUnavailable) return;
   try {
     const resp = await api("/pool", {signal});
-    state.pool = resp.pool || null;
+    state.pools = Array.isArray(resp.pools) ? resp.pools : (resp.pool ? [resp.pool] : []);
+    state.pool = state.pools[0] || null;
   } catch (e) {
     if (isAuthError(e)) throw e;
     if (isMissingRoute(e)) state.poolUnavailable = true;
@@ -1407,6 +1429,7 @@ function resetData(){
   state.errors = {usage:"", older:""};
   state.lastSync = 0;
   state.pool = null;
+  state.pools = [];
   $("lines").innerHTML = "";
   $("card").innerHTML = "";
 }

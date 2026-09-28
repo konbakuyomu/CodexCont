@@ -1110,15 +1110,21 @@ func evaluatePolicyWithServiceTier(key policyplus.KeyRecord, model, serviceTier 
 		base.Window = "rpm"
 		return denyDecision(base, "rate_limit_exceeded", "rpm_rate_limit_exceeded", "rpm", "", fmt.Sprintf("CPA Key Policy+ 已拦截：%s 触发 RPM 限制，最近 1 分钟请求 %d / 上限 %d。", safeKeyDisplayName(key), rpm.Used, rpm.Limit))
 	}
-	// A pool share replaces the USD windows of its members; the windows stay
-	// stored and apply again once the key leaves the pool.
-	if _, _, pooled := poolShareOf(key.ID); !pooled {
-		if quota := checkQuota(key); !quota.Allowed {
+	// A pool share replaces the USD windows for the models its pool serves.
+	// Every other model stays under the windows, which then count only the
+	// usage of models no share governs.
+	if _, _, pooled := poolShareFor(key.ID, model); !pooled {
+		keep := offPoolModels(context.Background(), key.ID)
+		if quota := checkQuota(key, keep); !quota.Allowed {
 			base.Window = quota.Window
 			base.Param = quota.Window
 			base.UsedUSD = quota.Used
 			base.LimitUSD = quota.Limit
-			return denyDecision(base, "rate_limit_exceeded", quota.Code, quota.Window, quota.Window, fmt.Sprintf("CPA Key Policy+ 已拦截：%s 触发 %s费用限额，已用 $%.2f / 上限 $%.2f。", safeKeyDisplayName(key), windowDisplayName(quota.Window), quota.Used, quota.Limit))
+			scope := ""
+			if keep != nil {
+				scope = "池外模型的 "
+			}
+			return denyDecision(base, "rate_limit_exceeded", quota.Code, quota.Window, quota.Window, fmt.Sprintf("CPA Key Policy+ 已拦截：%s 触发%s%s费用限额，已用 $%.2f / 上限 $%.2f。", safeKeyDisplayName(key), scope, windowDisplayName(quota.Window), quota.Used, quota.Limit))
 		}
 	}
 	if share := checkPoolShare(key, model); !share.Allowed {
@@ -1210,7 +1216,9 @@ type quotaDecision struct {
 	Code    string
 }
 
-func checkQuota(key policyplus.KeyRecord) quotaDecision {
+// checkQuota tests the key's USD windows over the models keep accepts (nil:
+// every model).
+func checkQuota(key policyplus.KeyRecord, keep func(model string) bool) quotaDecision {
 	store := loadedStore()
 	if store == nil {
 		return quotaDecision{Allowed: true}
@@ -1231,7 +1239,7 @@ func checkQuota(key policyplus.KeyRecord) quotaDecision {
 		if item.limit == nil {
 			continue
 		}
-		used, err := store.UsageSum(ctx, key.ID, policyplus.WindowFor(item.name, now))
+		used, err := store.UsageSumMatching(ctx, key.ID, policyplus.WindowFor(item.name, now), keep)
 		if err != nil {
 			continue
 		}
@@ -1781,8 +1789,7 @@ func adminKeys(req managementRequest) ([]byte, error) {
 	for _, key := range keys {
 		row := key.Safe()
 		usage := usageWindows(context.Background(), store, key.ID, now)
-		quota := quotaWindows(key, usage)
-		annotateQuotaRecovery(context.Background(), store, key, quota, now)
+		quota := keyQuotaView(context.Background(), store, key, usage, now, row)
 		row["usage"] = usage
 		row["quota"] = quota
 		if pool := poolKeyView(key.ID); pool != nil {
@@ -2480,8 +2487,7 @@ func userMe(req managementRequest) ([]byte, error) {
 	if store := loadedStore(); store != nil {
 		now := time.Now()
 		usage := usageWindows(context.Background(), store, key.ID, now)
-		quota := quotaWindows(key, usage)
-		annotateQuotaRecovery(context.Background(), store, key, quota, now)
+		quota := keyQuotaView(context.Background(), store, key, usage, now, row)
 		row["usage"] = usage
 		row["quota"] = quota
 	}
@@ -2584,7 +2590,27 @@ func viewerOffsetSeconds(raw string) int64 {
 // annotateQuotaRecovery tells the pages when each window frees up:
 // recovers_at for an exhausted rolling window if no new usage arrives, and
 // resets_at for the Beijing-time month.
-func annotateQuotaRecovery(ctx context.Context, store *policyplus.Store, key policyplus.KeyRecord, quota map[string]map[string]any, now time.Time) {
+// keyQuotaView builds a key's USD window rows. For a key holding a pool
+// share the windows govern only the models no share covers, so they are
+// measured on that usage alone and row gets quota_scope "off_pool".
+func keyQuotaView(ctx context.Context, store *policyplus.Store, key policyplus.KeyRecord, usage map[string]float64, now time.Time, row map[string]any) map[string]map[string]any {
+	keep := offPoolModels(ctx, key.ID)
+	if keep == nil {
+		quota := quotaWindows(key, usage)
+		annotateQuotaRecovery(ctx, store, key, quota, now, nil)
+		return quota
+	}
+	off := map[string]float64{}
+	for name := range usage {
+		off[name], _ = store.UsageSumMatching(ctx, key.ID, policyplus.WindowFor(name, now), keep)
+	}
+	quota := quotaWindows(key, off)
+	annotateQuotaRecovery(ctx, store, key, quota, now, keep)
+	row["quota_scope"] = "off_pool"
+	return quota
+}
+
+func annotateQuotaRecovery(ctx context.Context, store *policyplus.Store, key policyplus.KeyRecord, quota map[string]map[string]any, now time.Time, keep func(model string) bool) {
 	if store == nil {
 		return
 	}
@@ -2598,7 +2624,7 @@ func annotateQuotaRecovery(ctx context.Context, store *policyplus.Store, key pol
 		if !ok || used < limit {
 			continue
 		}
-		if at, ok, err := store.WindowRecoveryAt(ctx, key.ID, policyplus.WindowFor(name, now), limit); err == nil && ok {
+		if at, ok, err := store.WindowRecoveryAtMatching(ctx, key.ID, policyplus.WindowFor(name, now), limit, keep); err == nil && ok {
 			row["recovers_at"] = at.Unix()
 		}
 	}

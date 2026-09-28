@@ -358,19 +358,23 @@ func TestAdminPoolsAPISavesConfigurationAndReportsTheLedger(t *testing.T) {
 	if !approxEqual(pool.Cycle.Capacity.USD, 2000) || len(pool.WeekLine) != 1 || len(pool.MonthLine) != 30 {
 		t.Fatalf("capacity %+v week %d month %d", pool.Cycle.Capacity, len(pool.WeekLine), len(pool.MonthLine))
 	}
-	var sawAccount bool
+	var sawAccount, sawXAI bool
 	for _, account := range body.Accounts {
 		if account["auth_index"] == "acc-pro" {
 			sawAccount = true
-			if account["label"] != "13***@qq.com" || account["pool_id"] != "pro" {
+			if account["label"] != "13***@qq.com" || account["pool_id"] != "pro" || account["quota_signal"] != true {
 				t.Fatalf("account label must be masked and linked to its pool: %+v", account)
 			}
 		}
 		if account["auth_index"] == "acc-xai" {
-			t.Fatalf("non-Codex credentials are not pool accounts: %+v", account)
+			// Accounts without a quota signal can back a budget pool.
+			sawXAI = true
+			if account["provider"] != "xai" || account["quota_signal"] != false {
+				t.Fatalf("an xai account is listed as having no quota signal: %+v", account)
+			}
 		}
 	}
-	if !sawAccount || len(body.Keys) != 4 {
+	if !sawAccount || !sawXAI || len(body.Keys) != 4 {
 		t.Fatalf("accounts %+v keys %d", body.Accounts, len(body.Keys))
 	}
 }

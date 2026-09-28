@@ -151,6 +151,8 @@
     .q-pct { font-variant-numeric: tabular-nums; white-space: nowrap; }
     .q-note { margin-top: 3px; font-size: var(--kp-fs-xs); color: var(--kp-text-3); white-space: nowrap; }
     .q-note.st-warn { color: var(--kp-warn-ink); }
+    .q-note.st-over { color: var(--kp-over-ink); font-weight: 600; }
+    .q-pct.st-burst { color: var(--kp-pending-ink); }
     .q-amt { font-size: var(--kp-fs-xs); color: var(--kp-text-2); white-space: nowrap; }
     .c-q .meter { height: 4px; margin-top: 5px; }
     .empty { padding: 28px 12px; text-align: center; color: var(--kp-text-2); }
@@ -655,8 +657,17 @@ function policyWarnings(k){
   if (billingHold.active) warnings.push(`费用待核算：${billingHold.model || "未知模型"}（${billingHold.reason || "价格规则待核验"}）`);
   return warnings;
 }
+// For a key with a pool share, the USD windows govern only the models no
+// share covers, and the server measures them on that usage alone.
+function windowUsed(k, w){
+  if (k.quota_scope === "off_pool") return Number(((k.quota || {})[w.name] || {}).used_usd ?? 0);
+  return Number(usageOf(k)[w.name] ?? 0);
+}
+function offPool(k){ return k.quota_scope === "off_pool" || Boolean((k.pool || {}).usd_windows_off); }
+function seatsOf(k){ const pool = k.pool; return pool ? (pool.seats || [pool]) : []; }
+function sharePoolNames(k){ return seatsOf(k).filter(s => s.role === "member").map(s => s.pool).join("、"); }
 function quotaOf(k, w){
-  const used = Number(usageOf(k)[w.name] ?? 0);
+  const used = windowUsed(k, w);
   const limit = limitsOf(k)[w.field];
   const has = limit !== null && limit !== undefined && limit !== "";
   const max = has ? Number(limit) : null;
@@ -749,15 +760,16 @@ function inboxItems(){
     const pool = raw.pool || {};
     if (!hasAnyLimit(k) && pool.role !== "member" && pool.role !== "owner") missing.push("费用额度");
     if (missing.length) items.push({sev:"warn", id:k.id, name, text:`未配置 ${missing.join(" 和 ")}`, action:"edit", label:"去设置"});
-    for (const w of pool.usd_windows_off ? [] : WINDOWS) {
+    const scope = offPool(raw) ? "池外" : "";
+    for (const w of WINDOWS) {
       const q = quotaOf(raw, w);
       if (q.limit === null) continue;
       const row = (raw.quota || {})[w.name] || {};
       if (q.percent >= 1) {
         const when = w.name === "month" ? row.resets_at : row.recovers_at;
-        items.push({sev:"over", id:k.id, name, text:`${w.label}额度已用完 · ${money(q.used)} / ${money(q.limit)}${when ? ` · ${w.name === "month" ? "下月 1 日重置" : "预计 " + whenLabel(when) + " 恢复"}` : ""}`, action:"view", label:"查看"});
+        items.push({sev:"over", id:k.id, name, text:`${w.label}${scope}额度已用完 · ${money(q.used)} / ${money(q.limit)}${when ? ` · ${w.name === "month" ? "下月 1 日重置" : "预计 " + whenLabel(when) + " 恢复"}` : ""}`, action:"view", label:"查看"});
       } else if (q.percent >= .8) {
-        items.push({sev:"warn", id:k.id, name, text:`${w.label}额度已用 ${Math.round(q.percent * 100)}% · 剩 ${money(q.remaining)}`, action:"view", label:"查看"});
+        items.push({sev:"warn", id:k.id, name, text:`${w.label}${scope}额度已用 ${Math.round(q.percent * 100)}% · 剩 ${money(q.remaining)}`, action:"view", label:"查看"});
       }
     }
     const missingPrices = missingPriceModels(k);
@@ -833,9 +845,15 @@ function poolKeysMap(){
 function poolAccount(authIndex){
   return ((state.poolData || {}).accounts || []).find(a => a.auth_index === authIndex) || null;
 }
+function providerLabel(provider){
+  const p = String(provider || "codex").toLowerCase();
+  return ({codex:"Codex", xai:"Grok"})[p] || p;
+}
+// Accounts without a quota signal (xai) are metered against a weekly budget.
+function noSignal(a){ return Boolean(a) && a.quota_signal === false; }
 function accountText(a){
   if (!a) return "未选择账号";
-  const parts = [a.label || a.auth_index, planLabel(a.plan_type)];
+  const parts = [a.label || a.auth_index, noSignal(a) ? `${providerLabel(a.provider)} · 按预算` : planLabel(a.plan_type)];
   if (a.weekly && a.weekly.used_percent != null) parts.push(`本周 ${Math.round(a.weekly.used_percent)}%`);
   if (a.disabled) parts.push("已停用");
   else if (a.unavailable) parts.push("暂不可用");
@@ -854,7 +872,8 @@ function poolLiveHTML(c){
     stale: `上次观测 ${seen}`,
     reset_pending: "已到重置时间，等新周期的第一次观测",
     no_data: "等待第一次观测",
-    unassigned: "未选择账号"
+    unassigned: "未选择账号",
+    budget: "按预算计"
   })[status] || status;
   return `<div class="pool-live" data-state="${escapeHTML(status)}"><i class="pool-dot" aria-hidden="true"></i><b>${escapeHTML(text)}</b></div>`;
 }
@@ -867,6 +886,16 @@ function poolFigsHTML(p){
   const inCycle = c.used_percent != null;
   const used = Number(c.used_percent || 0);
   const usedCls = used >= 100 ? "is-over" : used >= 80 ? "is-warn" : "";
+  if (p.budgeted) {
+    // A budget pool's 100% is the weekly budget; spend is the account's cost.
+    const budget = Number(p.budget_usd || cap.usd || 0);
+    return `<dl class="pool-figs">
+      <div class="pf pf-used ${usedCls}"><dt>本周已用</dt><dd><b class="pf-big">${inCycle ? pp(used, 0) : "—"}</b>${inCycle ? `<div class="meter${used >= 100 ? " is-over" : used >= 80 ? " is-warn" : ""}"><span style="--p:${Math.min(used, 100).toFixed(1)}%"></span></div>` : ""}</dd></div>
+      <div class="pf"><dt>每周预算</dt><dd><b>${usd(budget)}</b><div class="pf-sub">${inCycle ? `已花 ${escapeHTML(usd(budget * used / 100))}` : ""}</div></dd></div>
+      <div class="pf"><dt>1% =</dt><dd><b>$${(budget / 100).toFixed(2)}</b><div class="pf-sub">按 CPAMP 价格</div></dd></div>
+      <div class="pf"><dt>预算重置</dt><dd><b>${c.reset_at ? escapeHTML(bjLabel(c.reset_at)) : "—"}</b><div class="pf-sub">${c.reset_at ? escapeHTML(untilLabel(c.reset_at) + " · 每 7 天") : ""}</div></dd></div>
+    </dl>`;
+  }
   const range = cap.basis !== "prior" && cap.low > 0 ? `${usdFormat.format(cap.low)}–${cap.high > 0 ? usdFormat.format(cap.high) : "?"} · ` : "";
   const figs = [];
   figs.push(`<div class="pf pf-used ${usedCls}"><dt>本周已用</dt><dd><b class="pf-big">${inCycle ? pp(used, 0) : "—"}</b>${inCycle ? `<div class="meter${used >= 100 ? " is-over" : used >= 80 ? " is-warn" : ""}"><span style="--p:${Math.min(used, 100).toFixed(1)}%"></span></div>` : `<div class="pf-sub">${c.status === "reset_pending" ? "新周期从 0 开始" : "还没有周限数据"}</div>`}</dd></div>`);
@@ -1018,13 +1047,15 @@ function poolMembersHTML(p){
 function poolFootHTML(p){
   const c = p.cycle || {};
   if (c.used_percent == null) return "";
-  const parts = [
+  // A budget pool only knows CPA's own spend: nothing before tracking or
+  // outside CPA to report.
+  const parts = p.budgeted ? [] : [
     `<abbr title="开始记录之前，这个周期已经用掉的百分比，不算到任何人头上。">追踪前</abbr> ${pp(c.pre_tracking_pp)}`,
-    `<abbr title="记录到的花费解释不了的上涨，通常是有人在 CPA 之外直接用了这个号。零星的少量外部使用分辨不出来，会混进当时在用的人。">未归属</abbr> ${pp(c.unattributed_pp)}`,
-    `<abbr title="不在这个池里的 Key 用了这个号。">池外</abbr> ${pp(c.outside_pp)}`
+    `<abbr title="记录到的花费解释不了的上涨，通常是有人在 CPA 之外直接用了这个号。零星的少量外部使用分辨不出来，会混进当时在用的人。">未归属</abbr> ${pp(c.unattributed_pp)}`
   ];
+  parts.push(`<abbr title="不在这个池里的 Key 用了这个号。">池外</abbr> ${pp(c.outside_pp)}`);
   if (Number(c.lent_pp || 0) >= 0.005) parts.push(`<abbr title="其他拼车池里爽蹬的成员借用这个号用掉的量，不算在本池任何人头上，也不参与结转。">借出</abbr> ${pp(c.lent_pp)}`);
-  if (c.tracking_since_ms) parts.push(`${escapeHTML(bjLabel(Math.floor(c.tracking_since_ms / 1000)))} 起记录`);
+  if (c.tracking_since_ms && !p.budgeted) parts.push(`${escapeHTML(bjLabel(Math.floor(c.tracking_since_ms / 1000)))} 起记录`);
   parts.push("时间均为北京时间");
   return `<div class="pool-foot">${parts.map(x => `<div>${x}</div>`).join("")}</div>`;
 }
@@ -1094,34 +1125,49 @@ function poolDraftFrom(p){
     sub2pool_account_id: p.sub2pool_account_id || 0,
     lend_during_burst: Boolean(p.lend_during_burst),
     hide_account: Boolean(p.hide_account),
+    budget_usd: p.budget_usd == null ? "" : p.budget_usd,
+    budget_reset_at: p.budget_reset_at || 0,
     members: (p.members || []).map(m => ({key_id: m.key_id, share_percent: m.role === "pinned" ? null : m.share_percent, role: m.role || ""}))
   };
 }
 function poolInputFrom(p){
   const d = poolDraftFrom(p);
-  return {...d, sub2pool_account_id: Number(d.sub2pool_account_id) || 0};
+  return {...d, sub2pool_account_id: Number(d.sub2pool_account_id) || 0, budget_usd: budgetInput(d)};
+}
+// The budget only applies to accounts without a quota signal.
+function budgetInput(d){
+  if (!noSignal(poolAccount(d.auth_index))) return null;
+  const n = Number(d.budget_usd);
+  return String(d.budget_usd ?? "").trim() !== "" && Number.isFinite(n) && n > 0 ? n : null;
+}
+function draftProvider(d){
+  const a = poolAccount(d.auth_index);
+  return String((a && a.provider) || "codex").toLowerCase();
 }
 function newPoolDraft(){
   const pools = (state.poolData || {}).pools || [];
   const used = new Set(pools.map(p => p.auth_index));
   const free = ((state.poolData || {}).accounts || []).find(a => !used.has(a.auth_index));
-  return {id: "", name: free ? `${planLabel(free.plan_type)} 拼车` : "", auth_index: free ? free.auth_index : "", model_prefix: "", visibility: "anonymous", sub2pool_account_id: 0, lend_during_burst: false, hide_account: false, members: []};
+  const label = free ? (noSignal(free) ? providerLabel(free.provider) : planLabel(free.plan_type)) : "";
+  return {id: "", name: free ? `${label} 拼车` : "", auth_index: free ? free.auth_index : "", model_prefix: "", visibility: "anonymous", sub2pool_account_id: 0, lend_during_burst: false, hide_account: false, budget_usd: "", budget_reset_at: 0, members: []};
 }
 function poolSlug(d){
   const pools = (state.poolData || {}).pools || [];
   const taken = new Set(pools.map(p => p.id));
   const account = poolAccount(d.auth_index);
-  let base = String(d.model_prefix || (account && account.plan_type) || "pool").toLowerCase().replace(/[^a-z0-9_-]/g, "") || "pool";
+  let base = String(d.model_prefix || (account && (noSignal(account) ? account.provider : account.plan_type)) || "pool").toLowerCase().replace(/[^a-z0-9_-]/g, "") || "pool";
   if (!/^[a-z0-9]/.test(base)) base = "p" + base;
   base = base.slice(0, 28);
   let id = base, n = 2;
   while (taken.has(id)) id = `${base}-${n++}`;
   return id;
 }
-function keysInOtherPools(poolId){
+// A key rides one pool per provider: it can sit in a Codex pool and a Grok
+// pool, not in two Codex pools.
+function keysInOtherPools(poolId, provider){
   const out = new Map();
   for (const p of ((state.poolData || {}).pools || [])) {
-    if (p.id === poolId) continue;
+    if (p.id === poolId || String(p.provider || "codex") !== provider) continue;
     for (const m of p.members || []) out.set(m.key_id, p.name);
   }
   return out;
@@ -1145,7 +1191,8 @@ function poolEditorHTML(){
     return `<option value="${escapeHTML(a.auth_index)}"${a.auth_index === d.auth_index ? " selected" : ""}${other ? " disabled" : ""}>${escapeHTML(accountText(a) + (other ? `（已属于 ${other}）` : ""))}</option>`;
   })).join("");
   const keys = (state.poolData || {}).keys || [];
-  const elsewhere = keysInOtherPools(d.id);
+  const elsewhere = keysInOtherPools(d.id, draftProvider(d));
+  const budgeted = noSignal(poolAccount(d.auth_index));
   const chosen = new Set(d.members.map(m => m.key_id));
   const memberRows = d.members.map((m, i) => {
     const options = keys.map(k => {
@@ -1168,6 +1215,8 @@ function poolEditorHTML(){
     <div class="pe-grid">
       <label class="pe-field"><span class="ed-label">名称</span><input class="input" data-pe="name" maxlength="40" placeholder="例如 Pro 20x" value="${escapeHTML(d.name)}"></label>
       <label class="pe-field"><span class="ed-label">上游账号</span><select class="select" data-pe="auth_index">${accountOptions}</select></label>
+      ${budgeted ? `<label class="pe-field"><span class="ed-label">每周预算（美元）</span><input class="input" data-pe="budget_usd" inputmode="decimal" placeholder="例如 300" value="${escapeHTML(String(d.budget_usd ?? ""))}">
+        <span class="ed-hint">这个号不报额度，按 CPAMP 价格折算的花费记账，预算即 100%。${d.budget_reset_at ? `${escapeHTML(bjLabel(d.budget_reset_at))} 起每 7 天重置。` : "每周一 00:00 重置。"}</span></label>` : ""}
       <label class="pe-field"><span class="ed-label">模型前缀</span><input class="input" data-pe="model_prefix" maxlength="32" placeholder="例如 pro，留空则不固定" value="${escapeHTML(d.model_prefix)}">
         <span class="ed-hint">需在 CPA 给该凭证设置同名前缀。</span></label>
       <div class="pe-field"><span class="ed-label">车友能看到</span><div class="pool-seg" role="group" aria-label="车友能看到">${vis}</div>
@@ -1176,12 +1225,12 @@ function poolEditorHTML(){
     <div class="ed-block"><h3>成员与份额</h3>
       <div class="pe-members">${memberRows || `<div class="chips-empty">还没有成员。</div>`}</div>
       <div class="pe-actions" style="margin-top:10px"><button class="btn small" type="button" data-pe-add>添加成员</button>${poolTotalHTML(d)}</div>
-      <div class="ed-hint">份额为账号周额度的百分比。车主不限；只固定路由不占份额，按自己的金额窗口。</div>
+      <div class="ed-hint">份额为${budgeted ? "每周预算" : "账号周额度"}的百分比。车主不限；只固定路由不占份额，按自己的金额窗口。</div>
     </div>
     <div class="pe-field"><label class="pe-lend"><input type="checkbox" data-pe-lend${d.lend_during_burst ? " checked" : ""}>借给其他车爽蹬的人</label>
       <span class="ed-hint">其他池爽蹬中的成员号满时会借用这个号。</span></div>
-    <label class="pe-field"><span class="ed-label">Sub2Pool 账号 ID（可选）</span><input class="input" data-pe="sub2pool_account_id" inputmode="numeric" style="max-width:160px" value="${d.sub2pool_account_id ? escapeHTML(String(d.sub2pool_account_id)) : ""}" placeholder="不填">
-      <span class="ed-hint">仅作对照，不影响记账。</span></label>
+    ${budgeted ? "" : `<label class="pe-field"><span class="ed-label">Sub2Pool 账号 ID（可选）</span><input class="input" data-pe="sub2pool_account_id" inputmode="numeric" style="max-width:160px" value="${d.sub2pool_account_id ? escapeHTML(String(d.sub2pool_account_id)) : ""}" placeholder="不填">
+      <span class="ed-hint">仅作对照，不影响记账。</span></label>`}
     <div class="pe-error" role="alert">${escapeHTML(edit.error || "")}</div>
     <div class="pe-actions">
       <button class="btn primary" type="button" data-pe-save>${edit.isNew ? "创建拼车池" : "保存拼车池"}</button>
@@ -1196,7 +1245,8 @@ function poolHTML(p){
   const account = poolAccount(p.auth_index);
   const route = p.model_prefix ? `固定路由 ${p.model_prefix}/` : "未固定路由";
   const bursting = burstingRows(p).length;
-  const acct = p.auth_index ? `${account ? (account.label || p.auth_index) : p.auth_index} · ${planLabel(((p.cycle || {}).plan_type) || (account || {}).plan_type)} · ${route}${bursting ? ` · ${bursting} 人爽蹬中` : ""}${p.lend_during_burst ? " · 借给其他车爽蹬的人" : ""}${p.hide_account ? " · 车友看不到整号用量" : ""}` : "还没有选择上游账号";
+  const plan = p.budgeted ? `${providerLabel(p.provider)} · 预算 ${usd(Number(p.budget_usd || 0))}/周` : planLabel(((p.cycle || {}).plan_type) || (account || {}).plan_type);
+  const acct = p.auth_index ? `${account ? (account.label || p.auth_index) : p.auth_index} · ${plan} · ${route}${bursting ? ` · ${bursting} 人爽蹬中` : ""}${p.lend_during_burst ? " · 借给其他车爽蹬的人" : ""}${p.hide_account ? " · 车友看不到整号用量" : ""}` : "还没有选择上游账号";
   return `<article class="pool" id="pool-${domId(p.id)}" data-pool="${escapeHTML(p.id)}">
     <header class="pool-head">
       <div class="pool-name"><h3>${escapeHTML(p.name)}</h3><div class="pool-acct">${escapeHTML(acct)}</div></div>
@@ -1206,7 +1256,7 @@ function poolHTML(p){
     <div class="pool-body">
       ${editing ? poolEditorHTML() : ""}
       ${poolFigsHTML(p)}
-      ${poolChartHTML(p)}
+      ${p.budgeted ? "" : poolChartHTML(p)}
       ${poolMembersHTML(p)}
       ${poolFootHTML(p)}
       ${settlementLine(p)}
@@ -1227,7 +1277,7 @@ function renderPools(){
   }
   if (!pools.length && !(state.poolEdit && state.poolEdit.isNew)) {
     const accounts = state.poolData.accounts || [];
-    html += `<div class="chart-empty">还没有拼车池${accounts.length ? `，已发现 ${accounts.length} 个 Codex 账号` : ""}。</div>`;
+    html += `<div class="chart-empty">还没有拼车池${accounts.length ? `，已发现 ${accounts.length} 个账号` : ""}。</div>`;
   }
   html += pools.map(poolHTML).join("");
   $("poolList").innerHTML = html;
@@ -1415,7 +1465,9 @@ function saveDraft(btn){
   if (shareTotal(d) > 100 + 1e-9) { edit.error = "份额合计不能超过 100%。"; renderPools(); return; }
   const prefix = String(d.model_prefix || "").trim();
   if (prefix && !/^[A-Za-z0-9][A-Za-z0-9._-]{0,31}$/.test(prefix)) { edit.error = "模型前缀只能用字母、数字、.、- 和 _，不能带 /。"; renderPools(); return; }
-  const input = {...d, name, model_prefix: prefix, id: d.id || poolSlug({...d, model_prefix: prefix}), sub2pool_account_id: Number(d.sub2pool_account_id) || 0};
+  const budget = budgetInput(d);
+  if (noSignal(poolAccount(d.auth_index)) && budget == null) { edit.error = "这个号不报额度，请填每周预算（大于 0 的美元数）。"; renderPools(); return; }
+  const input = {...d, name, model_prefix: prefix, id: d.id || poolSlug({...d, model_prefix: prefix}), sub2pool_account_id: Number(d.sub2pool_account_id) || 0, budget_usd: budget};
   const others = ((state.poolData || {}).pools || []).filter(p => p.id !== d.id).map(poolInputFrom);
   savePools(edit.isNew ? others.concat([input]) : ((state.poolData || {}).pools || []).map(p => p.id === d.id ? input : poolInputFrom(p)), btn, edit.isNew ? "拼车池已创建" : "拼车池已保存");
 }
@@ -1532,7 +1584,9 @@ $("poolList").addEventListener("change", (e) => {
     renderPools();
     return;
   }
-  if (t.matches('[data-pe="auth_index"]')) { d.auth_index = t.value; return; }
+  // Switching between a Codex and a Grok account changes the budget field and
+  // which keys are free to join.
+  if (t.matches('[data-pe="auth_index"]')) { d.auth_index = t.value; renderPools(); return; }
   if (t.matches("[data-pe-lend]")) { d.lend_during_burst = t.checked; return; }
   if (t.matches("[data-pe-hide]")) { d.hide_account = t.checked; renderPools(); return; }
 });
@@ -1566,8 +1620,12 @@ if ("ResizeObserver" in window) {
 /* Table */
 function quotaCellHTML(raw, k, w){
   const q = quotaOf({...raw, limits: limitsOf(k)}, w);
-  if ((raw.pool || {}).usd_windows_off) {
-    return `<td class="c-q" data-label="${w.label}"><div class="q-top"><b class="q-pct st-muted" title="在拼车池「${escapeHTML(raw.pool.pool)}」里按份额计，金额窗口暂不生效">按份额</b><div class="q-amt">已用 ${money(q.used)}</div></div>${q.limit !== null ? `<div class="q-note">上限 ${money(q.limit, q.limit % 1 ? 2 : 0)} 暂停</div>` : ""}</td>`;
+  if (offPool(raw)) {
+    // Pool models are metered by the share; the limit covers other models.
+    const bursting = seatsOf(raw).some(seat => seat.bursting);
+    const total = Number(usageOf(raw)[w.name] ?? 0);
+    const cls = q.limit === null ? "" : q.percent >= 1 ? " st-over" : q.percent >= .8 ? " st-warn" : "";
+    return `<td class="c-q" data-label="${w.label}"><div class="q-top"><b class="q-pct ${bursting ? "st-burst" : "st-muted"}" title="${escapeHTML(`「${sharePoolNames(raw)}」的模型按份额计`)}">${bursting ? "爽蹬中" : "按份额"}</b><div class="q-amt">已用 ${money(total)}</div></div>${q.limit !== null ? `<div class="q-note${cls}" title="池子不覆盖的模型按这个上限计，只算这部分花费">池外 ${money(q.used)} / ${money(q.limit, q.limit % 1 ? 2 : 0)}</div>` : ""}</td>`;
   }
   if (q.limit === null) {
     return `<td class="c-q" data-label="${w.label}"><div class="q-top"><b class="q-pct st-muted">不限</b><div class="q-amt">已用 ${money(q.used)}</div></div></td>`;
@@ -1584,7 +1642,9 @@ function rowHTML(raw){
   const open = state.expanded === k.id;
   const badges = [];
   const pool = raw.pool;
-  if (pool) badges.push(`<b class="badge">${escapeHTML(pool.role === "member" ? `拼车 ${pool.pool} · ${pp(pool.share_percent, pool.share_percent % 1 ? 2 : 0)}` : pool.role === "owner" ? `车主 · ${pool.pool}` : `固定路由 · ${pool.pool}`)}</b>`);
+  for (const seat of seatsOf(raw)) {
+    badges.push(`<b class="badge">${escapeHTML(seat.role === "member" ? `拼车 ${seat.pool} · ${pp(seat.share_percent, seat.share_percent % 1 ? 2 : 0)}${seat.bursting ? " · 爽蹬中" : ""}` : seat.role === "owner" ? `车主 · ${seat.pool}` : `固定路由 · ${seat.pool}`)}</b>`);
+  }
   if (isWeeklyOnly(k) && !(pool && pool.usd_windows_off)) badges.push(`<b class="badge">仅周额度</b>`);
   if (billingHoldOf(raw).active) badges.push(`<b class="badge badge-hold">待核算</b>`);
   if (isDirty(k.id)) badges.push(`<b class="badge badge-dirty">未保存</b>`);
@@ -1692,14 +1752,14 @@ function editorHTML(raw){
         <section class="ed-block">
           <h3>配额窗口（美元）</h3>
           <div class="ed-windows">${WINDOWS.map(w => {
-            const used = Number(usageOf(raw)[w.name] || 0);
+            const used = windowUsed(raw, w);
             const limit = limitsOf(k)[w.field];
-            const p = (raw.pool || {}).usd_windows_off ? {text:`已用 ${money(used)} · 暂不生效`, cls:""} : projection(used, limit);
+            const p = projection(used, limit);
             return `<label class="ed-win"><div class="ed-label">${w.label}</div>
               <input class="input num" type="number" min="0" step="0.01" inputmode="decimal" placeholder="不限" data-limit="${w.field}" value="${limitInputValue(limit)}"${dis}>
               <output class="ed-proj ${p.cls}" data-proj="${w.field}">${escapeHTML(p.text)}</output></label>`;
           }).join("")}</div>
-          <div class="ed-hint${(raw.pool || {}).usd_windows_off ? " st-warn" : ""}">${(raw.pool || {}).usd_windows_off ? `按「${escapeHTML(raw.pool.pool)}」份额计，金额窗口暂停。` : "留空为不限。"}</div>
+          <div class="ed-hint">${offPool(raw) ? `「${escapeHTML(sharePoolNames(raw))}」的模型按份额计；上限只管其他模型，只算那部分花费。留空为不限。` : "留空为不限。"}</div>
         </section>
       </div>
       <section class="ed-block">
@@ -1828,8 +1888,8 @@ function wireEditor(){
       input.setAttribute("aria-invalid", "false");
       const edit = editOf(id);
       edit.limits = {...(edit.limits || {}), [input.dataset.limit]: value};
-      const used = Number(usageOf(raw)[w.name] || 0);
-      const p = (raw.pool || {}).usd_windows_off ? {text:`已用 ${money(used)} · 暂不生效`, cls:""} : projection(used, value);
+      const used = windowUsed(raw, w);
+      const p = projection(used, value);
       out.className = `ed-proj ${p.cls}`;
       out.textContent = p.text;
       refreshRow(id);

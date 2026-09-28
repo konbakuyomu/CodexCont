@@ -116,16 +116,85 @@ func loadedPools(ctx context.Context) []policyplus.Pool {
 	return pools
 }
 
-func poolMembership(ctx context.Context, keyID string) (policyplus.Pool, policyplus.PoolMember, bool) {
+// poolSeat is one pool a key rides. A key rides at most one pool per
+// provider, so each seat serves different models.
+type poolSeat struct {
+	Pool   policyplus.Pool
+	Member policyplus.PoolMember
+}
+
+// poolSeats lists the pools a key rides, codex pools first.
+func poolSeats(ctx context.Context, keyID string) []poolSeat {
 	if strings.TrimSpace(keyID) == "" {
-		return policyplus.Pool{}, policyplus.PoolMember{}, false
+		return nil
 	}
+	var seats []poolSeat
 	for _, pool := range loadedPools(ctx) {
 		if member, ok := pool.Member(keyID); ok {
-			return pool, member, true
+			seats = append(seats, poolSeat{Pool: pool, Member: member})
+		}
+	}
+	sort.SliceStable(seats, func(i, j int) bool {
+		return seats[i].Pool.ProviderName() == "codex" && seats[j].Pool.ProviderName() != "codex"
+	})
+	return seats
+}
+
+// poolMembership returns the key's main pool: its codex pool if it has one.
+func poolMembership(ctx context.Context, keyID string) (policyplus.Pool, policyplus.PoolMember, bool) {
+	if seats := poolSeats(ctx, keyID); len(seats) > 0 {
+		return seats[0].Pool, seats[0].Member, true
+	}
+	return policyplus.Pool{}, policyplus.PoolMember{}, false
+}
+
+// poolMembershipFor returns the pool of the key that serves model.
+func poolMembershipFor(ctx context.Context, keyID, model string) (policyplus.Pool, policyplus.PoolMember, bool) {
+	for _, seat := range poolSeats(ctx, keyID) {
+		if poolServesModel(seat.Pool, model) {
+			return seat.Pool, seat.Member, true
 		}
 	}
 	return policyplus.Pool{}, policyplus.PoolMember{}, false
+}
+
+// poolForAuth returns the pool bound to an upstream account.
+func poolForAuth(ctx context.Context, authIndex string) (policyplus.Pool, bool) {
+	for _, pool := range loadedPools(ctx) {
+		if authIndex != "" && pool.AuthIndex == authIndex {
+			return pool, true
+		}
+	}
+	return policyplus.Pool{}, false
+}
+
+// sharedPools are the pools where the key's usage is governed by a share of
+// an account; its USD windows only count usage of other models.
+func sharedPools(ctx context.Context, keyID string) []policyplus.Pool {
+	var out []policyplus.Pool
+	for _, seat := range poolSeats(ctx, keyID) {
+		if seat.Member.Shared() && strings.TrimSpace(seat.Pool.AuthIndex) != "" {
+			out = append(out, seat.Pool)
+		}
+	}
+	return out
+}
+
+// offPoolModels picks the models a key's USD windows still govern: those no
+// pool it holds a share in serves. Nil means every model.
+func offPoolModels(ctx context.Context, keyID string) func(model string) bool {
+	pools := sharedPools(ctx, keyID)
+	if len(pools) == 0 {
+		return nil
+	}
+	return func(model string) bool {
+		for _, pool := range pools {
+			if poolServesModel(pool, model) {
+				return false
+			}
+		}
+		return true
+	}
 }
 
 // ingestQuotaSignal records the upstream quota headers carried by a usage
@@ -304,7 +373,7 @@ func pickLender(ctx context.Context, store *policyplus.Store, pool policyplus.Po
 	var picked policyplus.Pool
 	best := -1.0
 	for _, candidate := range loadedPools(ctx) {
-		if candidate.ID == pool.ID || candidate.ModelPrefix == "" || !candidate.Lending() {
+		if candidate.ID == pool.ID || candidate.ModelPrefix == "" || !candidate.Lending() || candidate.ProviderName() != pool.ProviderName() {
 			continue
 		}
 		if blocked, _ := accountBlocked(ctx, store, candidate.AuthIndex, now); blocked {
@@ -342,35 +411,55 @@ func shareUsedUp(ctx context.Context, store *policyplus.Store, pool policyplus.P
 	return ledger.Account.Current.CycleResetAt, true
 }
 
-// poolShareOf returns the pool whose share governs a key: a member with a share
-// in a pool bound to an account. Such keys are not held to their USD windows.
-func poolShareOf(keyID string) (policyplus.Pool, policyplus.PoolMember, bool) {
-	pool, member, ok := poolMembership(context.Background(), keyID)
+// poolShareFor returns the pool whose share governs a request of key for
+// model. Such requests are not held to the key's USD windows.
+func poolShareFor(keyID, model string) (policyplus.Pool, policyplus.PoolMember, bool) {
+	pool, member, ok := poolMembershipFor(context.Background(), keyID, model)
 	if !ok || !member.Shared() || strings.TrimSpace(pool.AuthIndex) == "" {
 		return policyplus.Pool{}, policyplus.PoolMember{}, false
 	}
 	return pool, member, true
 }
 
-// poolKeyView describes a key's pool role for key lists and the member page.
+// poolKeyView describes a key's pools for key lists and the member page. The
+// top-level fields describe the main pool; "seats" lists every pool.
 func poolKeyView(keyID string) map[string]any {
-	pool, member, ok := poolMembership(context.Background(), keyID)
-	if !ok {
+	seats := poolSeats(context.Background(), keyID)
+	if len(seats) == 0 {
 		return nil
 	}
-	role := "member"
-	switch {
-	case member.Owner():
-		role = "owner"
-	case member.Pinned():
-		role = "pinned"
+	now := time.Now()
+	list := make([]map[string]any, 0, len(seats))
+	shared := false
+	for _, seat := range seats {
+		pool, member := seat.Pool, seat.Member
+		role := "member"
+		switch {
+		case member.Owner():
+			role = "owner"
+		case member.Pinned():
+			role = "pinned"
+		}
+		view := map[string]any{"pool": pool.Name, "pool_id": pool.ID, "role": role, "provider": pool.ProviderName(), "budgeted": pool.Budgeted()}
+		if member.Shared() {
+			view["share_percent"] = *member.SharePercent
+			if _, on := pool.BurstOf(member.KeyID, now); on {
+				view["bursting"] = true
+			}
+		}
+		if member.Shared() && strings.TrimSpace(pool.AuthIndex) != "" {
+			shared = true
+		}
+		list = append(list, view)
 	}
-	view := map[string]any{"pool": pool.Name, "role": role}
-	if member.Shared() {
-		view["share_percent"] = *member.SharePercent
+	view := map[string]any{}
+	for k, v := range list[0] {
+		view[k] = v
 	}
-	// Only share members have their USD windows replaced by the share.
-	view["usd_windows_off"] = member.Shared() && strings.TrimSpace(pool.AuthIndex) != ""
+	view["seats"] = list
+	// A share governs the models its pool serves; the USD windows still
+	// apply to every other model, counting only that usage.
+	view["usd_windows_off"] = shared
 	return view
 }
 
@@ -408,6 +497,9 @@ func accountStateFor(ctx context.Context, store *policyplus.Store, authIndex str
 }
 
 func loadAccountState(ctx context.Context, store *policyplus.Store, authIndex string, now time.Time) accountState {
+	if pool, ok := poolForAuth(ctx, authIndex); ok && pool.Budgeted() {
+		return loadBudgetAccountState(ctx, store, pool, now)
+	}
 	out := accountState{AuthIndex: authIndex, Status: "no_data", computedAt: now}
 	if accounts, err := store.QuotaAccounts(ctx); err == nil {
 		for i := range accounts {
@@ -460,6 +552,37 @@ func loadAccountState(ctx context.Context, store *policyplus.Store, authIndex st
 		out.Status = "live"
 	}
 	out.Capacity = effectiveCapacity(out)
+	return out
+}
+
+// loadBudgetAccountState meters a budget pool's account: each 7-day cycle
+// starts at 0% and the account's settled cost moves it by 100*cost/budget
+// points, so the ledger, shares, bursts and carry work as for an account
+// that reports its own quota.
+func loadBudgetAccountState(ctx context.Context, store *policyplus.Store, pool policyplus.Pool, now time.Time) accountState {
+	budget := *pool.BudgetUSD
+	capacity := policyplus.CapacityEstimate{USD: budget, Low: budget, High: budget, Basis: "budget"}
+	out := accountState{AuthIndex: pool.AuthIndex, Plan: "budget", Provider: pool.ProviderName(), Status: "budget", Capacity: capacity, computedAt: now}
+	end := policyplus.BudgetCycleEnd(pool.BudgetResetAt, now.Unix())
+	if end == 0 {
+		return out
+	}
+	week := int64(policyplus.BudgetCycleSeconds)
+	oldest := end
+	for oldest-week > now.Add(-ledgerHistory).Unix() {
+		oldest -= week
+	}
+	events, _ := store.AuthCostEvents(ctx, pool.AuthIndex, (oldest-week)*1000, now.UnixMilli())
+	params := policyplus.LedgerParams{FloorUSD: budget, RefUSD: budget}
+	for cycleEnd := oldest; cycleEnd <= end; cycleEnd += week {
+		limit := cycleEnd * 1000
+		cut := sort.Search(len(events), func(i int) bool { return events[i].AtMS > limit })
+		ledger := policyplus.BuildCycleLedger(policyplus.BudgetObservations(budget, cycleEnd, events[:cut]), events[:cut], params)
+		ledger.Capacity = capacity
+		ledger.LastSeenMS = min(now.UnixMilli(), limit)
+		out.Ledgers = append(out.Ledgers, ledger)
+	}
+	out.Current = out.Ledgers[len(out.Ledgers)-1]
 	return out
 }
 
@@ -758,8 +881,8 @@ func checkPoolShare(key policyplus.KeyRecord, model string) poolShareDecision {
 		return allow
 	}
 	ctx := context.Background()
-	pool, member, ok := poolMembership(ctx, key.ID)
-	if !ok || !member.Shared() || pool.AuthIndex == "" || !poolServesModel(pool, model) {
+	pool, member, ok := poolMembershipFor(ctx, key.ID, model)
+	if !ok || !member.Shared() || pool.AuthIndex == "" {
 		return allow
 	}
 	now := time.Now()
@@ -826,11 +949,29 @@ func poolServesModel(pool policyplus.Pool, model string) bool {
 			}
 		}
 		if owner, known := catalog[strings.ToLower(base)]; known {
-			owner = strings.ToLower(owner)
-			return owner == "" || owner == "openai" || owner == "codex"
+			return providerOwnsModel(pool.ProviderName(), owner)
 		}
 	}
-	return codexLikeModel(base)
+	switch pool.ProviderName() {
+	case "codex":
+		return codexLikeModel(base)
+	case "xai":
+		return strings.HasPrefix(strings.ToLower(strings.TrimSpace(base)), "grok")
+	}
+	return false
+}
+
+// providerOwnsModel reports whether a model CPA lists as owned_by owner is
+// served by accounts of provider.
+func providerOwnsModel(provider, owner string) bool {
+	owner = strings.ToLower(strings.TrimSpace(owner))
+	switch provider {
+	case "codex":
+		return owner == "" || owner == "openai" || owner == "codex"
+	case "xai":
+		return owner == "xai" || owner == "x-ai" || owner == "grok"
+	}
+	return owner != "" && owner == provider
 }
 
 func codexLikeModel(model string) bool {
@@ -858,7 +999,7 @@ func poolRoutingConfigured(ctx context.Context) bool {
 // model, so an unconfigured prefix leaves requests on normal rotation.
 func poolRouteTarget(keyID, model string) (modelRouteResponse, bool) {
 	ctx := context.Background()
-	pool, member, ok := poolMembership(ctx, keyID)
+	pool, member, ok := poolMembershipFor(ctx, keyID, model)
 	if !ok {
 		return modelRouteResponse{}, false
 	}
@@ -1034,6 +1175,8 @@ type poolInput struct {
 	Sub2PoolID      int64             `json:"sub2pool_account_id"`
 	LendDuringBurst bool              `json:"lend_during_burst"`
 	HideAccount     bool              `json:"hide_account"`
+	BudgetUSD       *float64          `json:"budget_usd"`
+	BudgetResetAt   int64             `json:"budget_reset_at"`
 }
 
 func adminPools(req managementRequest) ([]byte, error) {
@@ -1082,9 +1225,6 @@ func mergeAccounts(hostAccounts []hostAuthAccount, quotaAccounts []policyplus.Qu
 		return row
 	}
 	for _, host := range hostAccounts {
-		if host.Provider != "" && host.Provider != "codex" {
-			continue
-		}
 		row := add(host.AuthIndex)
 		row["label"] = host.Label
 		row["provider"] = host.Provider
@@ -1092,12 +1232,15 @@ func mergeAccounts(hostAccounts []hostAuthAccount, quotaAccounts []policyplus.Qu
 		row["status"] = host.Status
 		row["disabled"] = host.Disabled
 		row["unavailable"] = host.Unavailable
+		// Only codex accounts report their own quota; others need a budget.
+		row["quota_signal"] = host.Provider == "" || host.Provider == "codex"
 	}
 	for _, account := range quotaAccounts {
 		row := add(account.AuthIndex)
 		if _, ok := row["provider"]; !ok {
 			row["provider"] = account.Provider
 		}
+		row["quota_signal"] = true
 		row["plan_type"] = account.PlanType
 		row["weekly"] = account.Weekly
 		row["short"] = account.Short
@@ -1238,6 +1381,8 @@ func adminPoolView(ctx context.Context, store *policyplus.Store, pool policyplus
 	}
 	if pool.AuthIndex == "" {
 		warnings = append(warnings, "还没有选择上游账号。")
+	} else if pool.Budgeted() {
+		// A budget pool meters dollars; there is no observation to wait for.
 	} else if account.Status == "no_data" {
 		warnings = append(warnings, "还没有观测到这个账号的周限百分比：等成员用它发出一次请求后开始记账。")
 	}
@@ -1255,6 +1400,10 @@ func adminPoolView(ctx context.Context, store *policyplus.Store, pool policyplus
 		"sub2pool_account_id": pool.Sub2PoolAccountID,
 		"lend_during_burst":   pool.LendDuringBurst,
 		"hide_account":        pool.HideAccount,
+		"provider":            pool.ProviderName(),
+		"budget_usd":          pool.BudgetUSD,
+		"budget_reset_at":     pool.BudgetResetAt,
+		"budgeted":            pool.Budgeted(),
 		"share_total":         shareTotal,
 		"cycle":               cycle,
 		"rows":                ledger.Rows,
@@ -1300,6 +1449,14 @@ func adminSavePools(req managementRequest) ([]byte, error) {
 	}
 	ctx := context.Background()
 	known := keysByID(ctx, store)
+	providers := map[string]string{}
+	for _, host := range hostAuthAccounts() {
+		providers[host.AuthIndex] = host.Provider
+	}
+	previous := map[string]policyplus.Pool{}
+	for _, pool := range loadedPools(ctx) {
+		previous[pool.ID] = pool
+	}
 	pools := make([]policyplus.Pool, 0, len(body.Pools))
 	for _, input := range body.Pools {
 		pool := policyplus.Pool{
@@ -1311,6 +1468,25 @@ func adminSavePools(req managementRequest) ([]byte, error) {
 			Sub2PoolAccountID: input.Sub2PoolID,
 			LendDuringBurst:   input.LendDuringBurst,
 			HideAccount:       input.HideAccount,
+			BudgetUSD:         input.BudgetUSD,
+			BudgetResetAt:     input.BudgetResetAt,
+		}
+		// The provider comes from CPA's account list; an account CPA no
+		// longer lists keeps the provider it had.
+		authIndex := strings.TrimSpace(input.AuthIndex)
+		if provider, ok := providers[authIndex]; ok {
+			pool.Provider = provider
+		} else if old, ok := previous[pool.ID]; ok && old.AuthIndex == authIndex {
+			pool.Provider = old.Provider
+		}
+		// An empty or zero budget means none; an xai pool then fails validation.
+		if pool.BudgetUSD != nil && *pool.BudgetUSD == 0 {
+			pool.BudgetUSD = nil
+		}
+		if pool.BudgetResetAt <= 0 {
+			if old, ok := previous[pool.ID]; ok && old.BudgetResetAt > 0 {
+				pool.BudgetResetAt = old.BudgetResetAt
+			}
 		}
 		for _, member := range input.Members {
 			keyID := strings.TrimSpace(member.KeyID)
@@ -1325,6 +1501,9 @@ func adminSavePools(req managementRequest) ([]byte, error) {
 		return jsonResponse(http.StatusBadRequest, map[string]any{"ok": false, "error": "invalid_pools", "message": err.Error()})
 	}
 	invalidatePoolConfig()
+	poolState.mu.Lock()
+	poolState.accounts = map[string]accountState{}
+	poolState.mu.Unlock()
 	_ = store.SyncLendWindows(ctx, loadedPools(ctx), time.Now())
 	return adminPools(req)
 }
@@ -1407,11 +1586,21 @@ func userPool(req managementRequest) ([]byte, error) {
 		return jsonResponse(http.StatusServiceUnavailable, map[string]any{"ok": false, "error": "store_unavailable"})
 	}
 	ctx := context.Background()
-	pool, member, isMember := poolMembership(ctx, key.ID)
-	if !isMember {
-		return jsonResponse(http.StatusOK, map[string]any{"ok": true, "pool": nil})
+	seats := poolSeats(ctx, key.ID)
+	if len(seats) == 0 {
+		return jsonResponse(http.StatusOK, map[string]any{"ok": true, "pool": nil, "pools": []any{}})
 	}
 	now := time.Now()
+	views := make([]map[string]any, 0, len(seats))
+	for _, seat := range seats {
+		views = append(views, memberPoolView(ctx, store, key, seat.Pool, seat.Member, now))
+	}
+	// "pool" is the main pool, for pages that show one.
+	return jsonResponse(http.StatusOK, map[string]any{"ok": true, "pool": views[0], "pools": views})
+}
+
+// memberPoolView is one pool as a member sees it.
+func memberPoolView(ctx context.Context, store *policyplus.Store, key policyplus.KeyRecord, pool policyplus.Pool, member policyplus.PoolMember, now time.Time) map[string]any {
 	ledger := computePoolLedger(ctx, store, pool, now)
 	pool = ledger.Pool
 	account := ledger.Account
@@ -1512,23 +1701,22 @@ func userPool(req managementRequest) ([]byte, error) {
 			borrowView["cost_usd"] = row.CostUSD
 		}
 	}
-	return jsonResponse(http.StatusOK, map[string]any{
-		"ok": true,
-		"pool": map[string]any{
-			"name":           pool.Name,
-			"visibility":     pool.Visibility,
-			"account":        accountView,
-			"capacity":       capacity,
-			"me":             me,
-			"team":           team,
-			"others_pp":      others,
-			"lent_pp":        lent,
-			"untracked_pp":   untracked,
-			"borrow":         borrowView,
-			"in_cycle":       ledger.InCycle,
-			"account_hidden": hidden,
-		},
-	})
+	return map[string]any{
+		"name":           pool.Name,
+		"provider":       pool.ProviderName(),
+		"budgeted":       pool.Budgeted(),
+		"visibility":     pool.Visibility,
+		"account":        accountView,
+		"capacity":       capacity,
+		"me":             me,
+		"team":           team,
+		"others_pp":      others,
+		"lent_pp":        lent,
+		"untracked_pp":   untracked,
+		"borrow":         borrowView,
+		"in_cycle":       ledger.InCycle,
+		"account_hidden": hidden,
+	}
 }
 
 func memberRowsInStableOrder(rows []poolRow) []poolRow {

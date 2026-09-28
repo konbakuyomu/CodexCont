@@ -283,6 +283,9 @@ func (s *Store) EnsureSchema(ctx context.Context) error {
 			lend_during_burst integer not null default 0,
 			hide_account integer not null default 0,
 			routed_since integer not null default 0,
+			provider text not null default '',
+			budget_usd real,
+			budget_reset_at integer not null default 0,
 			created_at integer not null,
 			updated_at integer not null
 		)`,
@@ -296,12 +299,13 @@ func (s *Store) EnsureSchema(ctx context.Context) error {
 		)`,
 		`create index if not exists idx_pool_lend_windows_auth on pool_lend_windows(auth_index, started_at)`,
 		`create table if not exists pool_members (
-			key_id text primary key,
+			key_id text not null,
 			pool_id text not null,
 			share_percent real,
 			role text not null default '',
 			joined_at integer not null default 0,
-			created_at integer not null
+			created_at integer not null,
+			primary key(pool_id, key_id)
 		)`,
 		`create table if not exists pool_carry (
 			pool_id text not null,
@@ -361,6 +365,9 @@ func (s *Store) EnsureSchema(ctx context.Context) error {
 		"lend_during_burst":   "integer not null default 0",
 		"hide_account":        "integer not null default 0",
 		"routed_since":        "integer not null default 0",
+		"provider":            "text not null default ''",
+		"budget_usd":          "real",
+		"budget_reset_at":     "integer not null default 0",
 	}); err != nil {
 		return err
 	}
@@ -368,6 +375,9 @@ func (s *Store) EnsureSchema(ctx context.Context) error {
 		"role":      "text not null default ''",
 		"joined_at": "integer not null default 0",
 	}); err != nil {
+		return err
+	}
+	if err := s.migratePoolMembersKey(ctx); err != nil {
 		return err
 	}
 	for _, stmt := range []string{
@@ -398,6 +408,60 @@ func (s *Store) EnsureSchema(ctx context.Context) error {
 		return err
 	}
 	return nil
+}
+
+// migratePoolMembersKey rekeys pool_members from key_id alone to
+// (pool_id, key_id), so one key can ride pools of different providers.
+func (s *Store) migratePoolMembersKey(ctx context.Context) error {
+	rows, err := s.db.QueryContext(ctx, `pragma table_info(pool_members)`)
+	if err != nil {
+		return err
+	}
+	pk := map[string]int{}
+	for rows.Next() {
+		var cid, notNull, key int
+		var name, typ string
+		var defaultValue sql.NullString
+		if err := rows.Scan(&cid, &name, &typ, &notNull, &defaultValue, &key); err != nil {
+			rows.Close()
+			return err
+		}
+		if key > 0 {
+			pk[name] = key
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if len(pk) != 1 || pk["key_id"] == 0 {
+		return nil
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	for _, stmt := range []string{
+		`create table pool_members_v2 (
+			key_id text not null,
+			pool_id text not null,
+			share_percent real,
+			role text not null default '',
+			joined_at integer not null default 0,
+			created_at integer not null,
+			primary key(pool_id, key_id)
+		)`,
+		`insert into pool_members_v2(key_id, pool_id, share_percent, role, joined_at, created_at)
+			select key_id, pool_id, share_percent, role, joined_at, created_at from pool_members`,
+		`drop table pool_members`,
+		`alter table pool_members_v2 rename to pool_members`,
+	} {
+		if _, err := tx.ExecContext(ctx, stmt); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 func (s *Store) ensureColumns(ctx context.Context, table string, columns map[string]string) error {
@@ -1513,6 +1577,37 @@ func (s *Store) UsageSum(ctx context.Context, keyID string, window Window) (floa
 	return total.Float64, nil
 }
 
+// UsageSumMatching is UsageSum over the models keep accepts; a nil keep
+// counts every model.
+func (s *Store) UsageSumMatching(ctx context.Context, keyID string, window Window, keep func(model string) bool) (float64, error) {
+	if keep == nil {
+		return s.UsageSum(ctx, keyID, window)
+	}
+	from := window.From.Unix()
+	if resetAt, ok := s.ResetAt(ctx, keyID, window.Name); ok && resetAt > from {
+		from = resetAt
+	}
+	rows, err := s.db.QueryContext(ctx, `select coalesce(model, ''), coalesce(sum(cost), 0) from usage_events
+		where key_id = ? and requested_at >= ? and requested_at <= ? and coalesce(billing_pending, 0) = 0
+		group by coalesce(model, '')`, keyID, from, window.To.Unix())
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+	total := 0.0
+	for rows.Next() {
+		var model string
+		var cost float64
+		if err := rows.Scan(&model, &cost); err != nil {
+			return 0, err
+		}
+		if keep(model) {
+			total += cost
+		}
+	}
+	return total, rows.Err()
+}
+
 func (s *Store) ResetAt(ctx context.Context, keyID, window string) (int64, bool) {
 	if s == nil || s.db == nil || keyID == "" || window == "" || keyID == "all" {
 		return 0, false
@@ -1657,6 +1752,12 @@ func (s *Store) UsageSeries(ctx context.Context, keyID string, window Window, bu
 // ok is false when the window is not exhausted, does not roll, or cannot
 // recover through aging alone (a zero limit).
 func (s *Store) WindowRecoveryAt(ctx context.Context, keyID string, window Window, limit float64) (time.Time, bool, error) {
+	return s.WindowRecoveryAtMatching(ctx, keyID, window, limit, nil)
+}
+
+// WindowRecoveryAtMatching is WindowRecoveryAt over the models keep accepts;
+// a nil keep counts every model.
+func (s *Store) WindowRecoveryAtMatching(ctx context.Context, keyID string, window Window, limit float64, keep func(model string) bool) (time.Time, bool, error) {
 	duration := RollingWindowDuration(window.Name)
 	if duration <= 0 || keyID == "" || keyID == "all" || limit <= 0 {
 		return time.Time{}, false, nil
@@ -1665,7 +1766,7 @@ func (s *Store) WindowRecoveryAt(ctx context.Context, keyID string, window Windo
 	if resetAt, ok := s.ResetAt(ctx, keyID, window.Name); ok && resetAt > from {
 		from = resetAt
 	}
-	rows, err := s.db.QueryContext(ctx, `select requested_at, coalesce(cost, 0) from usage_events
+	rows, err := s.db.QueryContext(ctx, `select requested_at, coalesce(cost, 0), coalesce(model, '') from usage_events
 		where key_id = ? and requested_at >= ? and requested_at <= ? and coalesce(billing_pending, 0) = 0
 		order by requested_at asc, id asc`, keyID, from, window.To.Unix())
 	if err != nil {
@@ -1680,8 +1781,12 @@ func (s *Store) WindowRecoveryAt(ctx context.Context, keyID string, window Windo
 	total := 0.0
 	for rows.Next() {
 		var item spend
-		if err := rows.Scan(&item.ts, &item.cost); err != nil {
+		var model string
+		if err := rows.Scan(&item.ts, &item.cost, &model); err != nil {
 			return time.Time{}, false, err
+		}
+		if keep != nil && !keep(model) {
+			continue
 		}
 		items = append(items, item)
 		total += item.cost
