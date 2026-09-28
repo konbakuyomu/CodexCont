@@ -88,19 +88,23 @@ type KeyRecord struct {
 	FiveHourUSD       *float64              `json:"five_hour_usd,omitempty"`
 	MonthlyLimitUSD   *float64              `json:"monthly_limit_usd,omitempty"`
 	WeeklyOnly        bool                  `json:"weekly_only,omitempty"`
-	Archived          bool                  `json:"archived,omitempty"`
-	ArchivedAt        int64                 `json:"archived_at,omitempty"`
-	Source            string                `json:"source,omitempty"`
-	SourcePresent     bool                  `json:"source_present"`
-	Alias             string                `json:"alias,omitempty"`
-	InheritedFrom     string                `json:"inherited_from,omitempty"`
-	InheritConflict   bool                  `json:"inherit_conflict,omitempty"`
-	Hidden            bool                  `json:"hidden,omitempty"`
-	LastEnabled       bool                  `json:"last_enabled,omitempty"`
-	BillingHoldReason string                `json:"billing_hold_reason,omitempty"`
-	BillingHoldModel  string                `json:"billing_hold_model,omitempty"`
-	BillingHoldTier   string                `json:"billing_hold_service_tier,omitempty"`
-	BillingHoldAt     int64                 `json:"billing_hold_at,omitempty"`
+	// QuotaUnlimited marks a trusted key whose usage no budget governs. Without
+	// it every model a key uses needs a funding source: a pool seat for its
+	// provider or at least one USD window.
+	QuotaUnlimited    bool   `json:"quota_unlimited,omitempty"`
+	Archived          bool   `json:"archived,omitempty"`
+	ArchivedAt        int64  `json:"archived_at,omitempty"`
+	Source            string `json:"source,omitempty"`
+	SourcePresent     bool   `json:"source_present"`
+	Alias             string `json:"alias,omitempty"`
+	InheritedFrom     string `json:"inherited_from,omitempty"`
+	InheritConflict   bool   `json:"inherit_conflict,omitempty"`
+	Hidden            bool   `json:"hidden,omitempty"`
+	LastEnabled       bool   `json:"last_enabled,omitempty"`
+	BillingHoldReason string `json:"billing_hold_reason,omitempty"`
+	BillingHoldModel  string `json:"billing_hold_model,omitempty"`
+	BillingHoldTier   string `json:"billing_hold_service_tier,omitempty"`
+	BillingHoldAt     int64  `json:"billing_hold_at,omitempty"`
 }
 
 func (k KeyRecord) Safe() map[string]any {
@@ -131,6 +135,7 @@ func (k KeyRecord) Safe() map[string]any {
 		"hidden":              k.Hidden,
 		"last_enabled":        k.LastEnabled,
 		"quota_mode":          quotaMode,
+		"quota_unlimited":     k.QuotaUnlimited,
 		"billing_hold": map[string]any{
 			"active":          k.BillingHoldReason != "",
 			"reason":          k.BillingHoldReason,
@@ -310,6 +315,7 @@ func CopyPolicyFields(dst, src KeyRecord) KeyRecord {
 	dst.WeeklyLimitUSD = cloneFloatPtr(src.WeeklyLimitUSD)
 	dst.MonthlyLimitUSD = cloneFloatPtr(src.MonthlyLimitUSD)
 	dst.WeeklyOnly = src.WeeklyOnly
+	dst.QuotaUnlimited = src.QuotaUnlimited
 	return dst
 }
 

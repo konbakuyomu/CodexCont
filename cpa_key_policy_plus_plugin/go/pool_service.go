@@ -79,6 +79,7 @@ func resetPoolCaches() {
 	poolState.hostAuths = nil
 	poolState.hostAuthsAt = time.Time{}
 	poolState.limitHits = map[string]limitHit{}
+	invalidateFundingMode()
 }
 
 func invalidatePoolConfig() {

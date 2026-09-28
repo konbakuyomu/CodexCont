@@ -618,7 +618,7 @@ function visibleQuotaWindows(){
     : quotaWindows;
 }
 function quotaState(used, limit){
-  if (limit == null || limit === "") return {text:"未设置上限", cls:"unset", percent:0};
+  if (limit == null || limit === "") return {text: (state.me || {}).quota_unlimited ? "不限额" : "未设置上限", cls:"unset", percent:0};
   const max = Number(limit || 0);
   if (max <= 0) return {text:"已超限", cls:"over", percent:100};
   const percent = Math.min(Math.max(Number(used || 0) / max, 0), 1) * 100;
@@ -681,7 +681,16 @@ function joinSentences(first, second){
   if (!first) return second;
   return /[。！？.!?]$/.test(first) ? first + second : first + "。" + second;
 }
+// Once funding is enforced, models without a funding source are refused;
+// say which before the member runs into it.
 function verdict(){
+  const v = shareVerdict();
+  if (state.fundingMode !== "enforce") return v;
+  const lacking = ((state.me || {}).funding || []).filter(f => f.kind === "none").map(f => f.label);
+  if (!lacking.length) return v;
+  return {...v, detail: joinSentences(v.detail, `${lacking.join("、")} 暂未开通额度，请联系管理员。`)};
+}
+function shareVerdict(){
   const base = quotaVerdict();
   const share = poolShare();
   // Billing holds, disabled keys and used-up USD windows already block.
@@ -731,7 +740,7 @@ function quotaVerdict(){
   if (limited.length) {
     return {cls:"ok", title:"现在可以使用", detail:`${limited[0].item.title}还剩 ${money(limited[0].limit - limited[0].used)}。`};
   }
-  return {cls:"ok", title:"现在可以使用", detail:"未设置费用上限。"};
+  return {cls:"ok", title:"现在可以使用", detail: me.quota_unlimited ? "不限额。" : "未设置费用上限。"};
 }
 function renderQuotaWindowCard(row){
   const {item, used, limit, st, q} = row;
@@ -1298,6 +1307,7 @@ async function fetchMe(seq, signal){
   const meResp = await api("/me", {signal});
   if (seq !== state.seq) return;
   state.me = meResp.me;
+  state.fundingMode = meResp.funding_mode || "";
   renderBalance();
 }
 async function fetchUsage(seq, signal){

@@ -1097,11 +1097,33 @@ func evaluatePolicyWithServiceTier(key policyplus.KeyRecord, model, serviceTier 
 	if model != "" && !policyplus.ModelAllowed(key.Models, model) {
 		return denyDecision(base, "invalid_request_error", "model_not_allowed", "model", "", fmt.Sprintf("CPA Key Policy+ 已拦截：%s 不允许使用模型 %s。", safeKeyDisplayName(key), model))
 	}
-	if hasCostQuota(key) {
+	// Every model needs someone paying for it: a pool seat, the key's USD
+	// windows or an explicit quota-unlimited flag. Observe mode only records
+	// what enforce mode would refuse.
+	enforce := currentFundingMode() == policyplus.FundingModeEnforce
+	if strings.TrimSpace(model) != "" {
+		if src := fundingFor(context.Background(), key, model); src.Kind == fundingNone {
+			if consumeRPM {
+				recordFundingMiss(key, model, src.Provider, policyplus.FundingMissNoSource)
+			}
+			if enforce {
+				return denyDecision(base, "rate_limit_exceeded", "no_funding_source", "funding", "model", fundingMissText(key, model, src))
+			}
+		}
+	}
+	// A priced model is needed wherever a budget counts the cost: always for
+	// keys with USD windows, and for every key but a quota-unlimited one once
+	// funding is enforced.
+	if hasCostQuota(key) || (strings.TrimSpace(model) != "" && !key.QuotaUnlimited) {
 		priceBook := currentPriceBook(context.Background(), false)
 		price, priced := priceBook.PriceFor(model)
 		if strings.TrimSpace(model) == "" || !priced || !policyplus.PriceAllowsAdmission(price, serviceTier) {
-			return denyDecision(base, "rate_limit_exceeded", "model_price_unavailable", "pricing", "model", fmt.Sprintf("CPA Key Policy+ 已拦截：%s 的模型 %s 没有已验证的 CPAMP 价格。受限 Key 已暂停该模型，避免按 $0 计入周限；请先同步价格或恢复最近有效缓存。", safeKeyDisplayName(key), firstNonEmpty(strings.TrimSpace(model), "(未提供模型)")))
+			if hasCostQuota(key) || enforce {
+				return denyDecision(base, "rate_limit_exceeded", "model_price_unavailable", "pricing", "model", fmt.Sprintf("CPA Key Policy+ 已拦截：%s 的模型 %s 没有已验证的 CPAMP 价格。受限 Key 已暂停该模型，避免按 $0 计入周限；请先同步价格或恢复最近有效缓存。", safeKeyDisplayName(key), firstNonEmpty(strings.TrimSpace(model), "(未提供模型)")))
+			}
+			if consumeRPM {
+				recordFundingMiss(key, model, modelProvider(model), policyplus.FundingMissUnpriced)
+			}
 		}
 	}
 	if rpm := checkRPM(key, consumeRPM); !rpm.Allowed {
@@ -1593,6 +1615,8 @@ func managementRegister() ([]byte, error) {
 			{Method: http.MethodGet, Path: "/plugins/cpa-key-policy-plus/pools"},
 			{Method: http.MethodPut, Path: "/plugins/cpa-key-policy-plus/pools/save"},
 			{Method: http.MethodPost, Path: "/plugins/cpa-key-policy-plus/pools/burst"},
+			{Method: http.MethodGet, Path: "/plugins/cpa-key-policy-plus/funding"},
+			{Method: http.MethodPut, Path: "/plugins/cpa-key-policy-plus/funding"},
 		},
 		Resources: []resourceRoute{
 			{Path: "/admin", Menu: "CPA Key Policy+", Description: "Unified user key policy dashboard"},
@@ -1607,6 +1631,7 @@ func managementRegister() ([]byte, error) {
 			{Path: "/admin/api/events"},
 			{Path: "/admin/api/codexcont"},
 			{Path: "/admin/api/pools"},
+			{Path: "/admin/api/funding"},
 			{Path: "/user", Description: "Self-service usage dashboard"},
 			{Path: "/user/api/session"},
 			{Path: "/user/api/logout"},
@@ -1664,6 +1689,8 @@ func managementHandle(raw []byte) ([]byte, error) {
 		return adminSavePools(req)
 	case strings.HasSuffix(path, "/admin/api/pools/burst"):
 		return adminPoolBurst(req)
+	case strings.HasSuffix(path, "/admin/api/funding"):
+		return adminFunding(req)
 	case strings.Contains(path, "/user/api/session"):
 		return userSession(req)
 	case strings.Contains(path, "/user/api/logout"):
@@ -1710,6 +1737,8 @@ func managementHandle(raw []byte) ([]byte, error) {
 		return adminSavePools(req)
 	case strings.HasSuffix(path, "/plugins/cpa-key-policy-plus/pools/burst"):
 		return adminPoolBurst(req)
+	case strings.HasSuffix(path, "/plugins/cpa-key-policy-plus/funding"):
+		return adminFunding(req)
 	case strings.HasSuffix(path, "/key-policy-plus/api/keys"):
 		return adminKeys(req)
 	case strings.HasSuffix(path, "/key-policy-plus/api/models"):
@@ -1740,6 +1769,8 @@ func managementHandle(raw []byte) ([]byte, error) {
 		return adminSavePools(req)
 	case strings.HasSuffix(path, "/key-policy-plus/api/pools/burst"):
 		return adminPoolBurst(req)
+	case strings.HasSuffix(path, "/key-policy-plus/api/funding"):
+		return adminFunding(req)
 	default:
 		return jsonResponse(http.StatusNotFound, map[string]any{"ok": false, "error": "not_found"})
 	}
@@ -1786,8 +1817,10 @@ func adminKeys(req managementRequest) ([]byte, error) {
 	keys = currentAdminKeyRows(keys, includeRemoved)
 	safe := make([]map[string]any, 0, len(keys))
 	now := time.Now()
+	providers := knownProviders(context.Background())
 	for _, key := range keys {
 		row := key.Safe()
+		row["funding"] = keyFunding(context.Background(), key, providers)
 		usage := usageWindows(context.Background(), store, key.ID, now)
 		quota := keyQuotaView(context.Background(), store, key, usage, now, row)
 		row["usage"] = usage
@@ -1805,7 +1838,7 @@ func adminKeys(req managementRequest) ([]byte, error) {
 		safe = append(safe, row)
 	}
 	maybeSyncCPAMPAliases(keys)
-	return jsonResponse(http.StatusOK, map[string]any{"ok": true, "keys": safe, "codexcont": codexcontStatus(), "pricing": pricingStatus(priceBook), "cpamp_alias": cpampAliasStatus()})
+	return jsonResponse(http.StatusOK, map[string]any{"ok": true, "keys": safe, "codexcont": codexcontStatus(), "pricing": pricingStatus(priceBook), "cpamp_alias": cpampAliasStatus(), "funding_mode": currentFundingMode()})
 }
 
 func truthyQuery(value string) bool {
@@ -2049,6 +2082,7 @@ func adminSaveKeys(req managementRequest) ([]byte, error) {
 			DailyUSD          *float64                         `json:"daily_usd"`
 			WeeklyUSD         *float64                         `json:"weekly_usd"`
 			MonthlyUSD        *float64                         `json:"monthly_usd"`
+			QuotaUnlimited    *bool                            `json:"quota_unlimited"`
 		} `json:"keys"`
 	}
 	if err := json.Unmarshal(req.Body, &body); err != nil {
@@ -2089,6 +2123,9 @@ func adminSaveKeys(req managementRequest) ([]byte, error) {
 		key.DailyLimitUSD = item.DailyUSD
 		key.WeeklyLimitUSD = item.WeeklyUSD
 		key.MonthlyLimitUSD = item.MonthlyUSD
+		if item.QuotaUnlimited != nil {
+			key.QuotaUnlimited = *item.QuotaUnlimited
+		}
 		if err := store.SaveKeySettings(context.Background(), key); err != nil {
 			return jsonResponse(http.StatusBadRequest, map[string]any{"ok": false, "error": err.Error()})
 		}
@@ -2494,7 +2531,8 @@ func userMe(req managementRequest) ([]byte, error) {
 	if pool := poolKeyView(key.ID); pool != nil {
 		row["pool"] = pool
 	}
-	return jsonResponse(http.StatusOK, map[string]any{"ok": true, "me": row, "pricing": pricingStatus(priceBook)})
+	row["funding"] = keyFunding(context.Background(), key, knownProviders(context.Background()))
+	return jsonResponse(http.StatusOK, map[string]any{"ok": true, "me": row, "pricing": pricingStatus(priceBook), "funding_mode": currentFundingMode()})
 }
 
 func userUsage(req managementRequest) ([]byte, error) {

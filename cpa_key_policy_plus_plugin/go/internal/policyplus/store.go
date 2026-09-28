@@ -163,6 +163,7 @@ func (s *Store) EnsureSchema(ctx context.Context) error {
 			weekly_limit_usd real,
 			monthly_limit_usd real,
 			weekly_only integer not null default 0,
+			quota_unlimited integer not null default 0,
 			archived integer not null default 0,
 			archived_at integer not null default 0,
 			source text default '',
@@ -244,6 +245,16 @@ func (s *Store) EnsureSchema(ctx context.Context) error {
 			key text primary key,
 			value text not null,
 			updated_at integer not null
+		)`,
+		`create table if not exists funding_misses (
+			key_id text not null,
+			model text not null,
+			provider text not null default '',
+			reason text not null default '',
+			count integer not null default 0,
+			first_at integer not null,
+			last_at integer not null,
+			primary key(key_id, model)
 		)`,
 		`create table if not exists quota_accounts (
 			auth_index text primary key,
@@ -404,10 +415,11 @@ func (s *Store) EnsureSchema(ctx context.Context) error {
 		"inherit_conflict":          "integer not null default 0",
 		"hidden":                    "integer not null default 0",
 		"last_enabled":              "integer not null default 0",
+		"quota_unlimited":           "integer not null default 0",
 	}); err != nil {
 		return err
 	}
-	return nil
+	return s.migrateQuotaUnlimited(ctx)
 }
 
 // migratePoolMembersKey rekeys pool_members from key_id alone to
@@ -513,8 +525,9 @@ func (s *Store) UpsertKey(ctx context.Context, key KeyRecord) error {
 		`insert into keys(
 			id, name, key_hash, enabled, preview, rpm, concurrency, max_active_sessions, models_json, prices_json,
 			five_hour_limit_usd, daily_limit_usd, weekly_limit_usd, monthly_limit_usd, weekly_only,
-			archived, archived_at, source, source_present, alias, inherited_from, inherit_conflict, hidden, last_enabled, updated_at
-		) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			archived, archived_at, source, source_present, alias, inherited_from, inherit_conflict, hidden, last_enabled, updated_at,
+			quota_unlimited
+		) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		on conflict(id) do update set
 			name=excluded.name,
 			key_hash=excluded.key_hash,
@@ -539,6 +552,7 @@ func (s *Store) UpsertKey(ctx context.Context, key KeyRecord) error {
 			inherit_conflict=excluded.inherit_conflict,
 			hidden=excluded.hidden,
 			last_enabled=case when excluded.last_enabled != 0 then excluded.last_enabled else keys.last_enabled end,
+			quota_unlimited=case when excluded.quota_unlimited != 0 then 1 else coalesce(keys.quota_unlimited, 0) end,
 			updated_at=excluded.updated_at`,
 		key.ID,
 		key.Name,
@@ -565,6 +579,7 @@ func (s *Store) UpsertKey(ctx context.Context, key KeyRecord) error {
 		boolInt(key.Hidden),
 		boolInt(key.LastEnabled),
 		time.Now().Unix(),
+		boolInt(key.QuotaUnlimited),
 	)
 	return err
 }
@@ -827,7 +842,8 @@ func (s *Store) ListKeys(ctx context.Context) ([]KeyRecord, error) {
 		five_hour_limit_usd, daily_limit_usd, weekly_limit_usd, monthly_limit_usd, archived, archived_at,
 			coalesce(source, ''), coalesce(source_present, 1), coalesce(alias, ''), coalesce(inherited_from, ''),
 		coalesce(inherit_conflict, 0), coalesce(hidden, 0), coalesce(last_enabled, enabled), coalesce(weekly_only, 0),
-		coalesce(billing_hold_reason, ''), coalesce(billing_hold_model, ''), coalesce(billing_hold_service_tier, ''), coalesce(billing_hold_at, 0)
+		coalesce(billing_hold_reason, ''), coalesce(billing_hold_model, ''), coalesce(billing_hold_service_tier, ''), coalesce(billing_hold_at, 0),
+		coalesce(quota_unlimited, 0)
 		from keys order by hidden asc, name collate nocase`)
 	if err != nil {
 		return nil, err
@@ -836,7 +852,7 @@ func (s *Store) ListKeys(ctx context.Context) ([]KeyRecord, error) {
 	var out []KeyRecord
 	for rows.Next() {
 		var key KeyRecord
-		var enabled, archived, sourcePresent, inheritConflict, hidden, lastEnabled, weeklyOnly int
+		var enabled, archived, sourcePresent, inheritConflict, hidden, lastEnabled, weeklyOnly, unlimited int
 		var modelsJSON, pricesJSON string
 		var fiveHour, daily, weekly, monthly sql.NullFloat64
 		if err := rows.Scan(
@@ -845,6 +861,7 @@ func (s *Store) ListKeys(ctx context.Context) ([]KeyRecord, error) {
 			&archived, &key.ArchivedAt, &key.Source, &sourcePresent, &key.Alias, &key.InheritedFrom,
 			&inheritConflict, &hidden, &lastEnabled, &weeklyOnly,
 			&key.BillingHoldReason, &key.BillingHoldModel, &key.BillingHoldTier, &key.BillingHoldAt,
+			&unlimited,
 		); err != nil {
 			return nil, err
 		}
@@ -855,6 +872,7 @@ func (s *Store) ListKeys(ctx context.Context) ([]KeyRecord, error) {
 		key.Hidden = hidden != 0
 		key.LastEnabled = lastEnabled != 0
 		key.WeeklyOnly = weeklyOnly != 0
+		key.QuotaUnlimited = unlimited != 0
 		key.FiveHourUSD = nullFloatPtr(fiveHour)
 		key.DailyLimitUSD = nullFloatPtr(daily)
 		key.WeeklyLimitUSD = nullFloatPtr(weekly)
@@ -1013,6 +1031,7 @@ func (s *Store) SaveKeySettings(ctx context.Context, key KeyRecord) error {
 		weekly_limit_usd=?,
 		monthly_limit_usd=?,
 		weekly_only=?,
+		quota_unlimited=?,
 		last_enabled=?,
 		updated_at=?
 		where id=?`,
@@ -1027,6 +1046,7 @@ func (s *Store) SaveKeySettings(ctx context.Context, key KeyRecord) error {
 		key.WeeklyLimitUSD,
 		key.MonthlyLimitUSD,
 		boolInt(weeklyOnly),
+		boolInt(key.QuotaUnlimited),
 		boolInt(key.Enabled),
 		time.Now().Unix(),
 		key.ID,
@@ -1043,6 +1063,7 @@ func (s *Store) SaveKeySettings(ctx context.Context, key KeyRecord) error {
 		"concurrency":         key.Concurrency,
 		"max_active_sessions": key.MaxActiveSessions,
 		"weekly_only":         weeklyOnly,
+		"quota_unlimited":     key.QuotaUnlimited,
 	})
 }
 

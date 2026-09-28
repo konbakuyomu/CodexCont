@@ -145,6 +145,21 @@
     .badge { padding: 0 6px; border: 1px solid var(--kp-line-strong); border-radius: 4px; font-size: 11px; font-weight: 600; line-height: 18px; color: var(--kp-text-2); }
     .badge-dirty { border-color: var(--kp-warn); color: var(--kp-warn-ink); }
     .badge-hold { border-color: var(--kp-pending); color: var(--kp-pending-ink); }
+    .badge-unfunded { border-color: var(--kp-over); color: var(--kp-over-ink); }
+    .fund-list { display: grid; gap: 4px; margin: 6px 0 10px; font-size: var(--kp-fs-sm); }
+    .fund-list div { display: flex; gap: 12px; align-items: baseline; }
+    .fund-list dt { min-width: 64px; color: var(--kp-text-3); }
+    .fund-list dd { margin: 0; color: var(--kp-text); }
+    .fund-list .is-none dd { color: var(--kp-over-ink); font-weight: 600; }
+    .fact-btn { font: inherit; cursor: pointer; text-align: left; }
+    .funding { margin-top: 18px; }
+    .funding-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 16px; }
+    .funding-head p { flex: 1 1 320px; margin: 0; color: var(--kp-text-2); font-size: var(--kp-fs-sm); text-wrap: pretty; }
+    .funding-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+    .funding-table { width: 100%; margin-top: 10px; border-collapse: collapse; font-size: var(--kp-fs-sm); }
+    .funding-table th, .funding-table td { padding: 6px 8px; border-bottom: 1px solid var(--kp-line); text-align: left; }
+    .funding-table th { color: var(--kp-text-3); font-weight: 600; }
+    .funding-table td.num { text-align: right; font-variant-numeric: tabular-nums; }
     .c-num { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
     .c-q { width: 12%; min-width: 118px; }
     .q-top { display: flex; align-items: baseline; justify-content: space-between; gap: 6px; }
@@ -423,6 +438,8 @@
       <ul id="inbox" class="todo-list"></ul>
     </section>
 
+    <section id="funding" class="funding hidden" aria-labelledby="fundingTitle"></section>
+
     <section id="pools" class="pools hidden" aria-labelledby="poolsTitle">
       <div class="section-head">
         <h2 id="poolsTitle">拼车</h2><b id="poolsCount" class="count"></b>
@@ -613,7 +630,8 @@ function effective(k){
     enabled: e.enabled ?? k.enabled,
     rpm: e.rpm ?? k.rpm,
     models: e.models ?? k.models,
-    limits: e.limits ? {...limitsOf(k), ...e.limits} : k.limits
+    limits: e.limits ? {...limitsOf(k), ...e.limits} : k.limits,
+    quota_unlimited: e.quota_unlimited ?? k.quota_unlimited
   };
 }
 function editOf(id){ return state.edits[id] || (state.edits[id] = {}); }
@@ -635,6 +653,7 @@ function isDirty(id){
   if (Boolean(next.enabled) !== Boolean(k.enabled)) return true;
   if (Number(next.rpm || 0) !== Number(k.rpm || 0)) return true;
   if (!sameModels(next.models, k.models)) return true;
+  if (Boolean(next.quota_unlimited) !== Boolean(k.quota_unlimited)) return true;
   return WINDOWS.some(w => !sameLimit(limitsOf(next)[w.field], limitsOf(k)[w.field]));
 }
 function dirtyIds(){ return Object.keys(state.edits).filter(isDirty); }
@@ -648,11 +667,33 @@ function isWeeklyOnly(k){
   return set("weekly_usd") && !set("five_hour_usd") && !set("daily_usd") && !set("monthly_usd");
 }
 function billingHoldOf(k){ return k.billing_hold || {}; }
+// Who pays for each provider's models. Pool seats come from the server; the
+// USD windows and the unlimited flag follow unsaved edits.
+function fundingOf(raw){
+  const k = effective(raw);
+  return (raw.funding || []).map(f => {
+    if (f.kind === "seat") return f;
+    return {...f, kind: hasAnyLimit(k) ? "windows" : k.quota_unlimited ? "unlimited" : "none"};
+  });
+}
+function unfunded(raw){ return fundingOf(raw).filter(f => f.kind === "none"); }
+function fundingEnforced(){ return ((state.funding || {}).mode || state.fundingMode) === "enforce"; }
+function fundingText(f){
+  if (f.kind === "seat") return f.role === "owner" ? `车主 · ${f.pool}` : `拼车 ${f.pool} · ${pp(f.share_percent, f.share_percent % 1 ? 2 : 0)}`;
+  if (f.kind === "windows") return "这把 Key 的费用上限";
+  if (f.kind === "unlimited") return "不限额";
+  return fundingEnforced() ? "没有来源，请求会被拒绝" : "没有来源（生效后会被拒绝）";
+}
+function fundingRowsHTML(raw){
+  const rows = fundingOf(raw);
+  if (!rows.length) return `<div class="ed-hint">白名单里没有可识别的模型。</div>`;
+  return `<dl class="fund-list">${rows.map(f => `<div class="${f.kind === "none" ? "is-none" : ""}"><dt>${escapeHTML(f.label)}</dt><dd>${escapeHTML(fundingText(f))}</dd></div>`).join("")}</dl>`;
+}
 function policyWarnings(k){
   const warnings = [];
   if (Number(k.rpm || 0) <= 0) warnings.push("未配置 RPM");
-  const pool = k.pool || {};
-  if (!hasAnyLimit(k) && pool.role !== "member" && pool.role !== "owner") warnings.push("未配置费用限额");
+  const lacking = unfunded(k);
+  if (lacking.length) warnings.push(`${lacking.map(f => f.label).join("、")} 没有额度来源`);
   const billingHold = billingHoldOf(k);
   if (billingHold.active) warnings.push(`费用待核算：${billingHold.model || "未知模型"}（${billingHold.reason || "价格规则待核验"}）`);
   return warnings;
@@ -721,7 +762,8 @@ function keyPayload(k){
     five_hour_usd: nullableNumber(limits.five_hour_usd),
     daily_usd: nullableNumber(limits.daily_usd),
     weekly_usd: nullableNumber(limits.weekly_usd),
-    monthly_usd: nullableNumber(limits.monthly_usd)
+    monthly_usd: nullableNumber(limits.monthly_usd),
+    quota_unlimited: !!k.quota_unlimited
   };
 }
 
@@ -744,7 +786,7 @@ function renderMetrics(){
     <div class="fact"><b>${enabled}</b>启用</div>
     <div class="fact"><b>$${cost.toFixed(2)}</b>24H 费用</div>
     <div class="fact${needs ? " is-warn" : ""}"><b>${needs}</b>需补策略</div>
-    <div class="fact fact-price"><b>${escapeHTML(priceSource)}</b>${escapeHTML(priced + synced)}</div>${aliasFact}`;
+    <div class="fact fact-price"><b>${escapeHTML(priceSource)}</b>${escapeHTML(priced + synced)}</div>${aliasFact}${fundingFactHTML()}`;
 }
 function inboxItems(){
   const items = [];
@@ -757,9 +799,9 @@ function inboxItems(){
     }
     const missing = [];
     if (Number(k.rpm || 0) <= 0) missing.push("RPM");
-    const pool = raw.pool || {};
-    if (!hasAnyLimit(k) && pool.role !== "member" && pool.role !== "owner") missing.push("费用额度");
     if (missing.length) items.push({sev:"warn", id:k.id, name, text:`未配置 ${missing.join(" 和 ")}`, action:"edit", label:"去设置"});
+    const lacking = unfunded(raw);
+    if (lacking.length) items.push({sev: fundingEnforced() ? "over" : "warn", id:k.id, name, text:`${lacking.map(f => f.label).join("、")} 没有额度来源${fundingEnforced() ? "，请求会被拒绝" : "，生效后会被拒绝"}：加入拼车池、设置费用上限或勾选不限额`, action:"edit", label:"去设置"});
     const scope = offPool(raw) ? "池外" : "";
     for (const w of WINDOWS) {
       const q = quotaOf(raw, w);
@@ -1628,7 +1670,7 @@ function quotaCellHTML(raw, k, w){
     return `<td class="c-q" data-label="${w.label}"><div class="q-top"><b class="q-pct ${bursting ? "st-burst" : "st-muted"}" title="${escapeHTML(`「${sharePoolNames(raw)}」的模型按份额计`)}">${bursting ? "爽蹬中" : "按份额"}</b><div class="q-amt">已用 ${money(total)}</div></div>${q.limit !== null ? `<div class="q-note${cls}" title="池子不覆盖的模型按这个上限计，只算这部分花费">池外 ${money(q.used)} / ${money(q.limit, q.limit % 1 ? 2 : 0)}</div>` : ""}</td>`;
   }
   if (q.limit === null) {
-    return `<td class="c-q" data-label="${w.label}"><div class="q-top"><b class="q-pct st-muted">不限</b><div class="q-amt">已用 ${money(q.used)}</div></div></td>`;
+    return `<td class="c-q" data-label="${w.label}"><div class="q-top"><b class="q-pct st-muted">${k.quota_unlimited ? "不限额" : "未设"}</b><div class="q-amt">已用 ${money(q.used)}</div></div></td>`;
   }
   const cls = q.percent >= 1 ? "over" : q.percent >= .8 ? "warn" : "";
   const shown = Math.min(Math.max(q.percent, 0), 1) * 100;
@@ -1646,6 +1688,8 @@ function rowHTML(raw){
     badges.push(`<b class="badge">${escapeHTML(seat.role === "member" ? `拼车 ${seat.pool} · ${pp(seat.share_percent, seat.share_percent % 1 ? 2 : 0)}${seat.bursting ? " · 爽蹬中" : ""}` : seat.role === "owner" ? `车主 · ${seat.pool}` : `固定路由 · ${seat.pool}`)}</b>`);
   }
   if (isWeeklyOnly(k) && !(pool && pool.usd_windows_off)) badges.push(`<b class="badge">仅周额度</b>`);
+  if (k.quota_unlimited) badges.push(`<b class="badge" title="信任的 Key：用量不受任何额度约束">不限额</b>`);
+  for (const f of unfunded(raw)) badges.push(`<b class="badge badge-unfunded" title="加入拼车池、设置费用上限或勾选不限额">${escapeHTML(f.label)} 无额度来源</b>`);
   if (billingHoldOf(raw).active) badges.push(`<b class="badge badge-hold">待核算</b>`);
   if (isDirty(k.id)) badges.push(`<b class="badge badge-dirty">未保存</b>`);
   const rpm = Number(k.rpm || 0);
@@ -1756,12 +1800,18 @@ function editorHTML(raw){
             const limit = limitsOf(k)[w.field];
             const p = projection(used, limit);
             return `<label class="ed-win"><div class="ed-label">${w.label}</div>
-              <input class="input num" type="number" min="0" step="0.01" inputmode="decimal" placeholder="不限" data-limit="${w.field}" value="${limitInputValue(limit)}"${dis}>
+              <input class="input num" type="number" min="0" step="0.01" inputmode="decimal" placeholder="不设" data-limit="${w.field}" value="${limitInputValue(limit)}"${dis}>
               <output class="ed-proj ${p.cls}" data-proj="${w.field}">${escapeHTML(p.text)}</output></label>`;
           }).join("")}</div>
-          <div class="ed-hint">${offPool(raw) ? `「${escapeHTML(sharePoolNames(raw))}」的模型按份额计；上限只管其他模型，只算那部分花费。留空为不限。` : "留空为不限。"}</div>
+          <div class="ed-hint">${offPool(raw) ? `「${escapeHTML(sharePoolNames(raw))}」的模型按份额计；上限只管其他模型，只算那部分花费。` : ""}留空为不设上限。</div>
         </section>
       </div>
+      <section class="ed-block">
+        <h3>额度来源</h3>
+        <div data-funding>${fundingRowsHTML(raw)}</div>
+        <label class="ed-check"><input type="checkbox" data-unlimited${k.quota_unlimited ? " checked" : ""}${dis}>不限额（信任的 Key，用量不受任何额度约束）</label>
+        <div class="ed-hint">每类模型都要有来源：拼车池席位、这把 Key 的费用上限，或不限额。</div>
+      </section>
       <section class="ed-block">
         <div class="ed-models-head"><h3>模型白名单</h3><b data-model-count>${escapeHTML(modelCountText(k))}</b><button class="btn" type="button" data-models="${id}"${dis}>${pickerOpen ? "收起模型列表" : "编辑模型白名单"}</button></div>
         <div class="chips" data-model-chips>${chipsHTML(k, pickerOpen && !readonly)}</div>
@@ -1855,6 +1905,20 @@ function wireEditor(){
   const editor = document.querySelector("[data-editor]");
   if (!editor) return;
   const id = editor.dataset.editor;
+  const refreshFunding = () => {
+    const box = editor.querySelector("[data-funding]");
+    const raw = findKey(id);
+    if (box && raw) box.innerHTML = fundingRowsHTML(raw);
+  };
+  const unlimited = editor.querySelector("[data-unlimited]");
+  if (unlimited) unlimited.addEventListener("change", () => {
+    const raw = findKey(id);
+    if (!raw || raw.source_present === false) return;
+    editOf(id).quota_unlimited = unlimited.checked;
+    refreshFunding();
+    refreshRow(id);
+    afterEdit();
+  });
   editor.querySelectorAll("[data-edit]").forEach(input => {
     input.addEventListener(input.type === "checkbox" ? "change" : "input", () => {
       const raw = findKey(id);
@@ -1892,6 +1956,7 @@ function wireEditor(){
       const p = projection(used, value);
       out.className = `ed-proj ${p.cls}`;
       out.textContent = p.text;
+      refreshFunding();
       refreshRow(id);
       afterEdit();
     });
@@ -1991,9 +2056,73 @@ function renderSavebar(){
   const names = ids.map(id => keyName(findKey(id)));
   $("dirtyText").textContent = `${ids.length} 把 Key 有未保存改动：${names.join("、")}`;
 }
+/* Funding sources */
+function fundingFactHTML(){
+  const f = state.funding;
+  if (!f) return "";
+  const enforce = f.mode === "enforce";
+  const n = Number(f.total || 0);
+  const text = enforce ? (n ? `已生效 · 拦截 ${n} 次` : "已生效") : (n ? `观察中 · ${n} 次会被拦截` : "观察中");
+  return `<button class="fact fact-price fact-btn${!enforce && n ? " is-warn" : ""}" type="button" data-funding-toggle aria-expanded="${state.fundingOpen ? "true" : "false"}"><b>额度来源</b> · ${escapeHTML(text)}</button>`;
+}
+function renderFunding(){
+  const el = $("funding");
+  const f = state.funding;
+  if (!f || !state.fundingOpen) { el.className = "funding hidden"; el.innerHTML = ""; return; }
+  const enforce = f.mode === "enforce";
+  const keys = new Map(state.keys.map(k => [k.id, k]));
+  const rows = (f.misses || []).map(m => `<tr>
+    <td>${escapeHTML(m.name || (keys.get(m.key_id) || {}).name || m.key_id)}</td>
+    <td>${escapeHTML(m.model)}</td>
+    <td>${escapeHTML(m.reason === "unpriced" ? "没有 CPAMP 价格" : `${m.label} 没有额度来源`)}</td>
+    <td class="num">${Number(m.count || 0)}</td>
+    <td>${escapeHTML(relTime(Number(m.last_at || 0) * 1000))}</td>
+  </tr>`).join("");
+  const armed = state.fundingArmed;
+  el.className = "funding";
+  el.innerHTML = `<div class="section-head"><h2 id="fundingTitle">额度来源</h2><b class="count">${enforce ? "已生效" : "观察中"}</b></div>
+    <div class="funding-head">
+      <p>${enforce ? "没有额度来源、或模型没有 CPAMP 价格的请求会被拒绝。下面是被拒绝的记录。" : "现在照常放行。下面是切到「生效」后会被拒绝的请求：给这些 Key 加入拼车池、设置费用上限、勾选不限额，或在 CPAMP 补上价格。"}</p>
+      <div class="funding-actions">
+        <button class="btn${armed ? " is-armed" : enforce ? "" : " primary"}" type="button" data-funding-mode="${enforce ? "observe" : "enforce"}">${armed ? (enforce ? "确认退回观察？" : "确认切到生效？") : (enforce ? "退回观察" : "切到生效")}</button>
+        <button class="btn" type="button" data-funding-clear${rows ? "" : " disabled"}>清空记录</button>
+      </div>
+    </div>
+    ${rows ? `<div class="table-scroll"><table class="funding-table"><thead><tr><th>Key</th><th>模型</th><th>原因</th><th>次数</th><th>最近</th></tr></thead><tbody>${rows}</tbody></table></div>` : `<div class="chart-empty">${enforce ? "还没有被拒绝的请求。" : "还没有会被拦截的请求。"}</div>`}`;
+}
+async function fundingAction(body, btn, doneText){
+  try {
+    const resp = await withButtonFeedback(btn, "处理中", doneText, () => api("/funding", {method:"PUT", headers:{"Content-Type":"application/json"}, body: JSON.stringify({...body, confirm:true})}));
+    state.funding = resp;
+    state.fundingMode = resp.mode;
+    state.fundingArmed = false;
+    render();
+  } catch (e) {
+    setSync("操作失败：" + e.message, "bad");
+  }
+}
+document.addEventListener("click", (e) => {
+  const toggle = e.target.closest("[data-funding-toggle]");
+  if (toggle) { state.fundingOpen = !state.fundingOpen; state.fundingArmed = false; render(); return; }
+  const mode = e.target.closest("[data-funding-mode]");
+  if (mode) {
+    if (!state.fundingArmed) {
+      state.fundingArmed = true;
+      renderFunding();
+      setTimeout(() => { if (state.fundingArmed) { state.fundingArmed = false; renderFunding(); } }, 4000);
+      return;
+    }
+    fundingAction({mode: mode.dataset.fundingMode}, mode, "已切换");
+    return;
+  }
+  const clear = e.target.closest("[data-funding-clear]");
+  if (clear) fundingAction({clear: true}, clear, "已清空");
+});
+
 function render(){
   renderMetrics();
   renderInbox();
+  renderFunding();
   renderPools();
   renderTable();
   renderSavebar();
@@ -2001,11 +2130,14 @@ function render(){
 async function load(opts={}){
   const run = async () => {
     if (!opts.silent) setSync(opts.syncText || "同步中", "info");
-    const [keys, models, pools] = await Promise.all([
+    const [keys, models, pools, funding] = await Promise.all([
       api("/keys"),
       api("/models").catch(e => ({ok:false, models:[], warnings:[e.message]})),
-      api("/pools?tz_offset=-480").catch(e => ({ok:false, error:e}))
+      api("/pools?tz_offset=-480").catch(e => ({ok:false, error:e})),
+      api("/funding").catch(() => null)
     ]);
+    state.funding = funding && funding.ok ? funding : null;
+    state.fundingMode = keys.funding_mode || "";
     if (pools.ok) {
       state.poolData = pools;
       state.poolsUnavailable = false;
