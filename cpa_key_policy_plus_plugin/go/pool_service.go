@@ -24,6 +24,7 @@ const (
 	accountStateTTL  = 15 * time.Second
 	poolConfigTTL    = 10 * time.Second
 	modelCatalogTTL  = 60 * time.Second
+	catalogRetryTTL  = 10 * time.Second
 	hostAccountsTTL  = 30 * time.Second
 	staleObservation = 6 * time.Hour
 	ledgerHistory    = 38 * 24 * time.Hour
@@ -47,13 +48,16 @@ func (a accountState) InCycle(now time.Time) bool {
 }
 
 type poolRuntime struct {
-	mu          sync.Mutex
-	pools       []policyplus.Pool
-	poolsAt     time.Time
-	accounts    map[string]accountState
-	catalog     map[string]string // lower-case model id -> owned_by
-	catalogOK   bool
-	catalogAt   time.Time
+	mu        sync.Mutex
+	pools     []policyplus.Pool
+	poolsAt   time.Time
+	accounts  map[string]accountState
+	catalog   map[string]string // lower-case model id -> owned_by
+	catalogOK bool
+	catalogAt time.Time
+	// catalogGood is the last list read without warnings; a failed refresh
+	// keeps serving it instead of turning pool routing off.
+	catalogGood map[string]string
 	hostAuths   []hostAuthAccount
 	hostAuthsAt time.Time
 	limitHits   map[string]limitHit // auth_index -> last usage_limit_reached
@@ -76,6 +80,7 @@ func resetPoolCaches() {
 	poolState.accounts = map[string]accountState{}
 	poolState.catalog = nil
 	poolState.catalogAt = time.Time{}
+	poolState.catalogGood = nil
 	poolState.hostAuths = nil
 	poolState.hostAuthsAt = time.Time{}
 	poolState.limitHits = map[string]limitHit{}
@@ -1008,13 +1013,10 @@ func poolRouteTarget(keyID, model string) (modelRouteResponse, bool) {
 	if base == "" || strings.Contains(base, "/") {
 		return modelRouteResponse{}, false
 	}
-	catalog, ok := modelCatalog()
-	if !ok {
-		return modelRouteResponse{}, false
-	}
+	catalog, known := modelCatalog()
 	store := loadedStore()
 	now := time.Now()
-	if borrow, ok := borrowFor(ctx, store, pool, member, now); ok {
+	if borrow, ok := borrowFor(ctx, store, pool, member, now); ok && known {
 		if _, listed := catalog[strings.ToLower(borrow.Lender.ModelPrefix+"/"+base)]; listed {
 			return prefixRoute(ctx, store, borrow.Lender, model, now, "cpa_key_policy_plus_pool_borrow"), true
 		}
@@ -1022,7 +1024,12 @@ func poolRouteTarget(keyID, model string) (modelRouteResponse, bool) {
 	if pool.ModelPrefix == "" {
 		return modelRouteResponse{}, false
 	}
-	if _, listed := catalog[strings.ToLower(pool.ModelPrefix+"/"+base)]; !listed {
+	// A member's request always goes to the pool account. Pinning must not
+	// depend on reading the model list at this moment: an unpinned request
+	// falls into CPA's rotation and onto another pool's account. Only a
+	// prefix CPA does not list at all (the credential prefix is not set up
+	// yet) leaves members on the normal rotation.
+	if known && !catalogHasPrefix(catalog, pool.ModelPrefix) {
 		return modelRouteResponse{}, false
 	}
 	return prefixRoute(ctx, store, pool, model, now, "cpa_key_policy_plus_pool_route"), true
@@ -1044,7 +1051,10 @@ func prefixRoute(ctx context.Context, store *policyplus.Store, pool policyplus.P
 	}
 }
 
-// modelCatalog maps lower-case model ids CPA serves to their owner.
+// modelCatalog maps lower-case model ids CPA serves to their owner. It reads
+// the host registry only: the HTTP fallback would call back into CPA, whose
+// auth needs this plugin while it is busy routing, and stall for seconds. A
+// failed refresh keeps the last good list and retries soon.
 func modelCatalog() (map[string]string, bool) {
 	poolState.mu.Lock()
 	if !poolState.catalogAt.IsZero() && time.Since(poolState.catalogAt) < modelCatalogTTL {
@@ -1053,15 +1063,25 @@ func modelCatalog() (map[string]string, bool) {
 		return catalog, ok
 	}
 	poolState.mu.Unlock()
-	models, warnings := hostRegistryModelCatalog()
+	models, warnings := hostRegistryModelCatalogWith(false)
 	catalog := map[string]string{}
 	for _, model := range models {
 		catalog[strings.ToLower(model.ID)] = model.OwnedBy
 	}
 	ok := len(catalog) > 0 && len(warnings) == 0
 	poolState.mu.Lock()
+	defer poolState.mu.Unlock()
+	retryAt := time.Now().Add(catalogRetryTTL - modelCatalogTTL)
+	if !ok && poolState.catalogGood != nil {
+		poolState.catalog, poolState.catalogOK, poolState.catalogAt = poolState.catalogGood, true, retryAt
+		return poolState.catalogGood, true
+	}
 	poolState.catalog, poolState.catalogOK, poolState.catalogAt = catalog, ok, time.Now()
-	poolState.mu.Unlock()
+	if ok {
+		poolState.catalogGood = catalog
+	} else {
+		poolState.catalogAt = retryAt
+	}
 	return catalog, ok
 }
 
@@ -1344,7 +1364,7 @@ func adminPoolView(ctx context.Context, store *policyplus.Store, pool policyplus
 	}
 	if pool.ModelPrefix != "" {
 		if catalog, ok := modelCatalog(); !ok {
-			warnings = append(warnings, "读不到 CPA 模型列表，暂时无法确认 "+pool.ModelPrefix+"/ 前缀模型，成员请求按原来的轮换走。")
+			warnings = append(warnings, "读不到 CPA 模型列表，暂时无法确认 "+pool.ModelPrefix+"/ 前缀模型；成员请求仍固定走这个号。")
 		} else if !catalogHasPrefix(catalog, pool.ModelPrefix) {
 			warnings = append(warnings, "CPA 里还没有 "+pool.ModelPrefix+"/ 开头的模型：请先给这个账号的凭证设置前缀 "+pool.ModelPrefix+"，之后成员请求才会固定走这个号。")
 		}

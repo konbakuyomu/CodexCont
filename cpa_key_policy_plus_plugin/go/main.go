@@ -929,11 +929,7 @@ func routeModel(raw []byte) ([]byte, error) {
 	if !loadedConfig().Enabled || !poolRoutingConfigured(context.Background()) {
 		return okEnvelope(unhandled)
 	}
-	rawKey := bearer(req.Headers.Get("Authorization"))
-	if rawKey == "" {
-		return okEnvelope(unhandled)
-	}
-	key, ok := findKeyByRaw(rawKey)
+	key, ok := routeKey(req)
 	if !ok {
 		return okEnvelope(unhandled)
 	}
@@ -941,6 +937,27 @@ func routeModel(raw []byte) ([]byte, error) {
 		return okEnvelope(route)
 	}
 	return okEnvelope(unhandled)
+}
+
+// routeKey finds the key behind a model.route call: the Authorization
+// header, or, where CPA replaced that header after frontend auth, the
+// identity metadata this plugin injected there (never other metadata).
+func routeKey(req modelRouteRequest) (policyplus.KeyRecord, bool) {
+	if rawKey := bearer(req.Headers.Get("Authorization")); rawKey != "" {
+		if key, ok := findKeyByRaw(rawKey); ok {
+			return key, true
+		}
+	}
+	if metadataString(req.Metadata, "provider") != pluginID {
+		return policyplus.KeyRecord{}, false
+	}
+	keyID := metadataString(req.Metadata, "key_id")
+	store := loadedStore()
+	if keyID == "" || store == nil {
+		return policyplus.KeyRecord{}, false
+	}
+	key, ok := keysByID(context.Background(), store)[keyID]
+	return key, ok
 }
 
 // requestInterceptBeforeAuth is the only policy-denial path that can produce
@@ -1891,8 +1908,18 @@ func adminModelCatalog() ([]policyplus.ModelOption, []string) {
 }
 
 func hostRegistryModelCatalog() ([]policyplus.ModelOption, []string) {
+	return hostRegistryModelCatalogWith(true)
+}
+
+// hostRegistryModelCatalogWith reads CPA's model registry. With fallback, a
+// failed host callback is retried over CPA's own /v1/models; request-path
+// callers must not do that (see modelCatalog).
+func hostRegistryModelCatalogWith(fallback bool) ([]policyplus.ModelOption, []string) {
 	result, err := callHost(methodHostModelsList, map[string]any{})
 	if err != nil {
+		if !fallback {
+			return nil, []string{"CPA 模型注册表暂时不可用。"}
+		}
 		if models, fallbackErr := localCPAAPIModelCatalog(); fallbackErr == nil {
 			return models, nil
 		}
