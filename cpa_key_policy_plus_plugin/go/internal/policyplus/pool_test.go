@@ -346,7 +346,12 @@ func TestMemberBurstLifecycleWritesCarryForItsCycle(t *testing.T) {
 	if err := store.FinishMemberBursts(ctx, "pro", cycle, next, settlement, now.Add(4*24*time.Hour)); err != nil {
 		t.Fatal(err) // idempotent
 	}
-	carry, err := store.PoolCarry(ctx, "pro", next+30)
+	// Carry is read with the cycle key the ledger filed, exactly: two segments
+	// of one cycle sit a second apart.
+	if carry, _ := store.PoolCarry(ctx, "pro", next+1); len(carry) != 0 {
+		t.Fatalf("carry leaked into the next segment: %+v", carry)
+	}
+	carry, err := store.PoolCarry(ctx, "pro", next)
 	if err != nil || !near(carry["a"], 5) || !near(carry["b"], -5) {
 		t.Fatalf("carry = %+v err %v", carry, err)
 	}

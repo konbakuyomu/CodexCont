@@ -31,15 +31,33 @@ const (
 )
 
 type accountState struct {
-	AuthIndex  string
-	Plan       string
-	Provider   string
-	Latest     *policyplus.QuotaAccount
-	Current    policyplus.CycleLedger
-	Ledgers    []policyplus.CycleLedger
-	Capacity   policyplus.CapacityEstimate
-	Status     string
+	AuthIndex string
+	Plan      string
+	Provider  string
+	Latest    *policyplus.QuotaAccount
+	Current   policyplus.CycleLedger
+	Ledgers   []policyplus.CycleLedger
+	Capacity  policyplus.CapacityEstimate
+	Status    string
+	// Resets are the cycles that began before the previous one was due to
+	// end (a reset credit, or a reset that kept the reset time), oldest first.
+	Resets     []earlyReset
 	computedAt time.Time
+}
+
+// currentReset is the early reset that began the running cycle, if any.
+func (a accountState) currentReset() (earlyReset, bool) {
+	if n := len(a.Resets); n > 0 && a.Current.HasData() && a.Resets[n-1].CycleResetAt == a.Current.CycleResetAt {
+		return a.Resets[n-1], true
+	}
+	return earlyReset{}, false
+}
+
+// earlyReset is a cycle the account started ahead of schedule.
+type earlyReset struct {
+	AtMS         int64 `json:"at_ms"`        // when the new cycle began
+	ScheduledAt  int64 `json:"scheduled_at"` // when the cycle it replaced was due to end
+	CycleResetAt int64 `json:"cycle_reset_at"`
 }
 
 // InCycle reports whether Current describes the cycle running now.
@@ -85,6 +103,7 @@ func resetPoolCaches() {
 	poolState.hostAuthsAt = time.Time{}
 	poolState.limitHits = map[string]limitHit{}
 	invalidateFundingMode()
+	resetProbeStatus()
 }
 
 func invalidatePoolConfig() {
@@ -221,15 +240,19 @@ func ingestQuotaSignal(ctx context.Context, store *policyplus.Store, rec usageRe
 	case rec.Latency > time.Millisecond:
 		observedAt = observedAt.Add(rec.Latency - time.Millisecond)
 	}
-	sig, ok := policyplus.ParseCodexQuotaHeaders(rec.ResponseHeaders, observedAt)
+	parse := policyplus.ParseCodexQuotaHeaders
+	if strings.EqualFold(strings.TrimSpace(rec.Provider), "claude") {
+		parse = policyplus.ParseClaudeQuotaHeaders
+	}
+	sig, ok := parse(rec.ResponseHeaders, observedAt)
 	if !ok {
 		return
 	}
 	sig.AuthIndex = authIndex
 	sig.AuthID = rec.AuthID
 	sig.Provider = rec.Provider
-	if tick, err := store.RecordQuotaSignal(ctx, sig); err == nil && tick {
-		invalidateAccountState(authIndex)
+	if record, err := store.RecordQuota(ctx, sig); err == nil {
+		afterQuotaRecorded(authIndex, sig, record, false)
 	}
 }
 
@@ -356,7 +379,7 @@ type poolBorrow struct {
 // other pool lends its account and still has room. The lender with the most
 // room left this week is picked.
 func borrowFor(ctx context.Context, store *policyplus.Store, pool policyplus.Pool, member policyplus.PoolMember, now time.Time) (poolBorrow, bool) {
-	if _, bursting := pool.BurstOf(member.KeyID, now); !bursting {
+	if _, bursting := currentBurst(pool, accountStateFor(ctx, store, pool.AuthIndex, now), member.KeyID, now); !bursting {
 		return poolBorrow{}, false
 	}
 	blocked, until := accountBlocked(ctx, store, pool.AuthIndex, now)
@@ -403,10 +426,11 @@ func shareUsedUp(ctx context.Context, store *policyplus.Store, pool policyplus.P
 	if !member.Shared() || pool.AuthIndex == "" {
 		return 0, false
 	}
-	if _, bursting := pool.BurstOf(member.KeyID, now); bursting {
+	// The ledger first: it settles bursts whose cycle has ended.
+	ledger := computePoolLedger(ctx, store, pool, now)
+	if _, bursting := currentBurst(ledger.Pool, ledger.Account, member.KeyID, now); bursting {
 		return 0, false
 	}
-	ledger := computePoolLedger(ctx, store, pool, now)
 	if !ledger.InCycle {
 		return 0, false
 	}
@@ -415,6 +439,20 @@ func shareUsedUp(ctx context.Context, store *policyplus.Store, pool policyplus.P
 		return 0, false
 	}
 	return ledger.Account.Current.CycleResetAt, true
+}
+
+// currentBurst is a member's burst while it belongs to the account's running
+// cycle. A burst lasts until the account resets, and a reset that comes
+// before the burst's own reset time ends it as well.
+func currentBurst(pool policyplus.Pool, account accountState, keyID string, now time.Time) (policyplus.MemberBurst, bool) {
+	burst, ok := pool.BurstOf(keyID, now)
+	if !ok {
+		return policyplus.MemberBurst{}, false
+	}
+	if account.Current.HasData() && burst.CycleResetAt < account.Current.CycleResetAt {
+		return policyplus.MemberBurst{}, false
+	}
+	return burst, true
 }
 
 // poolShareFor returns the pool whose share governs a request of key for
@@ -435,6 +473,7 @@ func poolKeyView(keyID string) map[string]any {
 		return nil
 	}
 	now := time.Now()
+	store := loadedStore()
 	list := make([]map[string]any, 0, len(seats))
 	shared := false
 	for _, seat := range seats {
@@ -449,7 +488,7 @@ func poolKeyView(keyID string) map[string]any {
 		view := map[string]any{"pool": pool.Name, "pool_id": pool.ID, "role": role, "provider": pool.ProviderName(), "budgeted": pool.Budgeted()}
 		if member.Shared() {
 			view["share_percent"] = *member.SharePercent
-			if _, on := pool.BurstOf(member.KeyID, now); on {
+			if _, on := currentBurst(pool, accountStateFor(context.Background(), store, pool.AuthIndex, now), member.KeyID, now); on {
 				view["bursting"] = true
 			}
 		}
@@ -532,12 +571,24 @@ func loadAccountState(ctx context.Context, store *policyplus.Store, authIndex st
 	params := policyplus.LedgerParams{FloorUSD: policyplus.FloorCapacityUSD(out.Plan)}
 	for start := 0; start < len(obs); {
 		end := start
+		lastMS := obs[start].ObservedAtMS
 		for end < len(obs) && obs[end].CycleResetAt == obs[start].CycleResetAt {
+			lastMS = max(lastMS, obs[end].ObservedAtMS)
 			end++
 		}
 		limit := obs[start].CycleResetAt * 1000
+		if end < len(obs) {
+			// A cycle reset early ends where the next one begins; what was
+			// spent after that belongs to the new cycle.
+			limit = min(limit, max(obs[end].ObservedAtMS, lastMS))
+		}
 		cut := sort.Search(len(events), func(i int) bool { return events[i].AtMS > limit })
 		ledger := policyplus.BuildCycleLedger(obs[start:end], events[:cut], params)
+		if n := len(out.Ledgers); n > 0 {
+			if reset, ok := resetBetween(out.Ledgers[n-1], ledger); ok {
+				out.Resets = append(out.Resets, reset)
+			}
+		}
 		out.Ledgers = append(out.Ledgers, ledger)
 		if ledger.RefUSD > 0 {
 			params.RefUSD = ledger.RefUSD
@@ -559,6 +610,22 @@ func loadAccountState(ctx context.Context, store *policyplus.Store, authIndex st
 	}
 	out.Capacity = effectiveCapacity(out)
 	return out
+}
+
+// resetBetween reports whether next began before previous was due to end.
+// Codex starts the new window at the reset, so its start is exact; a reset
+// that kept the reset time is known from its first observation.
+func resetBetween(previous, next policyplus.CycleLedger) (earlyReset, bool) {
+	if !previous.HasData() || !next.HasData() || next.TrackingSinceMS >= previous.CycleResetAt*1000-60_000 {
+		return earlyReset{}, false
+	}
+	at := next.TrackingSinceMS
+	if next.WindowMinutes > 0 && next.CycleResetAt > previous.CycleResetAt {
+		if start := (next.CycleResetAt - next.WindowMinutes*60) * 1000; start <= at && start >= previous.LastSeenMS {
+			at = start
+		}
+	}
+	return earlyReset{AtMS: at, ScheduledAt: previous.CycleResetAt, CycleResetAt: next.CycleResetAt}, true
 }
 
 // loadBudgetAccountState meters a budget pool's account: each 7-day cycle
@@ -712,7 +779,8 @@ func computePoolLedger(ctx context.Context, store *policyplus.Store, pool policy
 			row.RemainingPP = &remaining
 			for i := range pool.Bursts {
 				burst := pool.Bursts[i]
-				if burst.KeyID == keyID && now.Unix() < burst.CycleResetAt {
+				if burst.KeyID == keyID && now.Unix() < burst.CycleResetAt &&
+					(!account.Current.HasData() || burst.CycleResetAt >= account.Current.CycleResetAt) {
 					row.Burst = &burst
 				}
 			}
@@ -801,15 +869,18 @@ func keysByID(ctx context.Context, store *policyplus.Store) map[string]policyplu
 }
 
 // maybeSettleBursts settles the member bursts of every cycle the account has
-// left behind. Members who burst in carry mode pay what they used past their
-// share back from their next cycle to the members who left share unused.
+// left behind, on schedule or through an early reset. Members who burst in
+// carry mode pay what they used past their share back from their next cycle
+// to the members who left share unused.
 func maybeSettleBursts(ctx context.Context, store *policyplus.Store, pool policyplus.Pool, account accountState, now time.Time) bool {
 	if len(pool.Bursts) == 0 || store == nil || !account.Current.HasData() {
 		return false
 	}
+	// Cycle keys are exact: the ledger files every observation under one key,
+	// and bursts take the key of the cycle they started in.
 	cycles := map[int64][]policyplus.MemberBurst{}
 	for _, burst := range pool.Bursts {
-		if account.Current.CycleResetAt > burst.CycleResetAt+3600 {
+		if burst.CycleResetAt < account.Current.CycleResetAt {
 			cycles[burst.CycleResetAt] = append(cycles[burst.CycleResetAt], burst)
 		}
 	}
@@ -817,7 +888,7 @@ func maybeSettleBursts(ctx context.Context, store *policyplus.Store, pool policy
 	for cycleResetAt, bursts := range cycles {
 		var cycleLedger policyplus.CycleLedger
 		for _, ledger := range account.Ledgers {
-			if diff := ledger.CycleResetAt - cycleResetAt; diff >= -3600 && diff <= 3600 {
+			if ledger.CycleResetAt == cycleResetAt {
 				cycleLedger = ledger
 			}
 		}
@@ -892,10 +963,11 @@ func checkPoolShare(key policyplus.KeyRecord, model string) poolShareDecision {
 		return allow
 	}
 	now := time.Now()
-	if _, bursting := pool.BurstOf(member.KeyID, now); bursting {
+	// The ledger first: it settles bursts whose cycle has ended.
+	ledger := computePoolLedger(ctx, store, pool, now)
+	if _, bursting := currentBurst(ledger.Pool, ledger.Account, member.KeyID, now); bursting {
 		return allow
 	}
-	ledger := computePoolLedger(ctx, store, pool, now)
 	if !ledger.InCycle {
 		return allow
 	}
@@ -963,6 +1035,8 @@ func poolServesModel(pool policyplus.Pool, model string) bool {
 		return codexLikeModel(base)
 	case "xai":
 		return strings.HasPrefix(strings.ToLower(strings.TrimSpace(base)), "grok")
+	case "claude":
+		return strings.HasPrefix(strings.ToLower(strings.TrimSpace(base)), "claude")
 	}
 	return false
 }
@@ -976,6 +1050,8 @@ func providerOwnsModel(provider, owner string) bool {
 		return owner == "" || owner == "openai" || owner == "codex"
 	case "xai":
 		return owner == "xai" || owner == "x-ai" || owner == "grok"
+	case "claude":
+		return owner == "anthropic" || owner == "claude"
 	}
 	return owner != "" && owner == provider
 }
@@ -1253,8 +1329,8 @@ func mergeAccounts(hostAccounts []hostAuthAccount, quotaAccounts []policyplus.Qu
 		row["status"] = host.Status
 		row["disabled"] = host.Disabled
 		row["unavailable"] = host.Unavailable
-		// Only codex accounts report their own quota; others need a budget.
-		row["quota_signal"] = host.Provider == "" || host.Provider == "codex"
+		// Codex and Claude accounts report their own quota; others need a budget.
+		row["quota_signal"] = host.Provider == "" || host.Provider == "codex" || host.Provider == "claude"
 	}
 	for _, account := range quotaAccounts {
 		row := add(account.AuthIndex)
@@ -1331,6 +1407,10 @@ func adminPoolView(ctx context.Context, store *policyplus.Store, pool policyplus
 	if account.Latest != nil {
 		cycle["plan_type"] = account.Latest.PlanType
 		cycle["limit_reached"] = account.Latest.LimitReached
+		cycle["observed_at_ms"] = account.Latest.ObservedAtMS
+	}
+	if reset, ok := account.currentReset(); ok {
+		cycle["reset_early"] = reset
 	}
 	if estimate, ok := sub2poolEstimate(pool.Sub2PoolAccountID); ok {
 		cycle["sub2pool"] = estimate
@@ -1378,7 +1458,7 @@ func adminPoolView(ctx context.Context, store *policyplus.Store, pool policyplus
 		if blocked, until := accountBlocked(ctx, store, pool.AuthIndex, now); blocked {
 			bursting := 0
 			for _, member := range pool.Members {
-				if _, on := pool.BurstOf(member.KeyID, now); on {
+				if _, on := currentBurst(pool, account, member.KeyID, now); on {
 					bursting++
 				}
 			}
@@ -1436,6 +1516,8 @@ func adminPoolView(ctx context.Context, store *policyplus.Store, pool policyplus
 		"warnings":            warnings,
 		"notes":               notes,
 		"lender":              lenderName,
+		"probe":               probeView(ctx, store, pool),
+		"resets":              account.Resets,
 	}
 }
 
@@ -1575,6 +1657,10 @@ func adminPoolBurst(req managementRequest) ([]byte, error) {
 		if body.Mode == policyplus.BurstModeNoCarry && !body.Notified {
 			return jsonResponse(http.StatusBadRequest, map[string]any{"ok": false, "error": "riders_not_notified", "message": "不结转爽蹬会占用其他车友的额度，需要先告知其他车友。"})
 		}
+		// A burst belongs to the cycle it starts in; ask the account first so
+		// a reset nobody has seen yet does not end it right away.
+		_ = refreshAccountQuota(ctx, store, pool)
+		now = time.Now()
 		account := accountStateFor(ctx, store, pool.AuthIndex, now)
 		if !account.InCycle(now) {
 			return jsonResponse(http.StatusConflict, map[string]any{"ok": false, "error": "cycle_unknown", "message": "还没有观测到这个账号的当前周期，等下一次请求后再开启。"})
@@ -1591,6 +1677,54 @@ func adminPoolBurst(req managementRequest) ([]byte, error) {
 		return jsonResponse(http.StatusConflict, map[string]any{"ok": false, "error": "burst_rejected", "message": err.Error()})
 	}
 	invalidatePoolConfig()
+	return adminPools(req)
+}
+
+// adminPoolProbe refreshes a pool account's usage now ("refresh"), or turns
+// the background probes on or off ("enable" / "disable").
+func adminPoolProbe(req managementRequest) ([]byte, error) {
+	store := loadedStore()
+	if store == nil {
+		return jsonResponse(http.StatusServiceUnavailable, map[string]any{"ok": false, "error": "store_unavailable"})
+	}
+	var body struct {
+		PoolID string `json:"pool_id"`
+		Action string `json:"action"`
+	}
+	if err := json.Unmarshal(req.Body, &body); err != nil {
+		return jsonResponse(http.StatusBadRequest, map[string]any{"ok": false, "error": "invalid_json"})
+	}
+	ctx := context.Background()
+	switch body.Action {
+	case "enable", "disable":
+		value := "on"
+		if body.Action == "disable" {
+			value = "off"
+		}
+		if err := store.SaveSettings(ctx, map[string]string{settingQuotaProbe: value}); err != nil {
+			return jsonResponse(http.StatusInternalServerError, map[string]any{"ok": false, "error": "save_failed", "message": policyplus.Brief(err.Error(), 240)})
+		}
+		_ = store.Audit(ctx, "admin", "quota_probe_"+value, "pools", nil)
+	case "refresh":
+		var pool policyplus.Pool
+		found := false
+		for _, candidate := range loadedPools(ctx) {
+			if candidate.ID == strings.TrimSpace(body.PoolID) {
+				pool, found = candidate, true
+			}
+		}
+		if !found {
+			return jsonResponse(http.StatusNotFound, map[string]any{"ok": false, "error": "pool_not_found"})
+		}
+		if !quotaProbeEnabled(ctx, store) {
+			return jsonResponse(http.StatusConflict, map[string]any{"ok": false, "error": "probe_disabled", "message": "主动查询已关闭，先打开再刷新。"})
+		}
+		if err := refreshAccountQuota(ctx, store, pool); err != nil {
+			return jsonResponse(http.StatusBadGateway, map[string]any{"ok": false, "error": "probe_failed", "message": "查询用量失败：" + err.Error()})
+		}
+	default:
+		return jsonResponse(http.StatusBadRequest, map[string]any{"ok": false, "error": "invalid_action"})
+	}
 	return adminPools(req)
 }
 
@@ -1636,9 +1770,13 @@ func memberPoolView(ctx context.Context, store *policyplus.Store, key policyplus
 	if account.Latest != nil {
 		accountView["plan_type"] = account.Latest.PlanType
 		accountView["limit_reached"] = account.Latest.LimitReached
+		accountView["observed_at_ms"] = account.Latest.ObservedAtMS
 		if account.Latest.Short != nil {
 			accountView["short"] = account.Latest.Short
 		}
+	}
+	if reset, ok := account.currentReset(); ok && ledger.InCycle {
+		accountView["reset_early"] = reset
 	}
 	// A pool that hides the account shows members their own share only; the
 	// owner still sees everything.

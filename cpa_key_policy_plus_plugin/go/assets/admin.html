@@ -228,6 +228,9 @@
     /* Carpool pools: one block per upstream account */
     .pools { margin-top: 26px; }
     .pools-new { margin-left: auto; }
+    .pools-probe { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; font-size: var(--kp-fs-xs); color: var(--kp-text-2); cursor: pointer; }
+    .pools-probe input { margin: 0; }
+    .pools-probe:not(.hidden) + .pools-new { margin-left: 0; }
     .pool-list { display: grid; gap: 16px; }
     .pool { border: 1px solid var(--kp-line-strong); border-radius: var(--kp-radius); background: var(--kp-surface); }
     .pool-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; padding: 14px 16px 12px; border-bottom: 1px solid var(--kp-line); }
@@ -443,6 +446,7 @@
     <section id="pools" class="pools hidden" aria-labelledby="poolsTitle">
       <div class="section-head">
         <h2 id="poolsTitle">拼车</h2><b id="poolsCount" class="count"></b>
+        <label class="pools-probe hidden" id="probeSwitch" title="号的实际用量平时只随请求带回。打开后，每 10 分钟（有人被卡住或号用满时每 2 分钟）向官方接口查一次，用重置卡提前重置后几分钟内就能同步。"><input type="checkbox" id="probeToggle">主动查询用量</label>
         <button id="newPool" class="btn small pools-new" type="button">新建拼车池</button>
       </div>
       <div id="poolList" class="pool-list"></div>
@@ -877,7 +881,7 @@ function untilLabel(unix){
 }
 function planLabel(plan){
   const p = String(plan || "").toLowerCase();
-  return ({pro:"Pro", plus:"Plus", team:"Team", business:"Business", enterprise:"Enterprise", free:"Free"})[p] || (p ? p : "未知套餐");
+  return ({pro:"Pro", plus:"Plus", team:"Team", business:"Business", enterprise:"Enterprise", free:"Free", claude:"Claude"})[p] || (p ? p : "未知套餐");
 }
 function poolKeysMap(){
   const map = new Map();
@@ -889,7 +893,7 @@ function poolAccount(authIndex){
 }
 function providerLabel(provider){
   const p = String(provider || "codex").toLowerCase();
-  return ({codex:"Codex", xai:"Grok"})[p] || p;
+  return ({codex:"Codex", xai:"Grok", claude:"Claude"})[p] || p;
 }
 // Accounts without a quota signal (xai) are metered against a weekly budget.
 function noSignal(a){ return Boolean(a) && a.quota_signal === false; }
@@ -906,18 +910,25 @@ function burstRunning(b){ return Boolean(b && !b.stopped_at && b.cycle_reset_at 
 function burstingRows(p){ return (p.rows || []).filter(row => burstRunning(row.burst)); }
 function poolBusy(){ return Boolean(state.poolEdit) || Object.keys(state.burstPick).length > 0; }
 
-function poolLiveHTML(c){
+function poolLiveHTML(p){
+  const c = p.cycle || {};
+  const probe = p.probe || {};
   const status = c.status || "no_data";
-  const seen = c.last_seen_ms ? relTime(c.last_seen_ms) : "";
+  // The newest numbers, whether a request or a probe brought them.
+  const seenMs = Math.max(Number(c.observed_at_ms || 0), Number(c.last_seen_ms || 0));
+  const seen = seenMs ? relTime(seenMs) : "";
   const text = ({
-    live: `实时 · ${seen}观测`,
-    stale: `上次观测 ${seen}`,
-    reset_pending: "已到重置时间，等新周期的第一次观测",
-    no_data: "等待第一次观测",
+    live: `实时 · ${seen}更新`,
+    stale: `上次更新 ${seen}`,
+    reset_pending: "已到重置时间，等新周期的数据",
+    no_data: "等待第一次数据",
     unassigned: "未选择账号",
     budget: "按预算计"
   })[status] || status;
-  return `<div class="pool-live" data-state="${escapeHTML(status)}"><i class="pool-dot" aria-hidden="true"></i><b>${escapeHTML(text)}</b></div>`;
+  const refresh = probe.supported && probe.enabled
+    ? `<button class="btn small" type="button" data-pool-refresh="${escapeHTML(p.id)}" title="向官方接口查询这个号现在的实际用量">刷新用量</button>`
+    : "";
+  return `<div class="pool-live" data-state="${escapeHTML(status)}"><i class="pool-dot" aria-hidden="true"></i><b>${escapeHTML(text)}</b></div>${refresh}`;
 }
 function capacityBasisText(cap){
   return ({cycle:"本周期实测", previous:"沿用上周期", prior:"按套餐先验估算", day:"今日实测"})[cap.basis] || "";
@@ -947,7 +958,8 @@ function poolFigsHTML(p){
   figs.push(`<div class="pf"><dt>1% ≈</dt><dd><b>${cap.usd ? "$" + (cap.usd / 100).toFixed(2) : "—"}</b><div class="pf-sub"></div></dd></div>`);
   const today = c.today;
   figs.push(`<div class="pf"><dt>今日折算</dt><dd><b>${today ? usd(today.usd) : "—"}</b><div class="pf-sub">${today ? `今日 ${Math.round(today.delta_pp)} 次跳动` : "今日跳动还不够"}</div></dd></div>`);
-  figs.push(`<div class="pf"><dt>周限重置</dt><dd><b>${c.reset_at ? escapeHTML(bjLabel(c.reset_at)) : "—"}</b><div class="pf-sub">${c.reset_at ? escapeHTML(untilLabel(c.reset_at) + " · 北京时间") : ""}</div></dd></div>`);
+  const early = c.reset_early;
+  figs.push(`<div class="pf"><dt>周限重置</dt><dd><b>${c.reset_at ? escapeHTML(bjLabel(c.reset_at)) : "—"}</b><div class="pf-sub">${c.reset_at ? escapeHTML(untilLabel(c.reset_at) + " · 北京时间") : ""}</div>${early ? `<div class="pf-sub">本周期 ${escapeHTML(bjLabel(Math.floor(early.at_ms / 1000)))} 提前重置</div>` : ""}</dd></div>`);
   if (c.short) {
     const s = c.short;
     const cls = Number(s.used_percent) >= 100 ? "is-over" : Number(s.used_percent) >= 80 ? "is-warn" : "";
@@ -1150,7 +1162,9 @@ function memberBurstHTML(p, row){
     <button class="btn" type="button" data-burst-open="${escapeHTML(pk)}"${canStart ? "" : ` disabled title="需要先观测到这个账号的当前周期"`}>${stopped ? "重新开启…" : "开爽蹬…"}</button></div>`;
 }
 function poolWarningsHTML(p){
-  const warnings = p.warnings || [];
+  const warnings = [...(p.warnings || [])];
+  const probe = p.probe || {};
+  if (probe.enabled && probe.error) warnings.push(`主动查询用量失败：${probe.error}${probe.ok_ms ? `（上次成功 ${relTime(probe.ok_ms)}）` : ""}。号重置后可能要等到下一次请求才能同步。`);
   const notes = p.notes || [];
   if (!warnings.length && !notes.length) return "";
   return `<div class="pool-warn" role="note">${warnings.map(w => `<div>${escapeHTML(w)}</div>`).join("")}${notes.map(n => `<div class="is-note">${escapeHTML(n)}</div>`).join("")}</div>`;
@@ -1292,7 +1306,7 @@ function poolHTML(p){
   return `<article class="pool" id="pool-${domId(p.id)}" data-pool="${escapeHTML(p.id)}">
     <header class="pool-head">
       <div class="pool-name"><h3>${escapeHTML(p.name)}</h3><div class="pool-acct">${escapeHTML(acct)}</div></div>
-      ${poolLiveHTML(p.cycle || {})}
+      ${poolLiveHTML(p)}
       <button class="btn small" type="button" data-pool-edit="${escapeHTML(p.id)}" aria-expanded="${editing}">${editing ? "收起" : "编辑"}</button>
     </header>
     <div class="pool-body">
@@ -1313,6 +1327,9 @@ function renderPools(){
   const pools = state.poolData.pools || [];
   $("poolsCount").textContent = pools.length ? String(pools.length) : "";
   $("newPool").disabled = Boolean(state.poolEdit && state.poolEdit.isNew);
+  const probe = pools.map(p => p.probe || {}).find(x => x.supported);
+  $("probeSwitch").classList.toggle("hidden", !probe);
+  if (probe) $("probeToggle").checked = Boolean(probe.enabled);
   let html = "";
   if (state.poolEdit && state.poolEdit.isNew) {
     html += `<article class="pool" data-pool=""><header class="pool-head"><div class="pool-name"><h3>新建拼车池</h3></div></header><div class="pool-body">${poolEditorHTML()}</div></article>`;
@@ -1539,6 +1556,26 @@ async function burstAction(pk, body, btn){
   }
   render();
 }
+async function refreshPoolUsage(poolId, btn){
+  try {
+    await withButtonFeedback(btn, "查询中", "已更新", async () => {
+      state.poolData = await api("/pools/probe", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({action: "refresh", pool_id: poolId})});
+    });
+    setSync("已按官方接口更新这个号的用量", "ok");
+  } catch (e) {
+    setSync((e.data || {}).message || ("查询用量失败：" + e.message), "bad");
+  }
+  render();
+}
+async function setProbes(on){
+  try {
+    state.poolData = await api("/pools/probe", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({action: on ? "enable" : "disable"})});
+    setSync(on ? "已打开主动查询用量" : "已关闭主动查询用量：重置后要等下一次请求才能同步", on ? "ok" : "warn");
+  } catch (e) {
+    setSync("切换失败：" + ((e.data || {}).message || e.message), "bad");
+  }
+  render();
+}
 function scrollToPool(id){
   const el = document.getElementById(`pool-${domId(id)}`);
   if (el) el.scrollIntoView({behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "start"});
@@ -1558,6 +1595,7 @@ function poolInboxItems(){
   return items;
 }
 
+$("probeToggle").onchange = (e) => setProbes(e.target.checked);
 $("newPool").onclick = () => {
   state.poolEdit = {isNew: true, draft: newPoolDraft(), error: ""};
   renderPools();
@@ -1586,6 +1624,7 @@ $("poolList").addEventListener("click", (e) => {
   if ((el = hit("[data-pe-save]"))) { saveDraft(el); return; }
   if (hit("[data-pe-cancel]")) { state.poolEdit = null; state.poolArmed = {}; renderPools(); return; }
   if ((el = hit("[data-pe-delete]"))) { deletePool(el); return; }
+  if ((el = hit("[data-pool-refresh]"))) { refreshPoolUsage(el.dataset.poolRefresh, el); return; }
   if ((el = hit("[data-burst-open]"))) { state.burstPick[el.dataset.burstOpen] = {mode: "", notified: false}; renderPools(); return; }
   if ((el = hit("[data-burst-cancel]"))) { delete state.burstPick[el.dataset.burstCancel]; renderPools(); return; }
   if ((el = hit("[data-burst-start]"))) {

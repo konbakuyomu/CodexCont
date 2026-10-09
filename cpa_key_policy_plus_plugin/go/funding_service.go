@@ -41,6 +41,8 @@ func providerForOwner(owner string) string {
 		return "codex"
 	case "xai", "x-ai", "grok":
 		return "xai"
+	case "anthropic", "claude":
+		return "claude"
 	}
 	return owner
 }
@@ -51,6 +53,8 @@ func providerLabel(provider string) string {
 		return "GPT"
 	case "xai":
 		return "Grok"
+	case "claude":
+		return "Claude"
 	case "":
 		return "其他模型"
 	}
@@ -85,6 +89,8 @@ func modelProvider(model string) string {
 		return "codex"
 	case strings.HasPrefix(lower, "grok"):
 		return "xai"
+	case strings.HasPrefix(lower, "claude"):
+		return "claude"
 	}
 	return ""
 }

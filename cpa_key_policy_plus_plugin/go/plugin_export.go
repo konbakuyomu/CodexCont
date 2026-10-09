@@ -70,6 +70,7 @@ func cliproxy_plugin_init(host *C.cliproxy_host_api, plugin *C.cliproxy_plugin_a
 	}
 	C.store_host_api(host)
 	hostCall = cgoHostCall
+	startQuotaProbes()
 	plugin.abi_version = C.uint32_t(abiVersion)
 	plugin.call = C.cliproxy_plugin_call_fn(C.cliproxyPluginCall)
 	plugin.free_buffer = C.cliproxy_plugin_free_fn(C.cliproxyPluginFree)
@@ -109,6 +110,7 @@ func cliproxyPluginFree(ptr unsafe.Pointer, _ C.size_t) {
 
 //export cliproxyPluginShutdown
 func cliproxyPluginShutdown() {
+	stopQuotaProbes()
 	shutdownPlugin()
 }
 

@@ -1632,6 +1632,7 @@ func managementRegister() ([]byte, error) {
 			{Method: http.MethodGet, Path: "/plugins/cpa-key-policy-plus/pools"},
 			{Method: http.MethodPut, Path: "/plugins/cpa-key-policy-plus/pools/save"},
 			{Method: http.MethodPost, Path: "/plugins/cpa-key-policy-plus/pools/burst"},
+			{Method: http.MethodPost, Path: "/plugins/cpa-key-policy-plus/pools/probe"},
 			{Method: http.MethodGet, Path: "/plugins/cpa-key-policy-plus/funding"},
 			{Method: http.MethodPut, Path: "/plugins/cpa-key-policy-plus/funding"},
 		},
@@ -1706,6 +1707,8 @@ func managementHandle(raw []byte) ([]byte, error) {
 		return adminSavePools(req)
 	case strings.HasSuffix(path, "/admin/api/pools/burst"):
 		return adminPoolBurst(req)
+	case strings.HasSuffix(path, "/admin/api/pools/probe"):
+		return adminPoolProbe(req)
 	case strings.HasSuffix(path, "/admin/api/funding"):
 		return adminFunding(req)
 	case strings.Contains(path, "/user/api/session"):
@@ -1754,6 +1757,8 @@ func managementHandle(raw []byte) ([]byte, error) {
 		return adminSavePools(req)
 	case strings.HasSuffix(path, "/plugins/cpa-key-policy-plus/pools/burst"):
 		return adminPoolBurst(req)
+	case strings.HasSuffix(path, "/plugins/cpa-key-policy-plus/pools/probe"):
+		return adminPoolProbe(req)
 	case strings.HasSuffix(path, "/plugins/cpa-key-policy-plus/funding"):
 		return adminFunding(req)
 	case strings.HasSuffix(path, "/key-policy-plus/api/keys"):
@@ -1786,6 +1791,8 @@ func managementHandle(raw []byte) ([]byte, error) {
 		return adminSavePools(req)
 	case strings.HasSuffix(path, "/key-policy-plus/api/pools/burst"):
 		return adminPoolBurst(req)
+	case strings.HasSuffix(path, "/key-policy-plus/api/pools/probe"):
+		return adminPoolProbe(req)
 	case strings.HasSuffix(path, "/key-policy-plus/api/funding"):
 		return adminFunding(req)
 	default:

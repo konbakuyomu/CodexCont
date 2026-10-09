@@ -105,6 +105,16 @@ func ParseCodexQuotaHeaders(headers http.Header, observedAt time.Time) (QuotaSig
 		}
 		windows = append(windows, QuotaWindow{Minutes: int64(math.Round(minutes)), Used: used, ResetAt: resetAt})
 	}
+	assignWindows(&sig, windows)
+	if sig.Weekly == nil && sig.Short == nil && sig.PlanType == "" {
+		return QuotaSignal{}, false
+	}
+	return sig, true
+}
+
+// assignWindows files the weekly window by length, never by slot, and the
+// first other window as the short one.
+func assignWindows(sig *QuotaSignal, windows []QuotaWindow) {
 	weeklyIndex := -1
 	for i, window := range windows {
 		distance := absInt64(window.Minutes - WeeklyWindowMinutes)
@@ -123,7 +133,96 @@ func ParseCodexQuotaHeaders(headers http.Header, observedAt time.Time) (QuotaSig
 			sig.Short = &window
 		}
 	}
-	if sig.Weekly == nil && sig.Short == nil && sig.PlanType == "" {
+}
+
+// ParseCodexUsage reads the account usage that Codex reports at
+// /backend-api/wham/usage, the same windows its response headers carry.
+func ParseCodexUsage(body []byte, observedAt time.Time) (QuotaSignal, bool) {
+	type window struct {
+		UsedPercent        *float64 `json:"used_percent"`
+		LimitWindowSeconds float64  `json:"limit_window_seconds"`
+		WindowMinutes      float64  `json:"window_minutes"`
+		ResetAfterSeconds  *float64 `json:"reset_after_seconds"`
+		ResetAt            float64  `json:"reset_at"`
+	}
+	var payload struct {
+		PlanType  string `json:"plan_type"`
+		RateLimit *struct {
+			LimitReached    bool    `json:"limit_reached"`
+			PrimaryWindow   *window `json:"primary_window"`
+			SecondaryWindow *window `json:"secondary_window"`
+			Primary         *window `json:"primary"`
+			Secondary       *window `json:"secondary"`
+		} `json:"rate_limit"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil || payload.RateLimit == nil {
+		return QuotaSignal{}, false
+	}
+	if observedAt.IsZero() {
+		observedAt = time.Now()
+	}
+	limits := payload.RateLimit
+	sig := QuotaSignal{
+		ObservedAtMS: observedAt.UnixMilli(),
+		PlanType:     strings.ToLower(boundedHeaderValue(payload.PlanType, 32)),
+		LimitReached: limits.LimitReached,
+	}
+	var windows []QuotaWindow
+	for _, w := range []*window{limits.PrimaryWindow, limits.SecondaryWindow, limits.Primary, limits.Secondary} {
+		if w == nil || w.UsedPercent == nil || *w.UsedPercent < 0 || *w.UsedPercent > 1000 {
+			continue
+		}
+		minutes := w.WindowMinutes
+		if minutes <= 0 {
+			minutes = w.LimitWindowSeconds / 60
+		}
+		resetAt := int64(w.ResetAt)
+		if resetAt > 1e12 {
+			resetAt /= 1000
+		}
+		if resetAt <= 0 && w.ResetAfterSeconds != nil && *w.ResetAfterSeconds >= 0 {
+			resetAt = observedAt.Unix() + int64(math.Round(*w.ResetAfterSeconds))
+		}
+		windows = append(windows, QuotaWindow{Minutes: int64(math.Round(minutes)), Used: *w.UsedPercent, ResetAt: resetAt})
+	}
+	assignWindows(&sig, windows)
+	if sig.Weekly == nil && sig.Short == nil {
+		return QuotaSignal{}, false
+	}
+	return sig, true
+}
+
+// ParseClaudeQuotaHeaders reads the unified rate-limit headers Anthropic sends
+// to subscription accounts. Utilization is a fraction of the window's limit.
+func ParseClaudeQuotaHeaders(headers http.Header, observedAt time.Time) (QuotaSignal, bool) {
+	if len(headers) == 0 {
+		return QuotaSignal{}, false
+	}
+	get := func(name string) string {
+		return strings.TrimSpace(headers.Get("anthropic-ratelimit-unified-" + name))
+	}
+	window := func(kind string, minutes int64) *QuotaWindow {
+		used, ok := parseHeaderFloat(get(kind + "-utilization"))
+		if !ok || used < 0 || used > 10 {
+			return nil
+		}
+		resetAt := parseResetAt(get(kind + "-reset"))
+		if resetAt <= 0 {
+			return nil
+		}
+		return &QuotaWindow{Minutes: minutes, Used: math.Round(used*10000) / 100, ResetAt: resetAt}
+	}
+	if observedAt.IsZero() {
+		observedAt = time.Now()
+	}
+	sig := QuotaSignal{
+		ObservedAtMS: observedAt.UnixMilli(),
+		PlanType:     "claude",
+		Weekly:       window("7d", WeeklyWindowMinutes),
+		Short:        window("5h", 300),
+		LimitReached: strings.EqualFold(get("status"), "rejected"),
+	}
+	if sig.Weekly == nil && sig.Short == nil {
 		return QuotaSignal{}, false
 	}
 	return sig, true
@@ -205,13 +304,31 @@ type QuotaObservation struct {
 	WindowMinutes int64
 }
 
+// QuotaRecord says what storing one snapshot changed.
+type QuotaRecord struct {
+	// Tick: a weekly value was seen for the first time in its cycle, which is
+	// when cached ledgers need recomputing.
+	Tick bool
+	// Cycle is the cycle the snapshot was filed under.
+	Cycle int64
+	// NewCycle: the snapshot opened a cycle after an earlier one, so the
+	// account was reset (on schedule or early).
+	NewCycle bool
+}
+
 // RecordQuotaSignal stores the latest snapshot and the first time each weekly
 // percent value was seen in its cycle. It reports whether a value appeared for
 // the first time, which is when cached ledgers need recomputing.
 func (s *Store) RecordQuotaSignal(ctx context.Context, sig QuotaSignal) (bool, error) {
+	record, err := s.RecordQuota(ctx, sig)
+	return record.Tick, err
+}
+
+// RecordQuota is RecordQuotaSignal reporting the cycle as well.
+func (s *Store) RecordQuota(ctx context.Context, sig QuotaSignal) (QuotaRecord, error) {
 	authIndex := strings.TrimSpace(sig.AuthIndex)
 	if s == nil || s.db == nil || authIndex == "" || sig.ObservedAtMS <= 0 {
-		return false, nil
+		return QuotaRecord{}, nil
 	}
 	now := time.Now().Unix()
 	weeklyMinutes, weeklyReset, shortMinutes, shortReset := int64(0), int64(0), int64(0), int64(0)
@@ -244,14 +361,23 @@ func (s *Store) RecordQuotaSignal(ctx context.Context, sig QuotaSignal) (bool, e
 		weeklyMinutes, weeklyUsed, weeklyReset, shortMinutes, shortUsed, shortReset,
 		boolInt(sig.LimitReached), sig.ObservedAtMS, now,
 	); err != nil {
-		return false, err
+		return QuotaRecord{}, err
 	}
 	if sig.Weekly == nil || sig.Weekly.ResetAt <= 0 {
-		return false, nil
+		return QuotaRecord{}, nil
 	}
-	cycle, err := s.resolveCycle(ctx, authIndex, sig.Weekly.ResetAt)
+	cycle, opened, err := s.resolveCycle(ctx, authIndex, sig.Weekly.Used, sig.Weekly.ResetAt, sig.ObservedAtMS)
 	if err != nil {
-		return false, err
+		return QuotaRecord{}, err
+	}
+	record := QuotaRecord{Cycle: cycle}
+	if opened {
+		var earlier int
+		if err := s.db.QueryRowContext(ctx, `select count(*) from quota_observations
+			where auth_index=? and cycle_reset_at < ?`, authIndex, cycle).Scan(&earlier); err != nil {
+			return QuotaRecord{}, err
+		}
+		record.NewCycle = earlier > 0
 	}
 	var existing sql.NullInt64
 	err = s.db.QueryRowContext(ctx, `select observed_at_ms from quota_observations
@@ -260,29 +386,74 @@ func (s *Store) RecordQuotaSignal(ctx context.Context, sig QuotaSignal) (bool, e
 	case err == sql.ErrNoRows:
 		_, err = s.db.ExecContext(ctx, `insert into quota_observations(auth_index, cycle_reset_at, used_percent, observed_at_ms, window_minutes)
 			values (?, ?, ?, ?, ?)`, authIndex, cycle, sig.Weekly.Used, sig.ObservedAtMS, sig.Weekly.Minutes)
-		return err == nil, err
+		record.Tick = err == nil
+		return record, err
 	case err != nil:
-		return false, err
+		return QuotaRecord{}, err
 	case sig.ObservedAtMS < existing.Int64:
 		// A slower request can report an older snapshot after a newer one; the
 		// value was really first seen at the earlier moment.
 		_, err = s.db.ExecContext(ctx, `update quota_observations set observed_at_ms=?
 			where auth_index=? and cycle_reset_at=? and used_percent=?`, sig.ObservedAtMS, authIndex, cycle, sig.Weekly.Used)
-		return err == nil, err
+		record.Tick = err == nil
+		return record, err
 	}
-	return false, nil
+	return record, nil
 }
 
-func (s *Store) resolveCycle(ctx context.Context, authIndex string, resetAt int64) (int64, error) {
-	var cycle int64
-	err := s.db.QueryRowContext(ctx, `select cycle_reset_at from quota_observations
-		where auth_index=? and cycle_reset_at between ? and ?
-		order by abs(cycle_reset_at - ?) asc limit 1`,
-		authIndex, resetAt-cycleMatchSeconds, resetAt+cycleMatchSeconds, resetAt).Scan(&cycle)
-	if err == sql.ErrNoRows {
-		return resetAt, nil
+// resolveCycle files a weekly snapshot under its cycle and reports whether
+// the snapshot opens it. Snapshots whose reset times differ by less than
+// cycleMatchSeconds share a cycle (reset-after-seconds jitters). An account
+// can also be reset without its reset time moving: the snapshot then drops
+// sharply below everything seen before it, and opens a new segment of the
+// cycle, keyed one second after the latest one.
+func (s *Store) resolveCycle(ctx context.Context, authIndex string, used float64, resetAt, observedAtMS int64) (int64, bool, error) {
+	rows, err := s.db.QueryContext(ctx, `select cycle_reset_at, min(observed_at_ms), max(observed_at_ms), max(used_percent)
+		from quota_observations where auth_index=? and cycle_reset_at between ? and ?
+		group by cycle_reset_at order by cycle_reset_at`,
+		authIndex, resetAt-cycleMatchSeconds, resetAt+cycleMatchSeconds)
+	if err != nil {
+		return 0, false, err
 	}
-	return cycle, err
+	type segment struct {
+		key, firstMS, lastMS int64
+		peak                 float64
+	}
+	var segments []segment
+	for rows.Next() {
+		var seg segment
+		if err := rows.Scan(&seg.key, &seg.firstMS, &seg.lastMS, &seg.peak); err != nil {
+			rows.Close()
+			return 0, false, err
+		}
+		segments = append(segments, seg)
+	}
+	if err := rows.Close(); err != nil {
+		return 0, false, err
+	}
+	if len(segments) == 0 {
+		return resetAt, true, nil
+	}
+	// A snapshot belongs to the latest segment that had begun when it was
+	// taken; one older than every segment belongs to the first.
+	picked := 0
+	for i, seg := range segments {
+		if seg.firstMS <= observedAtMS {
+			picked = i
+		}
+	}
+	latest := segments[len(segments)-1]
+	if picked == len(segments)-1 && observedAtMS > latest.lastMS && droppedByReset(latest.peak, used) {
+		return latest.key + 1, true, nil
+	}
+	return segments[picked].key, false, nil
+}
+
+// droppedByReset reports whether a weekly value fell far enough below the
+// cycle's peak that only a reset explains it: by at least two points and to
+// half the peak or less.
+func droppedByReset(peak, used float64) bool {
+	return peak-used >= 2 && used <= peak/2
 }
 
 func (s *Store) QuotaAccounts(ctx context.Context) ([]QuotaAccount, error) {
@@ -1028,11 +1199,13 @@ func (s *Store) FinishMemberBursts(ctx context.Context, poolID string, cycleRese
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
+	// Cycle keys are stored exactly as the ledger files them; a reset that kept
+	// the reset time puts two segments one second apart, so nothing here may
+	// match by proximity.
 	var startedAt int64
 	_ = tx.QueryRowContext(ctx, `select coalesce(min(started_at), 0) from member_bursts where pool_id=?
-		and cycle_reset_at between ? and ?`, poolID, cycleResetAt-cycleMatchSeconds, cycleResetAt+cycleMatchSeconds).Scan(&startedAt)
-	res, err := tx.ExecContext(ctx, `delete from member_bursts where pool_id=? and cycle_reset_at between ? and ?`,
-		poolID, cycleResetAt-cycleMatchSeconds, cycleResetAt+cycleMatchSeconds)
+		and cycle_reset_at=?`, poolID, cycleResetAt).Scan(&startedAt)
+	res, err := tx.ExecContext(ctx, `delete from member_bursts where pool_id=? and cycle_reset_at=?`, poolID, cycleResetAt)
 	if err != nil {
 		return err
 	}
@@ -1072,7 +1245,7 @@ func (s *Store) PoolCarry(ctx context.Context, poolID string, cycleResetAt int64
 		return out, nil
 	}
 	rows, err := s.db.QueryContext(ctx, `select key_id, pp from pool_carry where pool_id=?
-		and cycle_reset_at between ? and ?`, poolID, cycleResetAt-cycleMatchSeconds, cycleResetAt+cycleMatchSeconds)
+		and cycle_reset_at=?`, poolID, cycleResetAt)
 	if err != nil {
 		return nil, err
 	}
@@ -1181,6 +1354,8 @@ func FloorCapacityUSD(plan string) float64 {
 	switch strings.ToLower(strings.TrimSpace(plan)) {
 	case "pro", "pro20x", "pro_20x", "pro5x", "pro_5x":
 		return 300
+	case "claude":
+		return 100
 	default:
 		return 40
 	}
@@ -1192,7 +1367,7 @@ func PriorCapacityUSD(plan string) float64 {
 	switch strings.ToLower(strings.TrimSpace(plan)) {
 	case "pro", "pro20x", "pro_20x":
 		return 2000
-	case "pro5x", "pro_5x":
+	case "pro5x", "pro_5x", "claude":
 		return 1000
 	default:
 		return 150

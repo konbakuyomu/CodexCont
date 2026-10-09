@@ -493,6 +493,13 @@ function shortResetLabel(unix){
   const rel = minutes > 0 && minutes < 60 ? ` · 约 ${minutes} 分钟后` : minutes >= 60 && minutes < 48 * 60 ? ` · 约 ${Math.round(minutes / 60)} 小时后` : "";
   return `${p.month === n.month && p.day === n.day ? "" : `${p.month}月${p.day}日 `}${p.hour}:${p.minute} 恢复${rel}`;
 }
+function agoLabel(ms){
+  const minutes = Math.round((Date.now() - Number(ms)) / 60000);
+  if (!Number.isFinite(minutes) || minutes < 1) return "刚刚";
+  if (minutes < 60) return `${minutes} 分钟前`;
+  if (minutes < 48 * 60) return `${Math.round(minutes / 60)} 小时前`;
+  return `${Math.round(minutes / 1440)} 天前`;
+}
 function reasonText(reason){
   return ({
     model_price_unavailable: "模型价格缺失",
@@ -817,10 +824,15 @@ function poolSection(share, titleId){
     if (acct.reset_at) facts.push(["份额重置", resetLabel(acct.reset_at)]);
   } else if (pool.in_cycle && acct.used_percent != null) facts.push([whole, `${Math.round(acct.used_percent)}%${acct.reset_at ? ` · ${resetLabel(acct.reset_at)}重置` : ""}`]);
   else if (acct.status === "reset_pending") facts.push(["账号本周", "已重置"]);
+  // A reset credit starts the cycle early; everyone's share starts over.
+  if (acct.reset_early && Date.now() - Number(acct.reset_early.at_ms) < 3 * 86400000) {
+    facts.push(["本周期", `${resetLabel(Math.floor(Number(acct.reset_early.at_ms) / 1000))} 提前重置`]);
+  }
   if (acct.short) {
     const reset = Number(acct.short.reset_at || 0);
     facts.push(["5 小时窗口", reset && reset * 1000 <= Date.now() ? "已重置" : `${Math.round(acct.short.used_percent)}%${reset ? ` · ${shortResetLabel(reset)}` : ""}`]);
   }
+  if (acct.observed_at_ms && !pool.budgeted) facts.push(["用量数据", `${agoLabel(acct.observed_at_ms)}更新`]);
   const team = (pool.account_hidden ? [] : pool.team || []).map(row => {
     const over = !(row.burst && row.burst.active) && row.state === "over";
     const fig = row.role === "owner" || row.available_pp == null ? ppText(row.used_pp) : `${ppText(row.used_pp)} / ${ppText(row.available_pp, row.available_pp % 1 ? 2 : 0)}`;
