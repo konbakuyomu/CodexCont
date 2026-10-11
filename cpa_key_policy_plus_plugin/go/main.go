@@ -1537,9 +1537,13 @@ func usageHandle(raw []byte) ([]byte, error) {
 		return okEnvelope(map[string]any{})
 	}
 	priceBook := currentPriceBook(context.Background(), false)
-	// Bill the tier the upstream served: a priority (fast) request it ran as
-	// standard is charged as standard.
-	serviceTier := firstNonEmpty(strings.TrimSpace(rec.ResponseServiceTier), rec.ServiceTier)
+	// Bill the tier the request asked for. The ChatGPT backend answers
+	// "default" even for priority requests it runs faster, so only a priority
+	// tier the upstream reports (for a request that named none) changes it.
+	serviceTier := rec.ServiceTier
+	if served := strings.TrimSpace(rec.ResponseServiceTier); policyplus.PriorityTier(served) && !policyplus.PriorityTier(serviceTier) {
+		serviceTier = served
+	}
 	breakdown, priced := policyplus.CostForUsageFromPriceBook(priceBook, usage, billingModel, serviceTier)
 	event := policyplus.UsageEvent{
 		RequestID:       firstNonEmpty(rec.ResponseHeaders.Get("x-request-id"), rec.ResponseHeaders.Get("x-openai-request-id")),
