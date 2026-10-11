@@ -372,7 +372,7 @@ func (s *Store) RecordQuota(ctx context.Context, sig QuotaSignal) (QuotaRecord, 
 	if sig.Weekly == nil || sig.Weekly.ResetAt <= 0 {
 		return QuotaRecord{}, nil
 	}
-	cycle, opened, moved, err := s.resolveCycle(ctx, authIndex, sig.Weekly.Used, sig.Weekly.ResetAt, sig.ObservedAtMS)
+	cycle, opened, moved, err := s.resolveCycle(ctx, authIndex, sig.Weekly.Used, sig.Weekly.ResetAt, sig.Weekly.Minutes, sig.ObservedAtMS)
 	if err != nil {
 		return QuotaRecord{}, err
 	}
@@ -415,16 +415,29 @@ func (s *Store) RecordQuota(ctx context.Context, sig QuotaSignal) (QuotaRecord, 
 // can also be reset without its reset time moving: the snapshot then drops
 // sharply below everything seen before it, and opens a new segment of the
 // cycle, keyed one second after the latest one.
-func (s *Store) resolveCycle(ctx context.Context, authIndex string, used float64, resetAt, observedAtMS int64) (int64, bool, bool, error) {
+func (s *Store) resolveCycle(ctx context.Context, authIndex string, used float64, resetAt, windowMinutes, observedAtMS int64) (int64, bool, bool, error) {
 	// An account nobody has used since its window reset reports 0% with a
 	// reset time a full window from now, moving with the clock, because its
 	// window starts on first use. Its cycle follows the reset time instead of
-	// opening a new cycle each time the time has moved on.
+	// opening a new cycle each time the time has moved on. Use recorded before
+	// the new window began means the old window had started (below 1%), so a
+	// new reset time there is a real reset.
 	idle, ok, err := s.idleCycle(ctx, authIndex)
 	if err != nil {
 		return 0, false, false, err
 	}
-	if ok && observedAtMS > idle.lastMS && observedAtMS < idle.key*1000 && resetAt-idle.key >= idleSlideSeconds {
+	slide := ok && observedAtMS > idle.lastMS && observedAtMS < idle.key*1000 && resetAt-idle.key >= idleSlideSeconds
+	if slide {
+		if windowMinutes <= 0 {
+			windowMinutes = idle.window
+		}
+		spent, err := s.accountServed(ctx, authIndex, idle.firstMS, windowStartMS(resetAt, windowMinutes))
+		if err != nil {
+			return 0, false, false, err
+		}
+		slide = !spent
+	}
+	if slide {
 		if err := s.moveCycle(ctx, authIndex, idle.key, resetAt); err != nil {
 			return 0, false, false, err
 		}
@@ -454,12 +467,32 @@ func (s *Store) resolveCycle(ctx context.Context, authIndex string, used float64
 
 // cycleSegment is one cycle key's observations in summary.
 type cycleSegment struct {
-	key, firstMS, lastMS int64
-	peak                 float64
+	key, firstMS, lastMS, window int64
+	peak                         float64
+}
+
+// windowStartMS is when a window ending at resetAt began, less two minutes
+// for the clocks of the upstream and this host.
+func windowStartMS(resetAt, windowMinutes int64) int64 {
+	if windowMinutes <= 0 {
+		windowMinutes = WeeklyWindowMinutes
+	}
+	return (resetAt-windowMinutes*60)*1000 - 120_000
+}
+
+// accountServed reports whether the account served anything in (fromMS, toMS].
+func (s *Store) accountServed(ctx context.Context, authIndex string, fromMS, toMS int64) (bool, error) {
+	if toMS <= fromMS {
+		return false, nil
+	}
+	var n int
+	err := s.db.QueryRowContext(ctx, `select count(*) from usage_events where auth_index=? and consumed_at_ms > ? and consumed_at_ms <= ?
+		and (coalesce(total_tokens, 0) > 0 or coalesce(cost, 0) > 0)`, authIndex, fromMS, toMS).Scan(&n)
+	return n > 0, err
 }
 
 func (s *Store) cycleSegments(ctx context.Context, authIndex string, fromKey, toKey int64) ([]cycleSegment, error) {
-	rows, err := s.db.QueryContext(ctx, `select cycle_reset_at, min(observed_at_ms), max(observed_at_ms), max(used_percent)
+	rows, err := s.db.QueryContext(ctx, `select cycle_reset_at, min(observed_at_ms), max(observed_at_ms), max(used_percent), max(window_minutes)
 		from quota_observations where auth_index=? and cycle_reset_at between ? and ?
 		group by cycle_reset_at order by cycle_reset_at`, authIndex, fromKey, toKey)
 	if err != nil {
@@ -468,7 +501,7 @@ func (s *Store) cycleSegments(ctx context.Context, authIndex string, fromKey, to
 	var segments []cycleSegment
 	for rows.Next() {
 		var seg cycleSegment
-		if err := rows.Scan(&seg.key, &seg.firstMS, &seg.lastMS, &seg.peak); err != nil {
+		if err := rows.Scan(&seg.key, &seg.firstMS, &seg.lastMS, &seg.peak, &seg.window); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -485,10 +518,10 @@ func (s *Store) cycleSegments(ctx context.Context, authIndex string, fromKey, to
 // started the reset time is fixed, so the cycle stops moving by itself.
 func (s *Store) idleCycle(ctx context.Context, authIndex string) (cycleSegment, bool, error) {
 	var latest cycleSegment
-	err := s.db.QueryRowContext(ctx, `select cycle_reset_at, min(observed_at_ms), max(observed_at_ms), max(used_percent)
+	err := s.db.QueryRowContext(ctx, `select cycle_reset_at, min(observed_at_ms), max(observed_at_ms), max(used_percent), max(window_minutes)
 		from quota_observations where auth_index=?
 		and cycle_reset_at=(select max(cycle_reset_at) from quota_observations where auth_index=?)
-		group by cycle_reset_at`, authIndex, authIndex).Scan(&latest.key, &latest.firstMS, &latest.lastMS, &latest.peak)
+		group by cycle_reset_at`, authIndex, authIndex).Scan(&latest.key, &latest.firstMS, &latest.lastMS, &latest.peak, &latest.window)
 	if err == sql.ErrNoRows {
 		return cycleSegment{}, false, nil
 	}
@@ -570,6 +603,12 @@ func (s *Store) CollapseIdleCycles(ctx context.Context) (int, error) {
 		for i := 0; i+1 < len(segments); i++ {
 			idle, next := segments[i], segments[i+1]
 			if idle.peak > 0 || next.firstMS >= idle.key*1000 || next.firstMS < idle.lastMS {
+				continue
+			}
+			if spent, err := s.accountServed(ctx, auth, idle.firstMS, windowStartMS(next.key, next.window)); err != nil || spent {
+				if err != nil {
+					return folded, err
+				}
 				continue
 			}
 			if err := s.moveCycle(ctx, auth, idle.key, next.key); err != nil {

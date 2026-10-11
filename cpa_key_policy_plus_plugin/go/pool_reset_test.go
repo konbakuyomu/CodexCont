@@ -143,16 +143,17 @@ func TestProbeFindsAResetThatNoRequestCouldReveal(t *testing.T) {
 	poolState.mu.Lock()
 	poolState.limitHits["acc-pro"] = limitHit{Until: f.reset, At: f.now.Add(-time.Hour)}
 	poolState.mu.Unlock()
-	if d := evaluatePolicy(f.alice, "gpt-5.5", false); d.Allowed {
-		t.Fatalf("alice is over her share before the reset: %+v", d)
+	pool := loadedPools(context.Background())[0]
+	if !probeUrgent(context.Background(), loadedStore(), pool, time.Now()) {
+		t.Fatal("a member held back makes the account due for a probe every few minutes")
 	}
-
-	runDueProbes(time.Now())
-	if *calls != 1 {
-		t.Fatalf("a member held back makes the account due for a probe: %d calls", *calls)
-	}
+	// Alice's own request looks the account up before refusing her, and finds
+	// the reset no request had revealed.
 	if d := evaluatePolicy(f.alice, "gpt-5.5", false); !d.Allowed {
 		t.Fatalf("the probe found the reset, so alice starts over: %+v", d)
+	}
+	if *calls != 1 {
+		t.Fatalf("one probe answers the refused request: %d calls", *calls)
 	}
 	poolState.mu.Lock()
 	_, stillFull := poolState.limitHits["acc-pro"]

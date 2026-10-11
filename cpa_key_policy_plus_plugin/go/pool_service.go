@@ -79,6 +79,8 @@ type poolRuntime struct {
 	hostAuths   []hostAuthAccount
 	hostAuthsAt time.Time
 	limitHits   map[string]limitHit // auth_index -> last usage_limit_reached
+	// held maps pool and key to the cycle a member's share ran out in.
+	held map[string]int64
 }
 
 // limitHit is an upstream "usage limit reached" answer: the account refuses
@@ -88,7 +90,7 @@ type limitHit struct {
 	At    time.Time
 }
 
-var poolState = &poolRuntime{accounts: map[string]accountState{}, limitHits: map[string]limitHit{}}
+var poolState = &poolRuntime{accounts: map[string]accountState{}, limitHits: map[string]limitHit{}, held: map[string]int64{}}
 
 func resetPoolCaches() {
 	poolState.mu.Lock()
@@ -102,7 +104,9 @@ func resetPoolCaches() {
 	poolState.hostAuths = nil
 	poolState.hostAuthsAt = time.Time{}
 	poolState.limitHits = map[string]limitHit{}
+	poolState.held = map[string]int64{}
 	invalidateFundingMode()
+	resetCPACooldowns()
 	resetProbeStatus()
 }
 
@@ -435,7 +439,7 @@ func shareUsedUp(ctx context.Context, store *policyplus.Store, pool policyplus.P
 		return 0, false
 	}
 	row, ok := ledger.row(member.KeyID)
-	if !ok || row.AvailablePP == nil || row.RemainingPP == nil || *row.RemainingPP > 1e-9 {
+	if !ok || row.AvailablePP == nil || row.State != "over" {
 		return 0, false
 	}
 	return ledger.Account.Current.CycleResetAt, true
@@ -742,6 +746,27 @@ func (l poolLedger) row(keyID string) (poolRow, bool) {
 	return poolRow{}, false
 }
 
+// shareReleasePP is how much of a used-up share must free up before the
+// member is let in again.
+const shareReleasePP = 0.25
+
+// shareHold reports whether a member's share holds them back. A share that
+// ran out stays held until a quarter point frees up, so the small correction
+// each rise of the account makes to the estimate cannot let a member in and
+// out at the edge. A new cycle starts clear.
+func shareHold(poolID, keyID string, cycle int64, remaining float64) bool {
+	k := poolID + "\x00" + keyID
+	poolState.mu.Lock()
+	defer poolState.mu.Unlock()
+	held := remaining <= 1e-9 || (remaining < shareReleasePP && poolState.held[k] == cycle)
+	if held {
+		poolState.held[k] = cycle
+	} else {
+		delete(poolState.held, k)
+	}
+	return held
+}
+
 func computePoolLedger(ctx context.Context, store *policyplus.Store, pool policyplus.Pool, now time.Time) poolLedger {
 	account := accountStateFor(ctx, store, pool.AuthIndex, now)
 	if settled := maybeSettleBursts(ctx, store, pool, account, now); settled {
@@ -796,8 +821,12 @@ func computePoolLedger(ctx context.Context, store *policyplus.Store, pool policy
 				usd := math.Max(remaining, 0) * capacity / 100
 				row.RemainingUSD = &usd
 			}
+			held := remaining <= 1e-9
+			if ledger.InCycle {
+				held = shareHold(pool.ID, keyID, account.Current.CycleResetAt, remaining)
+			}
 			switch {
-			case remaining <= 1e-9:
+			case held:
 				row.State = "over"
 			case remaining < math.Max(available*0.1, 1):
 				row.State = "near"
@@ -959,6 +988,9 @@ type poolShareDecision struct {
 // checkPoolShare blocks a member whose share of the pool account's weekly
 // quota is used up. The owner, bursting members, models the pool account does
 // not serve and accounts without a current observation are never blocked here.
+// Before saying no it asks the upstream for the account's usage, unless it
+// heard from the account moments ago: a reset credit or an early reset that no
+// request has revealed yet lifts the block on this very request.
 func checkPoolShare(key policyplus.KeyRecord, model string) poolShareDecision {
 	allow := poolShareDecision{Allowed: true}
 	store := loadedStore()
@@ -970,7 +1002,15 @@ func checkPoolShare(key policyplus.KeyRecord, model string) poolShareDecision {
 	if !ok || !member.Shared() || pool.AuthIndex == "" {
 		return allow
 	}
-	now := time.Now()
+	decision := poolShareDecisionFor(ctx, store, pool, member, time.Now())
+	if !decision.Allowed && probeBeforeDeny(ctx, store, pool, time.Now()) {
+		decision = poolShareDecisionFor(ctx, store, pool, member, time.Now())
+	}
+	return decision
+}
+
+func poolShareDecisionFor(ctx context.Context, store *policyplus.Store, pool policyplus.Pool, member policyplus.PoolMember, now time.Time) poolShareDecision {
+	allow := poolShareDecision{Allowed: true}
 	// The ledger first: it settles bursts whose cycle has ended.
 	ledger := computePoolLedger(ctx, store, pool, now)
 	if _, bursting := currentBurst(ledger.Pool, ledger.Account, member.KeyID, now); bursting {
@@ -979,8 +1019,8 @@ func checkPoolShare(key policyplus.KeyRecord, model string) poolShareDecision {
 	if !ledger.InCycle {
 		return allow
 	}
-	row, ok := ledger.row(key.ID)
-	if !ok || row.AvailablePP == nil || row.RemainingPP == nil || *row.RemainingPP > 1e-9 {
+	row, ok := ledger.row(member.KeyID)
+	if !ok || row.AvailablePP == nil || row.State != "over" {
 		return allow
 	}
 	return poolShareDecision{

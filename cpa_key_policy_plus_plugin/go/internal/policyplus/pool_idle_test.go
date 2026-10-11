@@ -156,3 +156,31 @@ func TestCollapseIdleCyclesFoldsTheHourlyCyclesOfAnIdleAccount(t *testing.T) {
 		t.Fatalf("collapsing again = %d err = %v", again, err)
 	}
 }
+
+func TestResetAfterUseBelowOnePercentOpensANewCycle(t *testing.T) {
+	ctx := context.Background()
+	store := openPoolTestStore(t)
+	start := int64(1_790_000_000)
+	record := func(used float64, resetAt, at int64) QuotaRecord {
+		t.Helper()
+		rec, err := store.RecordQuota(ctx, weeklySignal("acc", used, resetAt, at*1000))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return rec
+	}
+	// The window started and the account served a little, still under 1%.
+	record(0, start+week, start)
+	if err := insertUsage(ctx, store.db, UsageEvent{KeyID: "a", RequestedAt: time.Unix(start+600, 0), AuthIndex: "acc", ConsumedAtMS: (start + 600) * 1000, Usage: TokenUsage{TotalTokens: 5000}, Cost: 5}); err != nil {
+		t.Fatal(err)
+	}
+	// A reset credit two hours later starts a new window: a new cycle, not the
+	// same one moving.
+	rec := record(0, start+7200+week, start+7200)
+	if rec.Cycle != start+7200+week || !rec.NewCycle || rec.Moved {
+		t.Fatalf("a reset after use is a new cycle: %+v", rec)
+	}
+	if cycles := cycleKeys(t, store, "acc"); len(cycles) != 2 {
+		t.Fatalf("both cycles kept: %+v", cycles)
+	}
+}

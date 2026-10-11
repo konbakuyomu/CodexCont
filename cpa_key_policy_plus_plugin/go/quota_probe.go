@@ -33,6 +33,9 @@ const (
 	probeMaxBackoff = 30 * time.Minute
 	probeLoopEvery  = 30 * time.Second
 	probeManualGap  = 15 * time.Second
+	// probeDenyGap: a share is not checked against the upstream again while
+	// the account was heard from this recently.
+	probeDenyGap = 30 * time.Second
 
 	codexUsageURL   = "https://chatgpt.com/backend-api/wham/usage"
 	codexProbeAgent = "codex_cli_rs/0.76.0"
@@ -41,6 +44,10 @@ const (
 )
 
 var errProbeBusy = errors.New("正在查询，请稍后再试")
+
+// probeDenyWait bounds how long a refused request waits for its probe; a
+// slower probe finishes in the background for the next request.
+var probeDenyWait = 4 * time.Second
 
 type probeStatus struct {
 	AttemptAt time.Time
@@ -256,6 +263,32 @@ func refreshAccountQuota(ctx context.Context, store *policyplus.Store, pool poli
 	return probeAccount(ctx, store, authIndex, provider)
 }
 
+// probeBeforeDeny refreshes an account's usage before a member is refused,
+// unless the account was heard from within probeDenyGap or a probe is already
+// running. It reports whether a probe answered within probeDenyWait, so the
+// caller looks again.
+func probeBeforeDeny(ctx context.Context, store *policyplus.Store, pool policyplus.Pool, now time.Time) bool {
+	authIndex := strings.TrimSpace(pool.AuthIndex)
+	status := probeStatusOf(authIndex)
+	if authIndex == "" || status.running || now.Sub(status.AttemptAt) < probeDenyGap {
+		return false
+	}
+	if latest := accountStateFor(ctx, store, authIndex, now).Latest; latest != nil && now.Sub(time.UnixMilli(latest.ObservedAtMS)) < probeDenyGap {
+		return false
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = refreshAccountQuota(context.Background(), store, pool)
+	}()
+	select {
+	case <-done:
+	case <-time.After(probeDenyWait):
+		return false
+	}
+	return probeStatusOf(authIndex).OKAt.After(status.OKAt)
+}
+
 func probeAccount(ctx context.Context, store *policyplus.Store, authIndex, provider string) error {
 	probes.Lock()
 	status, ok := probes.accounts[authIndex]
@@ -277,6 +310,7 @@ func probeAccount(ctx context.Context, store *policyplus.Store, authIndex, provi
 		var record policyplus.QuotaRecord
 		if record, err = store.RecordQuota(ctx, sig); err == nil {
 			afterQuotaRecorded(authIndex, sig, record, true)
+			liftStaleCPACooldown(ctx, store, authIndex, sig, time.Now())
 		}
 	}
 
@@ -385,6 +419,9 @@ func probeView(ctx context.Context, store *policyplus.Store, pool policyplus.Poo
 	}
 	if status.Error != "" {
 		view["error"] = status.Error
+	}
+	if cooldown := cpaCooldownView(ctx, store, pool.AuthIndex, time.Now()); cooldown != nil {
+		view["cpa_cooldown"] = cooldown
 	}
 	return view
 }

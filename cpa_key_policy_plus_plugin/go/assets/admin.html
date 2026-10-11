@@ -1166,7 +1166,14 @@ function poolWarningsHTML(p){
   const warnings = [...(p.warnings || [])];
   const probe = p.probe || {};
   if (probe.enabled && probe.error) warnings.push(`主动查询用量失败：${probe.error}${probe.ok_ms ? `（上次成功 ${relTime(probe.ok_ms)}）` : ""}。号重置后可能要等到下一次请求才能同步。`);
-  const notes = p.notes || [];
+  const notes = [...(p.notes || [])];
+  const cd = probe.cpa_cooldown;
+  if (cd && cd.until_ms) {
+    const how = cd.error ? `自动解除失败：${cd.error}。` : cd.auto ? "正在自动解除。" : "可在 CPA 管理面板对这个号点“重置额度”；在插件目录放入 CPA 管理密钥后会自动解除。";
+    warnings.push(`官方额度已恢复，但 CPA 仍把这个号冷却到 ${bjLabel(Math.floor(cd.until_ms / 1000))}，期间请求不会发给它。${how}`);
+  } else if (cd && cd.cleared_ms) {
+    notes.push(`号已恢复，${relTime(cd.cleared_ms)}自动解除了 CPA 的冷却。`);
+  }
   if (!warnings.length && !notes.length) return "";
   return `<div class="pool-warn" role="note">${warnings.map(w => `<div>${escapeHTML(w)}</div>`).join("")}${notes.map(n => `<div class="is-note">${escapeHTML(n)}</div>`).join("")}</div>`;
 }
