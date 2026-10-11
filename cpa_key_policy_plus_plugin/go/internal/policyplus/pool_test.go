@@ -441,6 +441,39 @@ func TestBuildCycleLedgerCapsRisesByTheAccountsTypicalCapacity(t *testing.T) {
 	}
 }
 
+func TestBuildCycleLedgerKeepsTheStartingReferenceForTheWholeCycle(t *testing.T) {
+	// The previous cycle measured $2000 per 100%. Early in this cycle b's
+	// rise is capped at that reference; later rises at $40 per point move the
+	// cycle's own median, but must not change what b was already given.
+	obs := []QuotaObservation{{CycleResetAt: 1, UsedPercent: 0, ObservedAtMS: 0}}
+	events := []CostEvent{}
+	used := 0.0
+	rise := func(at int64, pp, cost float64, key string) {
+		used += pp
+		obs = append(obs, QuotaObservation{CycleResetAt: 1, UsedPercent: used, ObservedAtMS: at})
+		events = append(events, CostEvent{KeyID: key, AtMS: at - 50, Cost: cost})
+	}
+	rise(100, 1, 20, "a")
+	rise(200, 3, 20, "b")
+	early := BuildCycleLedger(obs, events, LedgerParams{FloorUSD: 300, RefUSD: 2000})
+	for i := 0; i < 9; i++ {
+		rise(int64(300+i*100), 1, 40, "a")
+	}
+	late := BuildCycleLedger(obs, events, LedgerParams{FloorUSD: 300, RefUSD: 2000})
+	wantB := 100*20/(0.75*2000) + 0.5
+	if !near(early.Attributed["b"], wantB) || !near(late.Attributed["b"], wantB) {
+		t.Fatalf("b early = %v late = %v, want %v both times", early.Attributed["b"], late.Attributed["b"], wantB)
+	}
+	if !near(late.RefUSD, 4000) {
+		t.Fatalf("the cycle's own measurement is still handed on: ref = %v", late.RefUSD)
+	}
+	// A first cycle has no reference and caps by its own median.
+	first := BuildCycleLedger(obs, events, LedgerParams{FloorUSD: 300})
+	if want := 100*20/(0.75*4000) + 0.5; !near(first.Attributed["b"], want) {
+		t.Fatalf("first cycle b = %v, want %v", first.Attributed["b"], want)
+	}
+}
+
 func TestLendWindowsTellBorrowsFromLeaks(t *testing.T) {
 	ctx := context.Background()
 	store := openPoolTestStore(t)

@@ -357,6 +357,10 @@ func afterQuotaRecorded(authIndex string, sig policyplus.QuotaSignal, record pol
 	if record.Tick || record.NewCycle || probed {
 		invalidateAccountState(authIndex)
 	}
+	if record.Moved {
+		// The account's pools hold bursts under the cycle's old key.
+		invalidatePoolConfig()
+	}
 	open := !sig.LimitReached && (sig.Weekly == nil || sig.Weekly.Used < 100)
 	if record.NewCycle || (probed && open) {
 		poolState.mu.Lock()

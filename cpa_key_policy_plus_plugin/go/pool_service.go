@@ -663,10 +663,18 @@ func priorCapacity(plan string) policyplus.CapacityEstimate {
 	return policyplus.CapacityEstimate{USD: policyplus.PriorCapacityUSD(plan), Basis: "prior"}
 }
 
-// effectiveCapacity picks the estimate used to price pending cost: this
-// cycle once it has a few rises, otherwise the previous cycle, otherwise a
-// plan prior.
+// effectiveCapacity picks the rate that turns cost into points (pending cost,
+// what is left in dollars, "100% ≈"). It stays fixed for the cycle: the
+// latest earlier cycle measured over at least 3 points. Without one the cycle
+// measures itself once it has a few rises, otherwise an earlier cycle,
+// otherwise a plan prior.
 func effectiveCapacity(state accountState) policyplus.CapacityEstimate {
+	for i := len(state.Ledgers) - 2; i >= 0; i-- {
+		if previous := state.Ledgers[i].Capacity; previous.Known() && previous.DeltaPP >= 3 {
+			previous.Basis = "locked"
+			return previous
+		}
+	}
 	current := state.Current.Capacity
 	if current.Known() && current.DeltaPP >= 3 {
 		return current
@@ -1401,6 +1409,10 @@ func adminPoolView(ctx context.Context, store *policyplus.Store, pool policyplus
 		}
 	}
 	cycle["capacity"] = account.Capacity
+	if measured := account.Current.Capacity; measured.Known() && account.Capacity.Basis == "locked" {
+		// The running measurement, shown beside the rate this cycle uses.
+		cycle["measured"] = measured
+	}
 	if account.Latest != nil && account.Latest.Short != nil {
 		cycle["short"] = account.Latest.Short
 	}

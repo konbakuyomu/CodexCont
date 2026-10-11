@@ -250,12 +250,91 @@ func PriceAllowsAdmission(price ModelPrice, serviceTier string) bool {
 	}
 	effective, _, serviceTierRule := effectiveModelPrice(price, 0, serviceTier)
 	if isNonDefaultServiceTier(serviceTier) {
-		return serviceTierRule != "" && hasReliableTokenPrice(effective)
+		if serviceTierRule == "" || !hasReliableTokenPrice(effective) {
+			return false
+		}
+		tier, _ := serviceTierFor(price, serviceTier)
+		for _, contextTier := range tier.ContextTiers {
+			if !hasReliableTokenPrice(applyContextTier(effective, contextTier)) {
+				return false
+			}
+		}
+		return true
 	}
 	return hasReliableTokenPrice(price)
 }
 
+// EstimatedPriorityMultiplier prices priority (Codex "fast") requests on a
+// model CPAMP lists no priority rule for: providers charge about twice the
+// standard rate for it.
+const EstimatedPriorityMultiplier = 2.0
+
+// EstimatedPriorityCost prices a priority request on a model without a
+// priority rule at the standard price times EstimatedPriorityMultiplier. It
+// is for accounting that would otherwise record the request as free (pool
+// shares); keys with USD windows stay strict and wait for a real price.
+func EstimatedPriorityCost(book PriceBook, usage TokenUsage, model, serviceTier string) (CostBreakdown, bool) {
+	price, ok := book.PriceFor(model)
+	if !ok {
+		return CostBreakdown{}, false
+	}
+	estimated, ok := estimatedPriorityPrice(price, serviceTier)
+	if !ok || !priceAllowsRecordedUsage(estimated, max64(usage.InputTokens, 0), "") {
+		return CostBreakdown{}, false
+	}
+	breakdown := costForUsage(estimated, usage, model, "", book.NormalizedSource())
+	breakdown.ServiceTier = strings.TrimSpace(serviceTier)
+	breakdown.ServiceTierMultiplier = EstimatedPriorityMultiplier
+	breakdown.ServiceTierRule = "estimated"
+	return breakdown, true
+}
+
+// PriorityTier reports a tier that buys faster processing at a premium.
+func PriorityTier(serviceTier string) bool {
+	switch strings.ToLower(strings.TrimSpace(serviceTier)) {
+	case "priority", "fast":
+		return true
+	}
+	return false
+}
+
+// estimatedPriorityPrice is the standard price scaled to the priority premium,
+// for priority requests on a model without its own priority rule.
+func estimatedPriorityPrice(price ModelPrice, serviceTier string) (ModelPrice, bool) {
+	if !PriorityTier(serviceTier) {
+		return ModelPrice{}, false
+	}
+	if _, ok := serviceTierFor(price, serviceTier); ok {
+		return ModelPrice{}, false
+	}
+	m := EstimatedPriorityMultiplier
+	scaled := price
+	scaled.ServiceTiers = nil
+	scaled.InputPerMillion *= m
+	scaled.OutputPerMillion *= m
+	scaled.CachePerMillion *= m
+	scaled.CacheReadPerMillion *= m
+	scaled.CacheCreationPerMillion *= m
+	scaled.ContextTiers = make([]ModelPriceContextTier, len(price.ContextTiers))
+	for i, tier := range price.ContextTiers {
+		tier.InputPerMillion *= m
+		tier.OutputPerMillion *= m
+		tier.CachePerMillion *= m
+		tier.CacheReadPerMillion *= m
+		tier.CacheCreationPerMillion *= m
+		scaled.ContextTiers[i] = tier
+	}
+	return scaled, true
+}
+
 func priceAllowsRecordedUsage(price ModelPrice, inputTokens int64, serviceTier string) bool {
+	if isNonDefaultServiceTier(serviceTier) {
+		// A premium tier the model has no rule for is unpriced at any context
+		// length; the standard long-context price would undercharge it.
+		if _, ok := serviceTierFor(price, serviceTier); !ok {
+			return false
+		}
+	}
 	effective, contextThreshold, serviceTierRule := effectiveModelPrice(price, inputTokens, serviceTier)
 	if contextThreshold > 0 {
 		return hasReliableTokenPrice(effective)
@@ -286,27 +365,55 @@ func hasReliableTokenPrice(price ModelPrice) bool {
 	return inputKnown && outputKnown && hasBaseBillablePrice(price)
 }
 
+// effectiveModelPrice picks the price a request pays: its service tier's
+// rule when the model has one, with that tier's own long-context prices past
+// their threshold (a tier without its own yields to the model's long-context
+// price); otherwise the model's long-context or base price.
 func effectiveModelPrice(price ModelPrice, inputTokens int64, serviceTier string) (ModelPrice, int64, string) {
-	var contextTier *ModelPriceContextTier
-	for index := range price.ContextTiers {
-		tier := &price.ContextTiers[index]
-		if tier.ThresholdTokens > 0 && inputTokens > tier.ThresholdTokens && (contextTier == nil || tier.ThresholdTokens > contextTier.ThresholdTokens) {
-			contextTier = tier
+	if tier, ok := serviceTierFor(price, serviceTier); ok {
+		rule := strings.TrimSpace(tier.Mode) + "/" + strings.TrimSpace(tier.ServiceTier)
+		if len(tier.ContextTiers) == 0 {
+			if contextTier := contextTierFor(price.ContextTiers, inputTokens); contextTier != nil {
+				return applyContextTier(price, *contextTier), contextTier.ThresholdTokens, ""
+			}
+			return applyServiceTier(price, tier), 0, rule
 		}
+		effective := applyServiceTier(price, tier)
+		if contextTier := contextTierFor(tier.ContextTiers, inputTokens); contextTier != nil {
+			return applyContextTier(effective, *contextTier), contextTier.ThresholdTokens, rule
+		}
+		return effective, 0, rule
 	}
-	if contextTier != nil {
+	if contextTier := contextTierFor(price.ContextTiers, inputTokens); contextTier != nil {
 		return applyContextTier(price, *contextTier), contextTier.ThresholdTokens, ""
 	}
-	serviceTier = strings.ToLower(strings.TrimSpace(serviceTier))
-	if serviceTier == "" {
-		return price, 0, ""
+	return price, 0, ""
+}
+
+// serviceTierFor is the model's rule for the requested service tier.
+func serviceTierFor(price ModelPrice, serviceTier string) (ModelPriceServiceTier, bool) {
+	name := strings.ToLower(strings.TrimSpace(serviceTier))
+	if name == "" {
+		return ModelPriceServiceTier{}, false
 	}
 	for _, tier := range price.ServiceTiers {
-		if serviceTier == strings.ToLower(strings.TrimSpace(tier.Mode)) || serviceTier == strings.ToLower(strings.TrimSpace(tier.ServiceTier)) {
-			return applyServiceTier(price, tier), 0, strings.TrimSpace(tier.Mode) + "/" + strings.TrimSpace(tier.ServiceTier)
+		if name == strings.ToLower(strings.TrimSpace(tier.Mode)) || name == strings.ToLower(strings.TrimSpace(tier.ServiceTier)) {
+			return tier, true
 		}
 	}
-	return price, 0, ""
+	return ModelPriceServiceTier{}, false
+}
+
+// contextTierFor is the highest tier whose threshold the input crosses.
+func contextTierFor(tiers []ModelPriceContextTier, inputTokens int64) *ModelPriceContextTier {
+	var picked *ModelPriceContextTier
+	for index := range tiers {
+		tier := &tiers[index]
+		if tier.ThresholdTokens > 0 && inputTokens > tier.ThresholdTokens && (picked == nil || tier.ThresholdTokens > picked.ThresholdTokens) {
+			picked = tier
+		}
+	}
+	return picked
 }
 
 func applyContextTier(price ModelPrice, tier ModelPriceContextTier) ModelPrice {

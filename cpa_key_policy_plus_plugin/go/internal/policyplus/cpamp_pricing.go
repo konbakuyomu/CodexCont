@@ -205,7 +205,7 @@ func loadCPAMPServiceTiers(ctx context.Context, db *sql.DB, book *PriceBook) err
 	}
 	rows, err := db.QueryContext(ctx, fmt.Sprintf(`select
 		model, mode, service_tier, coalesce(prompt_per_1m, 0), coalesce(completion_per_1m, 0), coalesce(cache_per_1m, 0), %s, %s,
-		%s, %s, %s, %s, %s
+		%s, %s, %s, %s, %s, %s
 		from model_price_service_tiers order by model, mode, service_tier`,
 		cpampColumn(columns, "cache_read_per_1m", "0"),
 		cpampColumn(columns, "cache_creation_per_1m", "0"),
@@ -214,6 +214,7 @@ func loadCPAMPServiceTiers(ctx context.Context, db *sql.DB, book *PriceBook) err
 		cpampColumn(columns, "cache_configured", "0"),
 		cpampColumn(columns, "cache_read_configured", "0"),
 		cpampColumn(columns, "cache_creation_configured", "0"),
+		cpampColumn(columns, "context_tiers_json", "''"),
 	))
 	if err != nil {
 		return err
@@ -223,13 +224,16 @@ func loadCPAMPServiceTiers(ctx context.Context, db *sql.DB, book *PriceBook) err
 		var model string
 		var tier ModelPriceServiceTier
 		var inputConfigured, outputConfigured, cacheConfigured, cacheReadConfigured, cacheCreationConfigured int
+		var contextTiers sql.NullString
 		if err := rows.Scan(
 			&model, &tier.Mode, &tier.ServiceTier, &tier.InputPerMillion, &tier.OutputPerMillion, &tier.CachePerMillion,
 			&tier.CacheReadPerMillion, &tier.CacheCreationPerMillion,
 			&inputConfigured, &outputConfigured, &cacheConfigured, &cacheReadConfigured, &cacheCreationConfigured,
+			&contextTiers,
 		); err != nil {
 			return err
 		}
+		tier.ContextTiers = parseCPAMPContextTiersJSON(contextTiers.String)
 		model = strings.TrimSpace(model)
 		price, ok := book.Prices[model]
 		if !ok || strings.TrimSpace(tier.Mode) == "" || strings.TrimSpace(tier.ServiceTier) == "" {
@@ -244,6 +248,57 @@ func loadCPAMPServiceTiers(ctx context.Context, db *sql.DB, book *PriceBook) err
 		book.Prices[model] = price
 	}
 	return rows.Err()
+}
+
+// parseCPAMPContextTiersJSON reads the long-context prices CPAMP stores with
+// a service tier, e.g. [{"thresholdTokens":272000,"prompt":8,"completion":30,...}].
+func parseCPAMPContextTiersJSON(raw string) []ModelPriceContextTier {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || raw == "null" {
+		return nil
+	}
+	var rows []struct {
+		ThresholdTokens         int64    `json:"thresholdTokens"`
+		Prompt                  *float64 `json:"prompt"`
+		Completion              *float64 `json:"completion"`
+		Cache                   *float64 `json:"cache"`
+		CacheRead               *float64 `json:"cacheRead"`
+		CacheCreation           *float64 `json:"cacheCreation"`
+		PromptConfigured        bool     `json:"promptConfigured"`
+		CompletionConfigured    bool     `json:"completionConfigured"`
+		CacheConfigured         bool     `json:"cacheConfigured"`
+		CacheReadConfigured     bool     `json:"cacheReadConfigured"`
+		CacheCreationConfigured bool     `json:"cacheCreationConfigured"`
+	}
+	if json.Unmarshal([]byte(raw), &rows) != nil {
+		return nil
+	}
+	value := func(v *float64) float64 {
+		if v == nil {
+			return 0
+		}
+		return *v
+	}
+	var out []ModelPriceContextTier
+	for _, row := range rows {
+		if row.ThresholdTokens <= 0 {
+			continue
+		}
+		out = append(out, ModelPriceContextTier{
+			ThresholdTokens:         row.ThresholdTokens,
+			InputPerMillion:         value(row.Prompt),
+			OutputPerMillion:        value(row.Completion),
+			CachePerMillion:         value(row.Cache),
+			CacheReadPerMillion:     value(row.CacheRead),
+			CacheCreationPerMillion: value(row.CacheCreation),
+			InputConfigured:         row.PromptConfigured || value(row.Prompt) > 0,
+			OutputConfigured:        row.CompletionConfigured || value(row.Completion) > 0,
+			CacheConfigured:         row.CacheConfigured || value(row.Cache) > 0,
+			CacheReadConfigured:     row.CacheReadConfigured || value(row.CacheRead) > 0,
+			CacheCreationConfigured: row.CacheCreationConfigured || value(row.CacheCreation) > 0,
+		})
+	}
+	return out
 }
 
 func LoadCPAMPPriceBookFromSQLitePaths(ctx context.Context, paths []string) (PriceBook, []string, error) {

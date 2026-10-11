@@ -43,6 +43,9 @@ const (
 	// cycleMatchSeconds groups observations whose reset time differs by
 	// less than this into one cycle (reset-after-seconds jitters).
 	cycleMatchSeconds = 3600
+	// idleSlideSeconds is how far an idle cycle's reset time must move on
+	// before the cycle takes the new time.
+	idleSlideSeconds = 60
 )
 
 type QuotaWindow struct {
@@ -314,6 +317,9 @@ type QuotaRecord struct {
 	// NewCycle: the snapshot opened a cycle after an earlier one, so the
 	// account was reset (on schedule or early).
 	NewCycle bool
+	// Moved: an idle cycle took the snapshot's later reset time, and with it
+	// its pools' bursts and carry.
+	Moved bool
 }
 
 // RecordQuotaSignal stores the latest snapshot and the first time each weekly
@@ -366,11 +372,12 @@ func (s *Store) RecordQuota(ctx context.Context, sig QuotaSignal) (QuotaRecord, 
 	if sig.Weekly == nil || sig.Weekly.ResetAt <= 0 {
 		return QuotaRecord{}, nil
 	}
-	cycle, opened, err := s.resolveCycle(ctx, authIndex, sig.Weekly.Used, sig.Weekly.ResetAt, sig.ObservedAtMS)
+	cycle, opened, moved, err := s.resolveCycle(ctx, authIndex, sig.Weekly.Used, sig.Weekly.ResetAt, sig.ObservedAtMS)
 	if err != nil {
 		return QuotaRecord{}, err
 	}
-	record := QuotaRecord{Cycle: cycle}
+	// A cycle that took a later reset time changes the ledgers too.
+	record := QuotaRecord{Cycle: cycle, Tick: moved, Moved: moved}
 	if opened {
 		var earlier int
 		if err := s.db.QueryRowContext(ctx, `select count(*) from quota_observations
@@ -386,7 +393,7 @@ func (s *Store) RecordQuota(ctx context.Context, sig QuotaSignal) (QuotaRecord, 
 	case err == sql.ErrNoRows:
 		_, err = s.db.ExecContext(ctx, `insert into quota_observations(auth_index, cycle_reset_at, used_percent, observed_at_ms, window_minutes)
 			values (?, ?, ?, ?, ?)`, authIndex, cycle, sig.Weekly.Used, sig.ObservedAtMS, sig.Weekly.Minutes)
-		record.Tick = err == nil
+		record.Tick = record.Tick || err == nil
 		return record, err
 	case err != nil:
 		return QuotaRecord{}, err
@@ -395,44 +402,40 @@ func (s *Store) RecordQuota(ctx context.Context, sig QuotaSignal) (QuotaRecord, 
 		// value was really first seen at the earlier moment.
 		_, err = s.db.ExecContext(ctx, `update quota_observations set observed_at_ms=?
 			where auth_index=? and cycle_reset_at=? and used_percent=?`, sig.ObservedAtMS, authIndex, cycle, sig.Weekly.Used)
-		record.Tick = err == nil
+		record.Tick = record.Tick || err == nil
 		return record, err
 	}
 	return record, nil
 }
 
 // resolveCycle files a weekly snapshot under its cycle and reports whether
-// the snapshot opens it. Snapshots whose reset times differ by less than
+// the snapshot opens it, and whether an idle cycle moved to the snapshot's
+// reset time. Snapshots whose reset times differ by less than
 // cycleMatchSeconds share a cycle (reset-after-seconds jitters). An account
 // can also be reset without its reset time moving: the snapshot then drops
 // sharply below everything seen before it, and opens a new segment of the
 // cycle, keyed one second after the latest one.
-func (s *Store) resolveCycle(ctx context.Context, authIndex string, used float64, resetAt, observedAtMS int64) (int64, bool, error) {
-	rows, err := s.db.QueryContext(ctx, `select cycle_reset_at, min(observed_at_ms), max(observed_at_ms), max(used_percent)
-		from quota_observations where auth_index=? and cycle_reset_at between ? and ?
-		group by cycle_reset_at order by cycle_reset_at`,
-		authIndex, resetAt-cycleMatchSeconds, resetAt+cycleMatchSeconds)
+func (s *Store) resolveCycle(ctx context.Context, authIndex string, used float64, resetAt, observedAtMS int64) (int64, bool, bool, error) {
+	// An account nobody has used since its window reset reports 0% with a
+	// reset time a full window from now, moving with the clock, because its
+	// window starts on first use. Its cycle follows the reset time instead of
+	// opening a new cycle each time the time has moved on.
+	idle, ok, err := s.idleCycle(ctx, authIndex)
 	if err != nil {
-		return 0, false, err
+		return 0, false, false, err
 	}
-	type segment struct {
-		key, firstMS, lastMS int64
-		peak                 float64
-	}
-	var segments []segment
-	for rows.Next() {
-		var seg segment
-		if err := rows.Scan(&seg.key, &seg.firstMS, &seg.lastMS, &seg.peak); err != nil {
-			rows.Close()
-			return 0, false, err
+	if ok && observedAtMS > idle.lastMS && observedAtMS < idle.key*1000 && resetAt-idle.key >= idleSlideSeconds {
+		if err := s.moveCycle(ctx, authIndex, idle.key, resetAt); err != nil {
+			return 0, false, false, err
 		}
-		segments = append(segments, seg)
+		return resetAt, false, true, nil
 	}
-	if err := rows.Close(); err != nil {
-		return 0, false, err
+	segments, err := s.cycleSegments(ctx, authIndex, resetAt-cycleMatchSeconds, resetAt+cycleMatchSeconds)
+	if err != nil {
+		return 0, false, false, err
 	}
 	if len(segments) == 0 {
-		return resetAt, true, nil
+		return resetAt, true, false, nil
 	}
 	// A snapshot belongs to the latest segment that had begun when it was
 	// taken; one older than every segment belongs to the first.
@@ -444,9 +447,139 @@ func (s *Store) resolveCycle(ctx context.Context, authIndex string, used float64
 	}
 	latest := segments[len(segments)-1]
 	if picked == len(segments)-1 && observedAtMS > latest.lastMS && droppedByReset(latest.peak, used) {
-		return latest.key + 1, true, nil
+		return latest.key + 1, true, false, nil
 	}
-	return segments[picked].key, false, nil
+	return segments[picked].key, false, false, nil
+}
+
+// cycleSegment is one cycle key's observations in summary.
+type cycleSegment struct {
+	key, firstMS, lastMS int64
+	peak                 float64
+}
+
+func (s *Store) cycleSegments(ctx context.Context, authIndex string, fromKey, toKey int64) ([]cycleSegment, error) {
+	rows, err := s.db.QueryContext(ctx, `select cycle_reset_at, min(observed_at_ms), max(observed_at_ms), max(used_percent)
+		from quota_observations where auth_index=? and cycle_reset_at between ? and ?
+		group by cycle_reset_at order by cycle_reset_at`, authIndex, fromKey, toKey)
+	if err != nil {
+		return nil, err
+	}
+	var segments []cycleSegment
+	for rows.Next() {
+		var seg cycleSegment
+		if err := rows.Scan(&seg.key, &seg.firstMS, &seg.lastMS, &seg.peak); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		segments = append(segments, seg)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	return segments, nil
+}
+
+// idleCycle is the account's latest cycle while it has only ever shown 0%.
+// Until its window starts the reset time moves with the clock; once it has
+// started the reset time is fixed, so the cycle stops moving by itself.
+func (s *Store) idleCycle(ctx context.Context, authIndex string) (cycleSegment, bool, error) {
+	var latest cycleSegment
+	err := s.db.QueryRowContext(ctx, `select cycle_reset_at, min(observed_at_ms), max(observed_at_ms), max(used_percent)
+		from quota_observations where auth_index=?
+		and cycle_reset_at=(select max(cycle_reset_at) from quota_observations where auth_index=?)
+		group by cycle_reset_at`, authIndex, authIndex).Scan(&latest.key, &latest.firstMS, &latest.lastMS, &latest.peak)
+	if err == sql.ErrNoRows {
+		return cycleSegment{}, false, nil
+	}
+	if err != nil {
+		return cycleSegment{}, false, err
+	}
+	return latest, latest.peak <= 0, nil
+}
+
+// moveCycle files a cycle's observations under another key, keeping the
+// first time each value was seen, and moves the bursts, carry and
+// settlements of the account's pools along with it.
+func (s *Store) moveCycle(ctx context.Context, authIndex string, from, to int64) error {
+	if from == to {
+		return nil
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	pools := `pool_id in (select id from pools where auth_index=?)`
+	for _, step := range []struct {
+		query string
+		args  []any
+	}{
+		{`insert into quota_observations(auth_index, cycle_reset_at, used_percent, observed_at_ms, window_minutes)
+			select auth_index, ?, used_percent, observed_at_ms, window_minutes from quota_observations
+			where auth_index=? and cycle_reset_at=?
+			on conflict(auth_index, cycle_reset_at, used_percent) do update set
+				observed_at_ms=min(quota_observations.observed_at_ms, excluded.observed_at_ms)`, []any{to, authIndex, from}},
+		{`delete from quota_observations where auth_index=? and cycle_reset_at=?`, []any{authIndex, from}},
+		{`update or ignore member_bursts set cycle_reset_at=? where cycle_reset_at=? and ` + pools, []any{to, from, authIndex}},
+		{`delete from member_bursts where cycle_reset_at=? and ` + pools, []any{from, authIndex}},
+		{`update or ignore pool_carry set cycle_reset_at=? where cycle_reset_at=? and ` + pools, []any{to, from, authIndex}},
+		{`delete from pool_carry where cycle_reset_at=? and ` + pools, []any{from, authIndex}},
+		{`update pool_carry set source_cycle_reset_at=? where source_cycle_reset_at=? and ` + pools, []any{to, from, authIndex}},
+		{`update or ignore pool_settlements set cycle_reset_at=? where cycle_reset_at=? and ` + pools, []any{to, from, authIndex}},
+		{`update pools set burst_cycle_reset_at=? where burst_cycle_reset_at=? and auth_index=?`, []any{to, from, authIndex}},
+	} {
+		if _, err := tx.ExecContext(ctx, step.query, step.args...); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// CollapseIdleCycles folds the cycles an idle account's moving reset time
+// opened before idle cycles followed it (one an hour while the account sat
+// unused at 0%): each cycle that only ever showed 0% and was followed by
+// another before it was due to end joins that next cycle. It returns how
+// many cycles it folded.
+func (s *Store) CollapseIdleCycles(ctx context.Context) (int, error) {
+	if s == nil || s.db == nil {
+		return 0, nil
+	}
+	rows, err := s.db.QueryContext(ctx, `select distinct auth_index from quota_observations`)
+	if err != nil {
+		return 0, err
+	}
+	var auths []string
+	for rows.Next() {
+		var auth string
+		if err := rows.Scan(&auth); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		auths = append(auths, auth)
+	}
+	if err := rows.Close(); err != nil {
+		return 0, err
+	}
+	folded := 0
+	for _, auth := range auths {
+		segments, err := s.cycleSegments(ctx, auth, math.MinInt64, math.MaxInt64)
+		if err != nil {
+			return folded, err
+		}
+		for i := 0; i+1 < len(segments); i++ {
+			idle, next := segments[i], segments[i+1]
+			if idle.peak > 0 || next.firstMS >= idle.key*1000 || next.firstMS < idle.lastMS {
+				continue
+			}
+			if err := s.moveCycle(ctx, auth, idle.key, next.key); err != nil {
+				return folded, err
+			}
+			segments[i+1].firstMS = min(next.firstMS, idle.firstMS)
+			folded++
+		}
+	}
+	return folded, nil
 }
 
 // droppedByReset reports whether a weekly value fell far enough below the
@@ -1378,8 +1511,9 @@ func PriorCapacityUSD(plan string) float64 {
 type LedgerParams struct {
 	// FloorUSD is the plan's loose capacity floor.
 	FloorUSD float64
-	// RefUSD is the previous cycle's typical cost per 100%, used until this
-	// cycle has enough rises of its own.
+	// RefUSD is the previous cycle's typical cost per 100%. It caps this
+	// cycle's attribution for the whole cycle; a cycle without one caps by
+	// its own median once it has enough rises.
 	RefUSD float64
 }
 
@@ -1464,13 +1598,20 @@ func BuildCycleLedger(obs []QuotaObservation, events []CostEvent, params LedgerP
 	for _, item := range costs[cursor:] {
 		ledger.PendingCost[item.KeyID] += item.Cost
 	}
+	// ledger.RefUSD is this cycle's own measurement, handed to the next one.
 	ledger.RefUSD = params.RefUSD
 	if len(ratios) >= refMinRises {
 		ledger.RefUSD = median(ratios)
 	}
+	// The cap keeps the reference the cycle started with, so a later rise
+	// never changes what earlier ones were attributed.
+	capRef := params.RefUSD
+	if capRef <= 0 {
+		capRef = ledger.RefUSD
+	}
 	capUSD, slack := params.FloorUSD, ledger.Resolution
-	if ledger.RefUSD > 0 && refCapFactor*ledger.RefUSD > capUSD {
-		capUSD, slack = refCapFactor*ledger.RefUSD, refSlack*ledger.Resolution
+	if capRef > 0 && refCapFactor*capRef > capUSD {
+		capUSD, slack = refCapFactor*capRef, refSlack*ledger.Resolution
 	}
 	var weekCost, weekPP float64
 	for k := range ledger.Ticks {

@@ -479,6 +479,8 @@ func configure(raw []byte) error {
 		return err
 	}
 	cfg = applyStoredSettings(cfg, store)
+	// Idle accounts used to open a new cycle every hour; fold those away.
+	_, _ = store.CollapseIdleCycles(context.Background())
 	var keyState policyplus.KeyPolicyState
 	if strings.TrimSpace(cfg.KeyPolicyStatePath) != "" {
 		loaded, err := policyplus.LoadKeyPolicyState(cfg.KeyPolicyStatePath)
@@ -1535,7 +1537,10 @@ func usageHandle(raw []byte) ([]byte, error) {
 		return okEnvelope(map[string]any{})
 	}
 	priceBook := currentPriceBook(context.Background(), false)
-	breakdown, priced := policyplus.CostForUsageFromPriceBook(priceBook, usage, billingModel, rec.ServiceTier)
+	// Bill the tier the upstream served: a priority (fast) request it ran as
+	// standard is charged as standard.
+	serviceTier := firstNonEmpty(strings.TrimSpace(rec.ResponseServiceTier), rec.ServiceTier)
+	breakdown, priced := policyplus.CostForUsageFromPriceBook(priceBook, usage, billingModel, serviceTier)
 	event := policyplus.UsageEvent{
 		RequestID:       firstNonEmpty(rec.ResponseHeaders.Get("x-request-id"), rec.ResponseHeaders.Get("x-openai-request-id")),
 		KeyID:           key.ID,
@@ -1550,7 +1555,7 @@ func usageHandle(raw []byte) ([]byte, error) {
 		LatencyMS:       rec.Latency.Milliseconds(),
 		TTFTMS:          rec.TTFT.Milliseconds(),
 		ReasoningEffort: rec.ReasoningEffort,
-		ServiceTier:     rec.ServiceTier,
+		ServiceTier:     serviceTier,
 		StatusCode:      rec.Failure.StatusCode,
 		Failed:          rec.Failed,
 		Failure:         policyplus.Brief(rec.Failure.Body, 600),
@@ -1560,6 +1565,15 @@ func usageHandle(raw []byte) ([]byte, error) {
 		AuthIndex:       strings.TrimSpace(rec.AuthIndex),
 		AuthID:          strings.TrimSpace(rec.AuthID),
 		ConsumedAtMS:    rec.RequestedAt.Add(rec.Latency).UnixMilli(),
+	}
+	if !priced && !hasCostQuota(key) {
+		// Pool shares split the account by recorded cost; a fast request on a
+		// model without a fast price would otherwise count as free.
+		if estimated, ok := policyplus.EstimatedPriorityCost(priceBook, usage, billingModel, serviceTier); ok {
+			breakdown, priced = estimated, true
+			event.Cost = estimated.Costs["total"]
+			event.CostBreakdown = estimated
+		}
 	}
 	if !priced && hasCostQuota(key) {
 		reason := "model_or_service_tier_price_unavailable"

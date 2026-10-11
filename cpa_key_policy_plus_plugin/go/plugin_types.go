@@ -157,24 +157,26 @@ type executorResponse struct {
 }
 
 type usageRecord struct {
-	Provider        string        `json:"Provider"`
-	ExecutorType    string        `json:"ExecutorType"`
-	Model           string        `json:"Model"`
-	Alias           string        `json:"Alias"`
-	APIKey          string        `json:"APIKey"`
-	AuthID          string        `json:"AuthID"`
-	AuthIndex       string        `json:"AuthIndex"`
-	AuthType        string        `json:"AuthType"`
-	Source          string        `json:"Source"`
-	ReasoningEffort string        `json:"ReasoningEffort"`
-	ServiceTier     string        `json:"ServiceTier"`
-	RequestedAt     time.Time     `json:"RequestedAt"`
-	Latency         time.Duration `json:"Latency"`
-	TTFT            time.Duration `json:"TTFT"`
-	Failed          bool          `json:"Failed"`
-	Failure         usageFailure  `json:"Failure"`
-	Detail          usageDetail   `json:"Detail"`
-	ResponseHeaders http.Header   `json:"ResponseHeaders"`
+	Provider        string `json:"Provider"`
+	ExecutorType    string `json:"ExecutorType"`
+	Model           string `json:"Model"`
+	Alias           string `json:"Alias"`
+	APIKey          string `json:"APIKey"`
+	AuthID          string `json:"AuthID"`
+	AuthIndex       string `json:"AuthIndex"`
+	AuthType        string `json:"AuthType"`
+	Source          string `json:"Source"`
+	ReasoningEffort string `json:"ReasoningEffort"`
+	ServiceTier     string `json:"ServiceTier"`
+	// ResponseServiceTier is the tier the upstream says it served.
+	ResponseServiceTier string        `json:"ResponseServiceTier"`
+	RequestedAt         time.Time     `json:"RequestedAt"`
+	Latency             time.Duration `json:"Latency"`
+	TTFT                time.Duration `json:"TTFT"`
+	Failed              bool          `json:"Failed"`
+	Failure             usageFailure  `json:"Failure"`
+	Detail              usageDetail   `json:"Detail"`
+	ResponseHeaders     http.Header   `json:"ResponseHeaders"`
 }
 
 type executorRequest struct {

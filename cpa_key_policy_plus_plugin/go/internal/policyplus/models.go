@@ -58,6 +58,8 @@ type ModelPriceServiceTier struct {
 	CacheConfigured         bool    `json:"cache_configured,omitempty"`
 	CacheReadConfigured     bool    `json:"cache_read_configured,omitempty"`
 	CacheCreationConfigured bool    `json:"cache_creation_configured,omitempty"`
+	// ContextTiers are the tier's own long-context prices.
+	ContextTiers []ModelPriceContextTier `json:"context_tiers,omitempty"`
 }
 
 type ModelOption struct {

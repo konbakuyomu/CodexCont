@@ -931,7 +931,7 @@ function poolLiveHTML(p){
   return `<div class="pool-live" data-state="${escapeHTML(status)}"><i class="pool-dot" aria-hidden="true"></i><b>${escapeHTML(text)}</b></div>${refresh}`;
 }
 function capacityBasisText(cap){
-  return ({cycle:"本周期实测", previous:"沿用上周期", prior:"按套餐先验估算", day:"今日实测"})[cap.basis] || "";
+  return ({cycle:"本周期实测", locked:"本周期固定（上周期实测）", previous:"沿用上周期", prior:"按套餐先验估算", day:"今日实测"})[cap.basis] || "";
 }
 function poolFigsHTML(p){
   const c = p.cycle || {};
@@ -954,7 +954,8 @@ function poolFigsHTML(p){
   figs.push(`<div class="pf pf-used ${usedCls}"><dt>本周已用</dt><dd><b class="pf-big">${inCycle ? pp(used, 0) : "—"}</b>${inCycle ? `<div class="meter${used >= 100 ? " is-over" : used >= 80 ? " is-warn" : ""}"><span style="--p:${Math.min(used, 100).toFixed(1)}%"></span></div>` : `<div class="pf-sub">${c.status === "reset_pending" ? "新周期从 0 开始" : "还没有周限数据"}</div>`}</dd></div>`);
   const s2p = c.sub2pool;
   const s2pLine = s2p ? `<div class="pf-sub">${s2p.error ? escapeHTML("Sub2Pool：" + s2p.error) : `Sub2Pool ${escapeHTML(usd(s2p.usd))}`}</div>` : "";
-  figs.push(`<div class="pf"><dt>100% ≈</dt><dd><b>${cap.usd ? usd(cap.usd) : "—"}</b><div class="pf-sub">${escapeHTML(range + capacityBasisText(cap))}</div>${s2pLine}</dd></div>`);
+  const measured = c.measured && Number(c.measured.usd) > 0 ? `<div class="pf-sub">本周期实测 ${escapeHTML(usd(c.measured.usd))}</div>` : "";
+  figs.push(`<div class="pf"><dt>100% ≈</dt><dd><b>${cap.usd ? usd(cap.usd) : "—"}</b><div class="pf-sub">${escapeHTML(range + capacityBasisText(cap))}</div>${measured}${s2pLine}</dd></div>`);
   figs.push(`<div class="pf"><dt>1% ≈</dt><dd><b>${cap.usd ? "$" + (cap.usd / 100).toFixed(2) : "—"}</b><div class="pf-sub"></div></dd></div>`);
   const today = c.today;
   figs.push(`<div class="pf"><dt>今日折算</dt><dd><b>${today ? usd(today.usd) : "—"}</b><div class="pf-sub">${today ? `今日 ${Math.round(today.delta_pp)} 次跳动` : "今日跳动还不够"}</div></dd></div>`);
